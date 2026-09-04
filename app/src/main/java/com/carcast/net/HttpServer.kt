@@ -28,6 +28,8 @@ class HttpServer(
     private var server: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "http").apply { isDaemon = true } }
     @Volatile private var running = false
+    /** Called once per accepted TCP connection (after the 3-way handshake) with remote and local addresses. */
+    var onAccept: ((remote: String, local: String) -> Unit)? = null
 
     @Throws(IOException::class)
     fun start() {
@@ -50,6 +52,7 @@ class HttpServer(
     private fun acceptLoop(s: ServerSocket) {
         while (running) {
             val client = try { s.accept() } catch (e: IOException) { if (running) Log.w(TAG, "accept: $e"); break }
+            onAccept?.invoke("${client.inetAddress.hostAddress}:${client.port}", "${client.localAddress.hostAddress}:${client.localPort}")
             pool.execute { handle(client) }
         }
     }

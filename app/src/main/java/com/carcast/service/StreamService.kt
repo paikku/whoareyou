@@ -49,6 +49,7 @@ class StreamService : Service() {
         if (http != null) return
         if (useVpn) startService(Intent(this, CarVpnService::class.java)) else log("VPN 없이 시작 (핫스팟 주소로만 접속 가능)")
         val server = HttpServer(assets, Config.HTTP_PORT, ::onWebSocket, ::statusJson)
+        server.onAccept = { remote, local -> log("accept $remote → $local") }
         try {
             server.start()
             http = server
