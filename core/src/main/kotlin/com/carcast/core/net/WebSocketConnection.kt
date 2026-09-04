@@ -1,9 +1,10 @@
-package com.carcast.net
+package com.carcast.core.net
 
 import java.io.BufferedInputStream
 import java.io.EOFException
 import java.io.IOException
 import java.io.OutputStream
+import java.net.Socket
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ArrayBlockingQueue
@@ -15,7 +16,7 @@ import java.util.concurrent.TimeUnit
  * dropping until the next keyframe). Frames from the client (touch/key) are delivered to [listener].
  */
 class WebSocketConnection(
-    private val conn: TcpConn,
+    private val socket: Socket,
     private val input: BufferedInputStream,
     private val output: OutputStream,
     private val queueCapacity: Int,
@@ -59,13 +60,13 @@ class WebSocketConnection(
         queue.offer(Outgoing(OP_CLOSE, byteArrayOf(0x03, 0xE8.toByte())))
         Thread {
             try { Thread.sleep(200) } catch (_: InterruptedException) {}
-            conn.close()
+            try { socket.close() } catch (_: IOException) {}
         }.start()
     }
 
     private fun writeLoop() {
         try {
-            while (!conn.isClosed) {
+            while (!socket.isClosed) {
                 val msg = queue.poll(15, TimeUnit.SECONDS)
                 if (msg == null) {
                     writeFrame(OP_PING, ByteArray(0))
@@ -84,7 +85,7 @@ class WebSocketConnection(
         try {
             val message = java.io.ByteArrayOutputStream()
             var messageOp = -1
-            while (!conn.isClosed) {
+            while (!socket.isClosed) {
                 val b0 = input.read()
                 if (b0 < 0) throw EOFException()
                 val b1 = input.read()
@@ -162,7 +163,7 @@ class WebSocketConnection(
         if (finished) return
         finished = true
         closed = true
-        conn.close()
+        try { socket.close() } catch (_: IOException) {}
         listener?.onClose(this)
     }
 

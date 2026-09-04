@@ -25,9 +25,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var toggle: Button
     private lateinit var log: TextView
+    private lateinit var command: TextView
     private lateinit var selfTest: Button
     private lateinit var netDiag: Button
     private lateinit var useVpn: android.widget.CheckBox
+    private lateinit var serverInApp: android.widget.CheckBox
     private val handler = Handler(Looper.getMainLooper())
 
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -41,10 +43,12 @@ class MainActivity : AppCompatActivity() {
         status = findViewById(R.id.status)
         toggle = findViewById(R.id.toggle)
         log = findViewById(R.id.log)
+        command = findViewById(R.id.command)
         selfTest = findViewById(R.id.selftest)
         netDiag = findViewById(R.id.netdiag)
         netDiag.setOnClickListener { shareDiagnostics() }
         useVpn = findViewById(R.id.use_vpn)
+        serverInApp = findViewById(R.id.server_in_app)
         selfTest.setOnClickListener {
             StreamService.log("self-test 시작 (인터페이스: ${SelfTest.interfaces().joinToString { "${it.name}=${it.address}" }})")
             SelfTest.run(StreamService::log)
@@ -93,7 +97,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun startSession() {
         startForegroundService(
-            Intent(this, StreamService::class.java).putExtra(StreamService.EXTRA_USE_VPN, useVpn.isChecked)
+            Intent(this, StreamService::class.java)
+                .putExtra(StreamService.EXTRA_USE_VPN, useVpn.isChecked)
+                .putExtra(StreamService.EXTRA_SERVER_IN_APP, serverInApp.isChecked)
         )
     }
 
@@ -105,12 +111,22 @@ class MainActivity : AppCompatActivity() {
                 append(if (running) "실행 중" else getString(R.string.status_idle))
                 append("  (빌드 ").append(BuildConfig.GIT_SHA).append(")\n")
                 append("tun: ").append(CarVpnService.state.name).append('\n')
+                val st = StreamService.shellStatus
+                append("서버: ").append(
+                    when {
+                        !running -> "-"
+                        st == null -> "응답 없음 — PC에서 shell 서버를 띄우세요 (아래 명령)"
+                        else -> "응답 중 " + Regex("\"process\":\"(\\w+)\"").find(st)?.groupValues?.get(1) +
+                            " uid=" + (Regex("\"uid\":(\\d+)").find(st)?.groupValues?.get(1) ?: "?") +
+                            " clients=" + (Regex("\"videoClients\":(\\d+)").find(st)?.groupValues?.get(1) ?: "?")
+                    }
+                ).append('\n')
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
-                append("control 패킷: ").append(StreamService.controlPackets).append('\n')
                 append("인터페이스:\n")
                 for (i in SelfTest.interfaces()) append("  ").append(i.name).append(' ').append(i.address).append('\n')
             }
+            command.text = StreamService.shellCommand()
             log.text = StreamService.logLines.joinToString("\n")
             handler.postDelayed(this, 1000)
         }

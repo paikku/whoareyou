@@ -96,30 +96,37 @@ npm run fake-phone              # http://localhost:3333/
 
 ### B. 폰(S26U) + 노트북
 
-APK를 새로 올릴 필요가 있을 때만 온다. 순서:
+APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 돌아야 차(핫스팟 클라이언트)가 100.99.9.9에
+닿는다(이유: dev-plan "검증된 사실"). M3 전까지는 그 서버를 PC의 adb로 띄운다. 순서:
 
 1. APK 받기. Actions 탭 → `android` → 아티팩트 `carcast-debug-apk`. 또는 로컬 `./gradlew :app:assembleDebug`.
-2. 폰에 설치, 앱에서 **시작** → VPN 동의 → 알림에 URL 표시.
-3. 폰 핫스팟 켜고(5GHz 권장) 노트북을 붙인다.
-4. 노트북에서:
+2. 폰에 설치, 앱에서 **시작** → VPN 동의 → `tun: UP`. 화면에 `(빌드 xxxxxxx)`와 아래 adb 명령이 보인다.
+3. 폰 USB 연결(USB 디버깅 켜기) 후 PC에서 서버 기동. 창을 닫거나 Ctrl-C 하면 서버도 죽는다(킬 스위치):
+   ```powershell
+   adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server <빌드 sha> port=3333'
+   # → carcast-server uid=2000 build=<sha> ... / carcast-server ready
+   ```
+   앱 화면의 "서버:" 줄이 `응답 중 shell uid=2000`으로 바뀐다.
+4. 폰 핫스팟 켜고(5GHz 권장) 노트북을 붙인다.
+5. 노트북에서:
    ```bash
-   curl http://100.99.9.9:3333/api/status          # {"running":true,"vpn":"UP",...} 나오면 가정 1 통과
+   curl http://100.99.9.9:3333/api/status          # {"running":true,"process":"shell","uid":2000,...} 나오면 가정 1 통과
    BASE_URL=http://100.99.9.9:3333 npx playwright test   # PC용 테스트를 그대로 폰에 대고 실행
    ```
    (`BASE_URL`을 주면 가짜 폰을 띄우지 않고, 가짜 폰이 필요한 터치·재연결 테스트는 자동 skip)
-5. 노트북 Chrome에서 `http://100.99.9.9:3333/` 열어 눈으로 확인. 이때 노트북도 Chrome 148이면 차와 거의 같은 조건이다.
-6. 결과를 `docs/car-tests/` 에 기록.
+6. 노트북 Chrome에서 `http://100.99.9.9:3333/` 열어 눈으로 확인. 이때 노트북도 Chrome 148이면 차와 거의 같은 조건이다.
+7. 결과를 `docs/car-tests/` 에 기록.
 
-**100.99.9.9가 안 될 때 (핫스팟 주소는 되는데 tun 주소만 timeout):** 앱 상단의 `(빌드 xxxxxxx)`로
-새 APK가 맞는지 먼저 확인한다. "라우팅 진단 공유" 버튼은 앱 로그를 묶어 주지만, One UI 8은 앱의
-`ip rule`/`/proc/sys` 읽기를 SELinux로 막으므로 라우팅 규칙은 PC에서 adb로 본다 (폰: 설정 → 개발자 옵션 →
-USB 디버깅, USB 연결 후 폰에서 허용):
+**안 될 때:** 서버 로그(adb 창)에 `accept 10.136.x.x:port → 100.99.9.9:3333`이 찍히는지 본다. 안 찍히면 SYN이
+안 온 것이고, 아래로 폰 쪽을 본다. 앱은 `ip`/`/proc/sys` 읽기가 SELinux로 막혀 있어 adb에서만 볼 수 있다.
 ```bash
 adb shell ip rule                      # VPN uid 범위, prohibit/unreachable 규칙
-adb shell ip route show table all      # local_network 테이블에 핫스팟 서브넷이 있는지
-adb shell cat /proc/sys/net/ipv4/tcp_fwmark_accept /proc/sys/net/ipv4/fwmark_reflect
-adb shell ss -tan | grep 3333          # 노트북이 접속 시도하는 동안: SYN-RECV면 SYN은 왔고 응답이 사라진 것
+adb shell ip route show table all      # 핫스팟 서브넷이 어느 테이블에 있는지
+adb shell ss -tan | grep 3333          # 접속 시도 중 SYN-RECV가 보이면 SYN은 왔고 응답이 사라진 것
+adb shell "grep ^TcpExt /proc/net/netstat"   # 전/후 비교: ListenDrops가 늘면 리스너에서 버린 것
+adb shell "echo hi | nc -l -p 3334"    # shell uid로 직접 listen: 이게 되고 3333이 안 되면 서버 쪽 문제
 ```
+"앱 프로세스에서 서버 실행" 체크박스는 핫스팟 주소(10.x)로만 접속되는 실험용이며 100.99.9.9로는 절대 안 된다.
 
 **M0 (코드 없이, 가장 먼저 한 번):** 노트북에 stock scrcpy 4.1을 깔고 `docs/car-tests/s26u-one-ui-8.md` 의 표를 채운다. 이게 M4 설정값을 결정한다.
 

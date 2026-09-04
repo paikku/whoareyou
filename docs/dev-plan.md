@@ -17,6 +17,14 @@
 - GitHub Actions ubuntu-24.04: `ANDROID_HOME` 있음, platforms 34~37, NDK 27.3 기본, `reactivecircus/android-emulator-runner@v2` + KVM udev 규칙으로 에뮬레이터 가능. Chrome for Testing 148 = `148.0.7778.178`, `npx @puppeteer/browsers install chrome@148`.
 - MSE, WebSocket, AudioContext, `RTCPeerConnection`은 **http:// 오리진에서 동작**(secure-context 제한 목록에 없음). WebCodecs·getUserMedia만 제한. 저지연 MSE: duration 미지정 moov + 프레임당 moof 1개.
 - `VpnService.establish()`는 `addAddress`만 필수, `addRoute` 없이 유효 (AOSP javadoc). TeslaMirror가 100.99.9.9로 2026.26에서 현역.
+- **[S26U/One UI 8, 2026-09-04 실측] 앱 uid 소켓은 핫스팟에서 100.99.9.9로 오는 TCP를 받지 못한다.**
+  ping과 폰 자신의 브라우저(lo)와 핫스팟 주소(10.136.114.168)는 되고, tun 주소로 오는 TCP만 SYN이 리스너에
+  닿기 전에 사라진다(`ListenDrops` 불변, `ss`에 SYN-RECV 없음). `ip rule`/route는 정상(앱 uid 10635는 VPN
+  범위에서 제외, 핫스팟 서브넷은 테이블 1083, prohibit 없음). `protect()`, `addDisallowedApplication`,
+  `Network.bindSocket`, bypassable VPN 모두 무효. 원인은 Android 14+ netd BPF의 ingress-discard
+  (VPN 주소로 향하는 패킷이 VPN 인터페이스/lo 이외로 들어오면 소켓 전달 직전에 drop; 소켓 uid < 10000이면 검사 생략).
+  **`adb shell "echo hi | nc -l -p 3334"`(uid 2000)로 같은 주소·핫스팟에서 TCP 접속 성공** → 서버 소켓은 shell uid가 열어야 한다.
+  앱은 `ip`·`/proc/sys` 읽기도 SELinux로 막혀 있어(netlink bind EACCES) 라우팅 진단은 adb에서만 가능.
 - 이 원격 세션: `dl.google.com`·Gradle·Maven 접근 가능 → **여기서 Android SDK 받아 APK 빌드 검증 가능.** `raw.githubusercontent.com` 200(파일 단위 취득), `github.com`/`codeload` 403 → scrcpy/Shizuku는 파일별로 가져오거나 `add_repo`로 붙인다. KVM 없음(에뮬레이터는 CI 전용). Chromium 141 있음.
 
 ---
@@ -25,7 +33,12 @@
 
 1. **Shizuku 단계 삭제.** 앱이 직접 adbd에 페어링·접속 → `CLASSPATH=<own base.apk> app_process / com.carcast.server.Server <build-id> key=value…` 실행. 서버 dex는 `app` 모듈에 `implementation(project(":shell-server"))`로 포함.
 2. **adb `shell:` 스트림을 세션 내내 열어둔다** (scrcpy 방식). 스트림이 닫히면 서버가 죽음 = 킬 스위치. Shizuku #1125류(데몬화한 자식이 죽는 문제) 회피.
-3. **서버가 앱에 접속**: 앱이 먼저 `LocalServerSocket("carcast_<token>")`로 대기, 서버는 video/audio/control 3개 소켓을 토큰과 함께 연결. SELinux가 shell→untrusted_app 유닉스 소켓을 막으면 `127.0.0.1:<port>` TCP+토큰으로 폴백 (M3에서 판정).
+3. **HTTP/WebSocket 서버는 shell 프로세스 안에 있다 (M1 실측으로 확정).** 차는 shell uid 소켓에만 닿는다(위 "검증된 사실").
+   따라서 캡처·인코딩·fMP4·WS 송출·입력 주입이 모두 `com.carcast.server.Server` 한 프로세스에서 돈다. 앱은
+   tun 주소 유지(VpnService), 페어링/기동/킬 스위치, UI만 맡고 `127.0.0.1:3333/api/status`를 폴링해 상태를 보여준다.
+   앱↔서버 IPC는 상태 조회와 설정 전달 정도로 줄어들고(HTTP/WS 자체를 쓰면 됨), 예전 3항의 유닉스 소켓 설계는 불필요.
+   순수 JVM 모듈 `core`(HTTP/WS, MediaHub, ClipSource, StreamSession, ServerMain)를 앱과 shell 서버가 공유하고,
+   PC에서 `./gradlew :core:run`으로 같은 코드를 띄워 Playwright를 돌릴 수 있다.
 4. **무선 디버깅 킬 스위치**: 세션 종료 시 마지막 명령으로 `settings put global adb_wifi_enabled 0`. 시작 시 `_adb-tls-connect._tcp`가 없으면 "무선 디버깅 켜기" 안내 타일(사용자 조작 필요).
 5. adbd가 향후 localhost 바인딩을 막을 가능성(CVE-2026-0073 후속 논의) 대비: mDNS로 얻은 **wlan0 주소**로 접속, 127.0.0.1은 폴백.
 
@@ -35,14 +48,13 @@
 
 ```
 settings.gradle.kts, build.gradle.kts, gradle/libs.versions.toml, gradlew
-app/              com.android.application — 최종 APK. UI, VpnService, HTTP/WS 서버, fMP4 먹서, ShellSession
-  src/main/java/com/carcast/{ui,vpn/CarVpnService.kt,net/{HttpServer,WsServer}.kt,
-      mux/{Fmp4Writer,AvcConfig}.kt,stream/{VideoPump,AudioPump}.kt,control/ControlBridge.kt,
-      shell/{ShellSession,ServerLink}.kt}
+app/              com.android.application — 최종 APK. UI, VpnService(tun 주소), 페어링/기동(M3), 상태 폴링
+  src/main/java/com/carcast/{ui,vpn/CarVpnService.kt,service/StreamService.kt,shell/(M3)}
   src/main/assets/web/   ← esbuild 산출물 (git-ignored)
-  src/test/              JVM 단위 테스트
+core/             kotlin-jvm — HTTP/WS 서버, MediaHub, ClipSource, StreamSession, ServerMain. 앱·shell 서버 공유, PC에서 실행 가능
 adb/              com.android.library — 페어링/접속. Kadb 의존 또는 Shizuku adb 포트(+JNI)
-shell-server/     com.android.library — scrcpy v4.1 server 포크, 패키지 com.carcast.server, aidl 포함
+shell-server/     com.android.library — app_process 진입점 com.carcast.server.Server(+core) → M4에서 scrcpy v4.1 server 포크 합류
+mux/              kotlin-jvm — fMP4 먹서(+CLI). M4에서 shell 서버가 사용
 web/              vanilla TS + esbuild → app/src/main/assets/web/
   src/{main,diag,input,protocol}.ts, renderer/{mse,mjpeg}.ts, transport/ws.ts
 tools/fake-phone/ Node: web/ 서빙 + 커밋된 H.264 클립을 fMP4/WS로 송출 + 고장 주입
@@ -79,7 +91,10 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - `tests/e2e/`: Chrome for Testing 148, `--host-resolver-rules="MAP 100.99.9.9 127.0.0.1, MAP 192.168.* ~NOTFOUND, MAP 10.* ~NOTFOUND, MAP 172.16.* ~NOTFOUND"`, 검사: diag 스냅샷, fps ≥ 25, pts 대비 렌더 지연 < 300ms, 고장 주입 하 30초 내 복구, 터치 왕복 좌표. `.github/workflows/web.yml`.
 - 검증: CI 녹색. M1 APK가 서빙하는 `/diag`를 실제 것으로 교체 → [차] 수치 기록.
 
-### M3. ADB 페어링 + 접속 + `app_process` hello world [세션(코드) → 폰]
+### M3. ADB 페어링 + 접속 + `app_process`로 서버 기동 [세션(코드) → 폰]
+- **M1 후속으로 이미 된 것:** `com.carcast.server.Server`가 `core`의 서버(HTTP/WS + 테스트 클립)를 shell uid로 띄운다.
+  당장은 PC에서 `adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server <git-sha> port=3333'`
+  로 기동(앱 화면에 명령 표시). M3의 목표는 이 명령을 앱이 내장 ADB로 직접 실행하는 것.
 - `adb/` 결정 순서: ① Maven의 Kadb로 `pair`/`connect`/`shell` 시도 (NDK 불필요). ② 안 되면 Shizuku `adb/` 포트: `AdbKey, AdbKeyStore, AdbProtocol, AdbMessage, AdbClient, AdbMdns, AdbPairingClient, AdbException` + `jni/{adb_pairing.cpp,misc.cpp,CMakeLists.txt}`(BoringSSL prefab), 숨은 API `com.android.org.conscrypt`는 `org.conscrypt:conscrypt-android`의 공개 `exportKeyingMaterial`로 교체, 인증서는 BouncyCastle 유지.
 - 앱 UI: 페어링 = 포그라운드 서비스 알림의 `RemoteInput`으로 6자리 코드 입력(Shizuku `AdbPairingService` 패턴) + 무선 디버깅 설정 딥링크, `_adb-tls-pairing` mDNS로 포트 발견. 접속 = `_adb-tls-connect` → `shellCommand("id")`.
 - `shell-server` 최소 `Server.main`: uid 출력, `/dev/uhid` 열기, TRUSTED VD 생성/파괴 (`wrappers/{ServiceManager,DisplayManager}`, `FakeContext`, `Workarounds` 이식). 실행: `CLASSPATH=<sourceDir> app_process / com.carcast.server.Server <build-id>`.

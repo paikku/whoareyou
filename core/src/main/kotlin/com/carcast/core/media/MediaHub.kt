@@ -1,6 +1,6 @@
-package com.carcast.service
+package com.carcast.core.media
 
-import com.carcast.net.WebSocketConnection
+import com.carcast.core.net.WebSocketConnection
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**

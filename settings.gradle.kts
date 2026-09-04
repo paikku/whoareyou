@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "carcast"
-include(":app", ":adb", ":shell-server", ":mux")
+include(":app", ":adb", ":shell-server", ":mux", ":core")

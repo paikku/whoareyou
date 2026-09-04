@@ -1,7 +1,6 @@
-package com.carcast.service
+package com.carcast.core.media
 
-import android.content.res.AssetManager
-import android.os.SystemClock
+import com.carcast.core.Assets
 import java.io.DataInputStream
 import java.io.EOFException
 import java.io.IOException
@@ -12,7 +11,7 @@ import java.io.IOException
  *
  * File format: repeated records of [u8 type][u64 pts_us][u32 len][payload]; type as in MediaHub.
  */
-class ClipSource(private val assets: AssetManager, private val name: String, private val hub: MediaHub) {
+class ClipSource(private val assets: Assets, private val name: String, private val hub: MediaHub) {
     private var thread: Thread? = null
     @Volatile private var running = false
 
@@ -46,8 +45,9 @@ class ClipSource(private val assets: AssetManager, private val name: String, pri
         while (running) {
             var lastPts = 0L
             try {
-                DataInputStream(assets.open(name).buffered(1 shl 16)).use { input ->
-                    val t0 = SystemClock.elapsedRealtimeNanos() / 1000
+                val stream = assets.open(name) ?: return
+                DataInputStream(stream.buffered(1 shl 16)).use { input ->
+                    val t0 = System.nanoTime() / 1000
                     while (running) {
                         val type = input.read()
                         if (type < 0) break
@@ -61,7 +61,7 @@ class ClipSource(private val assets: AssetManager, private val name: String, pri
                             continue
                         }
                         val due = t0 + pts
-                        val now = SystemClock.elapsedRealtimeNanos() / 1000
+                        val now = System.nanoTime() / 1000
                         if (due > now) Thread.sleep((due - now) / 1000, (((due - now) % 1000) * 1000).toInt())
                         if (ptsBase != 0L) restampTfdt(payload, outPts)
                         hub.onFrame(MediaHub.packet(type.toByte(), outPts, payload), type.toByte() == MediaHub.TYPE_KEY)

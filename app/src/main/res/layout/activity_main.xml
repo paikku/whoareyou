@@ -30,6 +30,22 @@
         android:checked="true"
         android:text="@string/use_vpn" />
 
+    <CheckBox
+        android:id="@+id/server_in_app"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:checked="false"
+        android:text="@string/server_in_app" />
+
+    <TextView
+        android:id="@+id/command"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:textSize="11sp"
+        android:textIsSelectable="true"
+        android:layout_marginBottom="8dp" />
+
     <Button
         android:id="@+id/toggle"
         android:layout_width="match_parent"

@@ -1,19 +1,25 @@
-package com.carcast.net
+package com.carcast.core.net
 
-import android.content.res.AssetManager
-import android.util.Log
+import com.carcast.core.Assets
+import com.carcast.core.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
-import android.net.VpnService
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.Executors
 
 /**
- * Serves the bundled web client from assets/web and upgrades the /ws/ paths to WebSocket.
+ * Serves the bundled web client (assets "web/...") and upgrades the WebSocket paths.
  * Bound on 0.0.0.0 so the tun address (100.99.9.9), the hotspot address and loopback all work.
+ *
+ * Runs in the shell-uid process in production: Android 14+ drops packets addressed to a VPN's
+ * address that arrive on any other interface, but only for sockets owned by app uids
+ * (netd's ingress_discard_map is skipped for uids below 10000). See docs/dev-plan.md.
  */
 class HttpServer(
-    private val assets: AssetManager,
+    private val assets: Assets,
     private val port: Int,
     private val wsHandler: WsHandler,
     private val statusJson: () -> String,
@@ -23,7 +29,7 @@ class HttpServer(
         fun onWebSocket(path: String, query: Map<String, String>, conn: WebSocketConnection): Boolean
     }
 
-    private var server: TcpListener? = null
+    private var server: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "http").apply { isDaemon = true } }
     @Volatile private var running = false
     /** Called once per accepted TCP connection (after the 3-way handshake) with remote and local addresses. */
@@ -31,7 +37,9 @@ class HttpServer(
 
     @Throws(IOException::class)
     fun start() {
-        val s = TcpListener(port)
+        val s = ServerSocket()
+        s.reuseAddress = true
+        s.bind(InetSocketAddress("0.0.0.0", port), 16)
         server = s
         running = true
         Thread({ acceptLoop(s) }, "http-accept").apply { isDaemon = true }.start()
@@ -40,64 +48,29 @@ class HttpServer(
 
     fun stop() {
         running = false
-        server?.close()
+        try { server?.close() } catch (_: IOException) {}
         server = null
         pool.shutdownNow()
     }
 
-    /**
-     * Marks the listening socket "protected from VPN" so the kernel routes our SYN-ACKs and every
-     * accepted connection like a non-VPN app's traffic even while our own tun is up. Must be called
-     * by the VpnService that owns the tun. Returns false when there is no listener or protect() failed.
-     */
-    fun protectWith(vpn: VpnService): Boolean {
-        val s = server ?: return false
-        return try { s.withRawFd { vpn.protect(it) } } catch (e: Exception) { Log.w(TAG, "protect failed", e); false }
-    }
-
-    /**
-     * Binds the listener to Android's tethering "local network" (netd LOCAL_NET_ID = 99), the
-     * routing table that holds the hotspot subnet. Incoming hotspot packets are marked with this
-     * netId, and the kernel's ICMP echo replies (which inherit that mark) do reach hotspot clients;
-     * giving our listener the same mark makes SYN-ACKs and accepted sockets route identically.
-     * Not an SDK-blessed use of Network, so failure is expected on some builds: returns the error.
-     */
-    fun bindToLocalNetwork(): String {
-        val s = server ?: return "no listener"
-        return try {
-            // Network(int) is not public; Network.CREATOR is, and the parcel form is just the netId.
-            val parcel = android.os.Parcel.obtain()
-            val net = try {
-                parcel.writeInt(LOCAL_NET_ID)
-                parcel.setDataPosition(0)
-                android.net.Network.CREATOR.createFromParcel(parcel)
-            } finally { parcel.recycle() }
-            net.bindSocket(s.fd)
-            "ok (netId=${net.networkHandle shr 32})"
-        } catch (e: Exception) {
-            val cause = e.cause ?: e
-            "${cause.javaClass.simpleName}: ${cause.message}"
-        }
-    }
-
-    private fun acceptLoop(s: TcpListener) {
+    private fun acceptLoop(s: ServerSocket) {
         while (running) {
             val client = try { s.accept() } catch (e: IOException) { if (running) Log.w(TAG, "accept: $e"); break }
-            onAccept?.invoke(client.remote, client.local)
+            onAccept?.invoke("${client.inetAddress.hostAddress}:${client.port}", "${client.localAddress.hostAddress}:${client.localPort}")
             pool.execute { handle(client) }
         }
     }
 
-    private fun handle(socket: TcpConn) {
+    private fun handle(socket: Socket) {
         try {
-            socket.setTcpNoDelay(true)
-            socket.readTimeoutMs = 15_000
-            val input = BufferedInputStream(socket.input, 8192)
-            val output = BufferedOutputStream(socket.output, 64 * 1024)
+            socket.tcpNoDelay = true
+            socket.soTimeout = 15_000
+            val input = BufferedInputStream(socket.getInputStream(), 8192)
+            val output = BufferedOutputStream(socket.getOutputStream(), 64 * 1024)
             val req = HttpRequest.parse(input) ?: run { socket.close(); return }
 
             if (req.isWebSocketUpgrade) {
-                socket.readTimeoutMs = 0
+                socket.soTimeout = 0
                 WebSocketConnection.handshake(req, output)
                 val conn = WebSocketConnection(socket, input, output, queueCapacity = 64)
                 if (!wsHandler.onWebSocket(req.path, req.query, conn)) {
@@ -118,7 +91,7 @@ class HttpServer(
             socket.close()
         } catch (e: IOException) {
             Log.d(TAG, "connection: $e")
-            socket.close()
+            try { socket.close() } catch (_: IOException) {}
         }
     }
 
@@ -129,9 +102,8 @@ class HttpServer(
         if (path.contains("..")) {
             HttpResponse.write(output, 400, "Bad Request", "text/plain", "400".toByteArray()); return
         }
-        val body = try {
-            assets.open("web/$path").use { it.readBytes() }
-        } catch (_: IOException) {
+        val body = assets.open("web/$path")?.use { it.readBytes() }
+        if (body == null) {
             HttpResponse.write(output, 404, "Not Found", "text/plain", "404 $path".toByteArray()); return
         }
         HttpResponse.write(output, 200, "OK", HttpResponse.mimeFor(path), body)
@@ -139,7 +111,5 @@ class HttpServer(
 
     companion object {
         private const val TAG = "HttpServer"
-        /** netd's INetd.LOCAL_NET_ID: the network that tethered interfaces (swlan0, ap0) belong to. */
-        private const val LOCAL_NET_ID = 99
     }
 }

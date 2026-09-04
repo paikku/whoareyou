@@ -1,4 +1,4 @@
-package com.carcast.net
+package com.carcast.core.net
 
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream

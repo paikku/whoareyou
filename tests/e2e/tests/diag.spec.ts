@@ -4,8 +4,9 @@ test('diag page reports environment, API support, WS success and decode', async 
   await page.goto('/diag');
   await expect(page.locator('#env')).toContainText('Tesla/');
   // The origin is plain http, so the page must not be a secure context (like in the car).
+  // Loopback origins are always "potentially trustworthy", so skip this when pointed at 127.0.0.1.
   const secure = await page.evaluate(() => isSecureContext);
-  expect(secure).toBe(false);
+  if (!/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(page.url())) expect(secure).toBe(false);
   const rows = await page.locator('#api tr').allTextContents();
   expect(rows.find((r) => r.startsWith('MediaSource'))).toContain('O');
   expect(rows.find((r) => r.includes('avc1.42E01E'))).toContain('O');

@@ -5,39 +5,38 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.VpnService
+import android.content.res.AssetManager
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.carcast.BuildConfig
 import com.carcast.CarCastApp
 import com.carcast.Config
 import com.carcast.R
-import com.carcast.net.HttpServer
-import com.carcast.net.WebSocketConnection
+import com.carcast.core.Assets
+import com.carcast.core.StreamSession
 import com.carcast.ui.MainActivity
 import com.carcast.vpn.CarVpnService
-import org.json.JSONObject
 import java.io.IOException
-import java.util.concurrent.CopyOnWriteArrayList
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
- * Foreground service that owns the session: tun address (via CarVpnService), HTTP/WS server,
- * media fan-out and (from M4) the shell server link. M1/M2: streams the bundled test clip.
+ * Foreground service that owns the phone-side session: the tun address (via CarVpnService) and,
+ * once M3 lands, the ADB link that launches the shell-uid server. The HTTP/WS server itself runs
+ * in the shell process (see docs/dev-plan.md: Android 14+ drops hotspot→VPN-address TCP for app
+ * uids). Until the ADB link exists the user starts that server from a PC with `adb shell`, and this
+ * service watches http://127.0.0.1:3333/api/status to show whether it is up.
+ *
+ * For hotspot-address-only experiments the same session can run inside this process (EXTRA_SERVER_IN_APP).
  */
 class StreamService : Service() {
 
-    private var http: HttpServer? = null
-    private val videoHub = MediaHub()
-    private val audioHub = MediaHub()
-    private var clip: ClipSource? = null
-    private val controlClients = CopyOnWriteArrayList<WebSocketConnection>()
+    private var inApp: StreamSession? = null
+    private var watcher: Thread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        instance = this
-    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -46,94 +45,56 @@ class StreamService : Service() {
             return START_NOT_STICKY
         }
         useVpn = intent?.getBooleanExtra(EXTRA_USE_VPN, true) ?: true
+        serverInApp = intent?.getBooleanExtra(EXTRA_SERVER_IN_APP, false) ?: false
         startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         startSession()
         return START_STICKY
     }
 
     private fun startSession() {
-        if (http != null) return
+        if (running) return
+        running = true
         if (useVpn) startService(Intent(this, CarVpnService::class.java)) else log("VPN 없이 시작 (핫스팟 주소로만 접속 가능)")
-        val server = HttpServer(assets, Config.HTTP_PORT, ::onWebSocket, ::statusJson)
-        server.onAccept = { remote, local -> log("accept $remote → $local") }
-        try {
-            server.start()
-            http = server
-            running = true
-            log("HTTP 서버 시작: http://${Config.TUN_ADDRESS}:${Config.HTTP_PORT} (빌드 ${com.carcast.BuildConfig.GIT_SHA})")
-            // If the tun came up before us (service restart), protect the fresh listener now.
-            CarVpnService.instance?.takeIf { CarVpnService.state == CarVpnService.State.UP }?.let { protectListener(it) }
-        } catch (e: IOException) {
-            log("HTTP 서버 실패: $e")
-            return
-        }
-        // Until the shell server exists (M4), stream the bundled test clip if present.
-        if (assets.list("clips")?.contains(TEST_CLIP) == true) {
-            clip = ClipSource(assets, "clips/$TEST_CLIP", videoHub).also { it.start() }
-            log("테스트 클립 송출: $TEST_CLIP")
+        if (serverInApp) {
+            val s = StreamSession(AssetManagerAssets(assets), Config.HTTP_PORT, "app") { mapOf("vpn" to CarVpnService.state.name, "address" to Config.TUN_ADDRESS) }
+            s.onEvent = ::log
+            try {
+                s.start(); inApp = s
+            } catch (e: IOException) {
+                log("앱 내장 서버 실패: $e (shell 서버가 이미 3333을 쓰고 있나요?)")
+            }
         } else {
-            log("테스트 클립 없음 (assets/clips/$TEST_CLIP)")
+            log("shell 서버를 기다리는 중 — PC에서: ${shellCommand()}")
         }
-    }
-
-    /** Called by CarVpnService once the tun is up; see HttpServer.protectWith. */
-    fun protectListener(vpn: VpnService) {
-        val ok = http?.protectWith(vpn) ?: false
-        log("리스너 VPN 보호(protect) → $ok")
-        log("리스너 local_network(99) 바인드 → ${http?.bindToLocalNetwork()}")
+        watcher = Thread({ watchShellServer() }, "shell-watch").apply { isDaemon = true; start() }
     }
 
     private fun stopSession() {
-        clip?.stop(); clip = null
-        videoHub.closeAll()
-        audioHub.closeAll()
-        for (c in controlClients) c.close()
-        controlClients.clear()
-        http?.stop(); http = null
-        startService(Intent(this, CarVpnService::class.java).setAction(CarVpnService.ACTION_STOP))
+        if (!running) return
         running = false
+        watcher?.interrupt(); watcher = null
+        inApp?.stop(); inApp = null
+        startService(Intent(this, CarVpnService::class.java).setAction(CarVpnService.ACTION_STOP))
+        shellStatus = null
         log("세션 종료")
     }
 
-    private fun onWebSocket(path: String, query: Map<String, String>, conn: WebSocketConnection): Boolean {
-        return when (path) {
-            "/ws/video" -> { videoHub.attach(conn); log("video 클라이언트 접속 (${videoHub.clientCount})"); true }
-            "/ws/audio" -> { audioHub.attach(conn); true }
-            "/ws/control" -> {
-                controlClients += conn
-                conn.listener = object : WebSocketConnection.Listener {
-                    override fun onBinary(conn: WebSocketConnection, data: ByteArray) { onControl(data) }
-                    override fun onText(conn: WebSocketConnection, text: String) {}
-                    override fun onClose(conn: WebSocketConnection) { controlClients.remove(conn) }
-                }
-                conn.sendText(statusJson())
-                true
-            }
-            else -> false
+    /** Polls the local port so the screen shows whether the shell server (or the in-app one) is answering. */
+    private fun watchShellServer() {
+        var wasUp = false
+        while (running && !Thread.currentThread().isInterrupted) {
+            val s = try {
+                val c = URL("http://127.0.0.1:${Config.HTTP_PORT}/api/status").openConnection() as HttpURLConnection
+                c.connectTimeout = 1000; c.readTimeout = 1000
+                c.inputStream.use { String(it.readBytes()) }
+            } catch (_: Exception) { null }
+            shellStatus = s
+            val up = s != null
+            if (up != wasUp) log(if (up) "서버 응답 확인: ${s?.take(120)}" else "서버 응답 없음 (127.0.0.1:${Config.HTTP_PORT})")
+            wasUp = up
+            try { Thread.sleep(2000) } catch (_: InterruptedException) { return }
         }
     }
-
-    private fun onControl(data: ByteArray) {
-        // M5 wires this into the shell server. For now count it so /diag and the UI show activity.
-        if (data.isNotEmpty()) {
-            controlPackets++
-            if (controlPackets % 50 == 1L) log("control 패킷 ${controlPackets}개 (kind=${data[0]})")
-        }
-    }
-
-    private fun statusJson(): String = JSONObject().apply {
-        put("type", "status")
-        put("running", running)
-        put("vpn", CarVpnService.state.name)
-        put("address", Config.TUN_ADDRESS)
-        put("port", Config.HTTP_PORT)
-        put("videoClients", videoHub.clientCount)
-        put("controlClients", controlClients.size)
-        put("controlPackets", controlPackets)
-        put("source", if (clip != null) "clip" else "none")
-        put("width", 1280)
-        put("height", 720)
-    }.toString()
 
     private fun buildNotification(): Notification {
         val open = PendingIntent.getActivity(
@@ -154,8 +115,12 @@ class StreamService : Service() {
 
     override fun onDestroy() {
         stopSession()
-        if (instance === this) instance = null
         super.onDestroy()
+    }
+
+    /** Bundled assets through the app's AssetManager (the shell server reads the APK zip instead). */
+    private class AssetManagerAssets(private val am: AssetManager) : Assets {
+        override fun open(path: String): InputStream? = try { am.open(path) } catch (_: IOException) { null }
     }
 
     companion object {
@@ -163,16 +128,21 @@ class StreamService : Service() {
         private const val NOTIF_ID = 1
         const val ACTION_STOP = "com.carcast.service.STOP"
         const val EXTRA_USE_VPN = "useVpn"
+        const val EXTRA_SERVER_IN_APP = "serverInApp"
+
         @Volatile var useVpn = true
             private set
-        const val TEST_CLIP = "test-720p30.cmp4"
-
-        @Volatile var instance: StreamService? = null
+        @Volatile var serverInApp = false
             private set
         @Volatile var running = false
             private set
-        @Volatile var controlPackets = 0L
+        /** Last /api/status body from 127.0.0.1:3333, null when nothing answers. */
+        @Volatile var shellStatus: String? = null
             private set
+
+        /** The exact command to start the shell server from a PC until the app launches it itself (M3). */
+        fun shellCommand(): String =
+            "adb shell 'CLASSPATH=\$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server ${BuildConfig.GIT_SHA} port=${Config.HTTP_PORT}'"
 
         /** Simple in-memory log the activity polls; good enough until a real log view exists. */
         val logLines = java.util.concurrent.ConcurrentLinkedDeque<String>()

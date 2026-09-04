@@ -11,6 +11,7 @@ on:
       - 'app/**'
       - 'adb/**'
       - 'shell-server/**'
+      - 'core/**'
       - 'mux/**'
       - 'tools/clips/assets/**'
       - 'gradle/**'
@@ -23,6 +24,7 @@ on:
       - 'app/**'
       - 'adb/**'
       - 'shell-server/**'
+      - 'core/**'
       - 'mux/**'
       - 'tools/clips/assets/**'
       - 'gradle/**'
@@ -58,8 +60,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Unit tests (mux, app, adb)
-        run: ./gradlew :mux:test :app:testDebugUnitTest :adb:testDebugUnitTest --stacktrace
+      - name: Unit tests (core, mux, app, adb)
+        run: ./gradlew :core:test :mux:test :app:testDebugUnitTest :adb:testDebugUnitTest --stacktrace
 
       - name: Assemble debug APK (bundles the web client)
         run: ./gradlew :app:assembleDebug --stacktrace
