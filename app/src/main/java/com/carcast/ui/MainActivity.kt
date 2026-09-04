@@ -24,6 +24,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toggle: Button
     private lateinit var log: TextView
     private lateinit var selfTest: Button
+    private lateinit var useVpn: android.widget.CheckBox
     private val handler = Handler(Looper.getMainLooper())
 
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -38,6 +39,7 @@ class MainActivity : AppCompatActivity() {
         toggle = findViewById(R.id.toggle)
         log = findViewById(R.id.log)
         selfTest = findViewById(R.id.selftest)
+        useVpn = findViewById(R.id.use_vpn)
         selfTest.setOnClickListener {
             StreamService.log("self-test 시작 (인터페이스: ${SelfTest.interfaces().joinToString { "${it.name}=${it.address}" }})")
             SelfTest.run(StreamService::log)
@@ -51,15 +53,21 @@ class MainActivity : AppCompatActivity() {
             if (StreamService.running) {
                 startService(Intent(this, StreamService::class.java).setAction(StreamService.ACTION_STOP))
             } else {
-                // VpnService.prepare returns an intent the first time; null means consent already given.
-                val consent = VpnService.prepare(this)
-                if (consent != null) vpnConsent.launch(consent) else startSession()
+                if (!useVpn.isChecked) {
+                    startSession()
+                } else {
+                    // VpnService.prepare returns an intent the first time; null means consent already given.
+                    val consent = VpnService.prepare(this)
+                    if (consent != null) vpnConsent.launch(consent) else startSession()
+                }
             }
         }
     }
 
     private fun startSession() {
-        startForegroundService(Intent(this, StreamService::class.java))
+        startForegroundService(
+            Intent(this, StreamService::class.java).putExtra(StreamService.EXTRA_USE_VPN, useVpn.isChecked)
+        )
     }
 
     private val refresh = object : Runnable {

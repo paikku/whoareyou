@@ -23,6 +23,13 @@
         android:fontFamily="monospace"
         android:layout_marginBottom="24dp" />
 
+    <CheckBox
+        android:id="@+id/use_vpn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:checked="true"
+        android:text="@string/use_vpn" />
+
     <Button
         android:id="@+id/toggle"
         android:layout_width="match_parent"

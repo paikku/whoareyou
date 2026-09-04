@@ -39,6 +39,7 @@ class StreamService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        useVpn = intent?.getBooleanExtra(EXTRA_USE_VPN, true) ?: true
         startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         startSession()
         return START_STICKY
@@ -46,7 +47,7 @@ class StreamService : Service() {
 
     private fun startSession() {
         if (http != null) return
-        startService(Intent(this, CarVpnService::class.java))
+        if (useVpn) startService(Intent(this, CarVpnService::class.java)) else log("VPN 없이 시작 (핫스팟 주소로만 접속 가능)")
         val server = HttpServer(assets, Config.HTTP_PORT, ::onWebSocket, ::statusJson)
         try {
             server.start()
@@ -144,6 +145,9 @@ class StreamService : Service() {
         private const val TAG = "StreamService"
         private const val NOTIF_ID = 1
         const val ACTION_STOP = "com.carcast.service.STOP"
+        const val EXTRA_USE_VPN = "useVpn"
+        @Volatile var useVpn = true
+            private set
         const val TEST_CLIP = "test-720p30.cmp4"
 
         @Volatile var running = false

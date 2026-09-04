@@ -3,6 +3,7 @@
     <string name="start">시작</string>
     <string name="stop">중지</string>
     <string name="selftest">네트워크 자가 테스트</string>
+    <string name="use_vpn">가짜 IP(100.99.9.9) 사용 — 끄면 핫스팟 주소로만 접속</string>
     <string name="status_idle">대기 중</string>
     <string name="notif_channel">CarCast 스트리밍</string>
     <string name="notif_title">CarCast 실행 중</string>
