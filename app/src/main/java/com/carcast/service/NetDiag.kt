@@ -11,6 +11,8 @@ import java.util.concurrent.TimeUnit
  * from a single text: ip rules (VPN uid ranges, prohibit rules), every route table, addresses,
  * and the two sysctls that decide how replies to hotspot clients are routed.
  * Everything is read through the public `ip` binary or plain files; no root, no adb.
+ * On Android 16 (One UI 8) SELinux denies both to apps (netlink bind, /proc/sys), so the dump
+ * says so and lists the adb commands that give the same picture from the shell uid.
  */
 object NetDiag {
     fun dump(): String = buildString {
@@ -23,6 +25,12 @@ object NetDiag {
         section("ip route show table all", "ip", "route", "show", "table", "all")
         section("ip -4 addr", "ip", "-4", "addr")
         section("ip -6 route show table all (short)", "sh", "-c", "ip -6 route show table all | head -60")
+        appendLine()
+        appendLine("### if the sections above are 'Permission denied', run from a PC with adb:")
+        appendLine("adb shell ip rule")
+        appendLine("adb shell ip route show table all")
+        appendLine("adb shell cat /proc/sys/net/ipv4/tcp_fwmark_accept /proc/sys/net/ipv4/fwmark_reflect")
+        appendLine("adb shell ss -tan   # while the laptop connects: SYN-RECV on :${Config.HTTP_PORT} = SYN arrived, reply lost")
     }
 
     /** The lines of `ip rule` worth putting in the on-screen log: VPN, prohibit and local-network rules. */

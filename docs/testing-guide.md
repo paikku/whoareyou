@@ -110,11 +110,16 @@ APK를 새로 올릴 필요가 있을 때만 온다. 순서:
 5. 노트북 Chrome에서 `http://100.99.9.9:3333/` 열어 눈으로 확인. 이때 노트북도 Chrome 148이면 차와 거의 같은 조건이다.
 6. 결과를 `docs/car-tests/` 에 기록.
 
-**100.99.9.9가 안 될 때 (핫스팟 주소는 되는데 tun 주소만 timeout):** 앱 화면의
-"라우팅 진단 공유" 버튼을 누르면 `ip rule`, `ip route show table all`, sysctl 값, 앱 로그를 한 텍스트로
-묶어 공유 시트가 열린다. 이걸 그대로 전달하면 어떤 정책 라우팅 규칙이 SYN-ACK를 막는지 알 수 있다.
-앱 상단의 `(빌드 xxxxxxx)`가 지금 설치된 git 커밋이니, 새 APK를 올렸는지 먼저 확인한다.
-adb가 되면 같은 정보를 `adb shell ip rule; adb shell ip route show table all` 로도 얻을 수 있다.
+**100.99.9.9가 안 될 때 (핫스팟 주소는 되는데 tun 주소만 timeout):** 앱 상단의 `(빌드 xxxxxxx)`로
+새 APK가 맞는지 먼저 확인한다. "라우팅 진단 공유" 버튼은 앱 로그를 묶어 주지만, One UI 8은 앱의
+`ip rule`/`/proc/sys` 읽기를 SELinux로 막으므로 라우팅 규칙은 PC에서 adb로 본다 (폰: 설정 → 개발자 옵션 →
+USB 디버깅, USB 연결 후 폰에서 허용):
+```bash
+adb shell ip rule                      # VPN uid 범위, prohibit/unreachable 규칙
+adb shell ip route show table all      # local_network 테이블에 핫스팟 서브넷이 있는지
+adb shell cat /proc/sys/net/ipv4/tcp_fwmark_accept /proc/sys/net/ipv4/fwmark_reflect
+adb shell ss -tan | grep 3333          # 노트북이 접속 시도하는 동안: SYN-RECV면 SYN은 왔고 응답이 사라진 것
+```
 
 **M0 (코드 없이, 가장 먼저 한 번):** 노트북에 stock scrcpy 4.1을 깔고 `docs/car-tests/s26u-one-ui-8.md` 의 표를 채운다. 이게 M4 설정값을 결정한다.
 

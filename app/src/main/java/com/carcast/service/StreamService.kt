@@ -80,6 +80,7 @@ class StreamService : Service() {
     fun protectListener(vpn: VpnService) {
         val ok = http?.protectWith(vpn) ?: false
         log("리스너 VPN 보호(protect) → $ok")
+        log("리스너 local_network(99) 바인드 → ${http?.bindToLocalNetwork()}")
     }
 
     private fun stopSession() {

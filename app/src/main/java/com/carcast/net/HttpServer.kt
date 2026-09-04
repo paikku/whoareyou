@@ -55,6 +55,31 @@ class HttpServer(
         return try { s.withRawFd { vpn.protect(it) } } catch (e: Exception) { Log.w(TAG, "protect failed", e); false }
     }
 
+    /**
+     * Binds the listener to Android's tethering "local network" (netd LOCAL_NET_ID = 99), the
+     * routing table that holds the hotspot subnet. Incoming hotspot packets are marked with this
+     * netId, and the kernel's ICMP echo replies (which inherit that mark) do reach hotspot clients;
+     * giving our listener the same mark makes SYN-ACKs and accepted sockets route identically.
+     * Not an SDK-blessed use of Network, so failure is expected on some builds: returns the error.
+     */
+    fun bindToLocalNetwork(): String {
+        val s = server ?: return "no listener"
+        return try {
+            // Network(int) is not public; Network.CREATOR is, and the parcel form is just the netId.
+            val parcel = android.os.Parcel.obtain()
+            val net = try {
+                parcel.writeInt(LOCAL_NET_ID)
+                parcel.setDataPosition(0)
+                android.net.Network.CREATOR.createFromParcel(parcel)
+            } finally { parcel.recycle() }
+            net.bindSocket(s.fd)
+            "ok (netId=${net.networkHandle shr 32})"
+        } catch (e: Exception) {
+            val cause = e.cause ?: e
+            "${cause.javaClass.simpleName}: ${cause.message}"
+        }
+    }
+
     private fun acceptLoop(s: TcpListener) {
         while (running) {
             val client = try { s.accept() } catch (e: IOException) { if (running) Log.w(TAG, "accept: $e"); break }
@@ -114,5 +139,7 @@ class HttpServer(
 
     companion object {
         private const val TAG = "HttpServer"
+        /** netd's INetd.LOCAL_NET_ID: the network that tethered interfaces (swlan0, ap0) belong to. */
+        private const val LOCAL_NET_ID = 99
     }
 }
