@@ -17,12 +17,25 @@ android {
         buildConfigField("String", "SERVER_BUILD_ID", "\"${versionName}-${System.currentTimeMillis() / 1000}\"")
     }
 
+    // A fixed debug key committed to the repo so every CI build carries the same signature
+    // and the APK can be installed over a previous build without uninstalling.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
