@@ -47,6 +47,6 @@ public final class Server {
             extra.put("uid", uid);
             extra.put("build", BuildConfig.SERVER_BUILD_ID);
             return extra;
-        }, true);
+        }, !opts.getDaemon());
     }
 }

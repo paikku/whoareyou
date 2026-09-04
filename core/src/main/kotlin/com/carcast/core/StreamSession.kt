@@ -42,7 +42,10 @@ class StreamSession(
     fun start() {
         if (running) return
         val server = HttpServer(assets, port, ::onWebSocket, ::statusJson)
-        server.onAccept = { remote, local -> event("accept $remote → $local") }
+        // The app polls /api/status over loopback every 2 s; only remote (car/laptop) connections are events.
+        server.onAccept = { remote, local ->
+            if (remote.startsWith("127.")) Log.d(TAG, "accept $remote → $local") else event("accept $remote → $local")
+        }
         server.start()
         http = server
         running = true

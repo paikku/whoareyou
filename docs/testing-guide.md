@@ -117,6 +117,13 @@ APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 
 6. 노트북 Chrome에서 `http://100.99.9.9:3333/` 열어 눈으로 확인. 이때 노트북도 Chrome 148이면 차와 거의 같은 조건이다.
 7. 결과를 `docs/car-tests/` 에 기록.
 
+**PC 없이 차에서 쓸 때 (M3 전):** 서버를 adb 창과 분리해 띄워 두고 USB를 뽑는다. 종료는 `pkill`.
+```powershell
+adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) setsid nohup app_process / com.carcast.server.Server <빌드 sha> port=3333 daemon=true >/dev/null 2>&1 &'
+adb shell 'pkill -f com.carcast.server.Server'      # 끝낼 때
+```
+앱 화면의 "서버:" 줄이 `응답 중 shell uid=2000`이면 살아 있는 것이다. 폰을 재부팅하면 사라진다.
+
 **안 될 때:** 서버 로그(adb 창)에 `accept 10.136.x.x:port → 100.99.9.9:3333`이 찍히는지 본다. 안 찍히면 SYN이
 안 온 것이고, 아래로 폰 쪽을 본다. 앱은 `ip`/`/proc/sys` 읽기가 SELinux로 막혀 있어 adb에서만 볼 수 있다.
 ```bash

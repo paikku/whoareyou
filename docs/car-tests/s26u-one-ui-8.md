@@ -17,6 +17,15 @@ scrcpy 버전: 4.1
 | 7 | `--new-display` 만 (system decorations 켠 채) | DeX 런처 노출 여부: |
 | 8 | `adb shell "CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 4.1 tunnel_forward=true new_display=1280x720/160 audio=false"` | 단독 기동: / 에러 로그: |
 
+## 네트워크 (가정 1) — 2026-09-04, 빌드 75ff76a
+
+| 항목 | 결과 |
+|---|---|
+| 앱 uid 소켓, 핫스팟 노트북 → 100.99.9.9:3333 | ✗ SYN이 리스너 전에 소멸 (ListenDrops 불변, SYN-RECV 없음). ping·lo·핫스팟 주소는 ✓ |
+| shell uid(2000) 소켓, 같은 조건 | ✓ `nc -l` 접속, `com.carcast.server.Server`로 /api/status·영상·control 모두 ✓ |
+| 원인 | Android 14+ netd ingress-discard (VPN 주소 + 비VPN 인터페이스 + 앱 uid). `ip rule`은 정상 |
+| 차(2026.26)에서 /diag | (미실시) |
+
 ## 결정
 - 오디오 소스 (`output` / `playback`):
 - `vd_system_decorations` 값:

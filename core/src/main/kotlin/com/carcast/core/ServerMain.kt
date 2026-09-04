@@ -11,12 +11,17 @@ import java.io.File
  *  - apk=<path>         where to read the web client and clips from; defaults to the CLASSPATH
  *                       environment variable, which app_process sets to the APK path
  *  - assets=<dir>       alternative to apk= for development (e.g. app/src/main/assets)
+ *  - daemon=true        do not watch stdin; run until killed (pkill -f com.carcast.server.Server).
+ *                       For car tests without a PC in the car:
+ *                       adb shell 'CLASSPATH=... setsid nohup app_process / com.carcast.server.Server <sha> daemon=true >/dev/null 2>&1 &'
  *
- * The process stays alive until stdin reaches EOF, which is how the app (or an interactive
- * `adb shell`) tears it down: closing the adb stream kills the server. That is the kill switch.
+ * By default the process stays alive until stdin reaches EOF, which is how the app (or an
+ * interactive `adb shell`) tears it down: closing the adb stream kills the server. That is the kill switch.
  */
 object ServerMain {
-    class Options(val port: Int, val assets: Assets, val buildId: String, val raw: Map<String, String>)
+    class Options(val port: Int, val assets: Assets, val buildId: String, val raw: Map<String, String>) {
+        val daemon: Boolean get() = raw["daemon"] == "true"
+    }
 
     fun parse(args: Array<String>): Options {
         require(args.isNotEmpty()) { "usage: <build-id> [key=value ...]" }
@@ -38,7 +43,7 @@ object ServerMain {
     }
 
     /** Runs a session until stdin closes (or [stopOnStdinEof] is false and the thread is interrupted). */
-    fun run(opts: Options, extraStatus: () -> Map<String, Any?> = { emptyMap() }, stopOnStdinEof: Boolean = true) {
+    fun run(opts: Options, extraStatus: () -> Map<String, Any?> = { emptyMap() }, stopOnStdinEof: Boolean = !opts.daemon) {
         val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus)
         session.start()
         println("carcast-server ready build=${opts.buildId} port=${opts.port}")
