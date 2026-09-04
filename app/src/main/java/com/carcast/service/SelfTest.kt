@@ -29,11 +29,14 @@ object SelfTest {
                 val r = probe(host)
                 log("self-test $host:${Config.HTTP_PORT} → $r")
             }
+            log("self-test 인터넷(gstatic 204) → ${probeUrl("http://connectivitycheck.gstatic.com/generate_204")}")
         }.apply { isDaemon = true }.start()
     }
 
-    private fun probe(host: String): String = try {
-        val c = URL("http://$host:${Config.HTTP_PORT}/api/status").openConnection() as HttpURLConnection
+    private fun probe(host: String): String = probeUrl("http://$host:${Config.HTTP_PORT}/api/status")
+
+    private fun probeUrl(url: String): String = try {
+        val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 3000
         c.readTimeout = 3000
         val code = c.responseCode
