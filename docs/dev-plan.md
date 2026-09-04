@@ -143,3 +143,4 @@ M1(스캐폴드·VPN/HTTP·CI·이 컨테이너에서 APK 빌드 통과) + M2(�
 - 세션/CI: `./gradlew assembleDebug test` 통과, Playwright(Chrome 148 프로필) 녹색, `Fmp4Writer` 산출물 ffprobe 검증.
 - 폰: 핫스팟 노트북 `curl`, Playwright를 폰 주소로 실행, 페어링→uid 2000→VD 생성 표시.
 - 차: 펌웨어별 `/diag` 체크리스트(URL 열림, 192.168 차단, WS 성공률, fps, 지연, 오디오 재생) → `docs/car-tests/<firmware>.md`.
+- **지금까지의 결과(가정별 ✅/⏳)는 [verification-log.md](verification-log.md)에 모은다.** 이 문서는 계획, 그쪽은 결과.
