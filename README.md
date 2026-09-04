@@ -4,6 +4,7 @@
 
 - 설계 제안: [docs/implementation-proposal.md](docs/implementation-proposal.md)
 - 개발 계획(마일스톤 M0~M9): [docs/dev-plan.md](docs/dev-plan.md)
+- **테스트 가이드(어디서 무엇을): [docs/testing-guide.md](docs/testing-guide.md)**
 - 실차/실기기 테스트 기록: [docs/car-tests/](docs/car-tests/)
 
 ## 현재 상태 (M1 + M2)

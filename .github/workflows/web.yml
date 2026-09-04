@@ -1,9 +1,25 @@
 name: web
 
+# Light (about 2 minutes): runs whenever the web client, fake phone, clips or e2e tests change.
 on:
+  workflow_dispatch:
   push:
     branches: ['**']
+    paths:
+      - 'web/**'
+      - 'tools/**'
+      - 'tests/e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/web.yml'
   pull_request:
+    paths:
+      - 'web/**'
+      - 'tools/**'
+      - 'tests/e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/web.yml'
 
 concurrency:
   group: web-${{ github.ref }}

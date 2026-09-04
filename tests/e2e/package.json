@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
-    "install-chrome": "puppeteer-browsers install chrome@148 --path ./.cache"
+    "install-chrome": "puppeteer-browsers install chrome@148 --path ./.cache",
+    "test:quick": "playwright test --project=tesla-dpr1 tests/diag.spec.ts tests/stream.spec.ts tests/input.spec.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
