@@ -44,6 +44,14 @@
         android:layout_marginTop="8dp"
         android:text="@string/selftest" />
 
+    <Button
+        android:id="@+id/netdiag"
+        style="?attr/materialButtonOutlinedStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/netdiag" />
+
     <TextView
         android:id="@+id/log"
         android:layout_width="match_parent"

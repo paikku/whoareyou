@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.VpnService
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -33,6 +34,11 @@ class StreamService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopSession()
@@ -54,7 +60,9 @@ class StreamService : Service() {
             server.start()
             http = server
             running = true
-            log("HTTP 서버 시작: http://${Config.TUN_ADDRESS}:${Config.HTTP_PORT}")
+            log("HTTP 서버 시작: http://${Config.TUN_ADDRESS}:${Config.HTTP_PORT} (빌드 ${com.carcast.BuildConfig.GIT_SHA})")
+            // If the tun came up before us (service restart), protect the fresh listener now.
+            CarVpnService.instance?.takeIf { CarVpnService.state == CarVpnService.State.UP }?.let { protectListener(it) }
         } catch (e: IOException) {
             log("HTTP 서버 실패: $e")
             return
@@ -66,6 +74,12 @@ class StreamService : Service() {
         } else {
             log("테스트 클립 없음 (assets/clips/$TEST_CLIP)")
         }
+    }
+
+    /** Called by CarVpnService once the tun is up; see HttpServer.protectWith. */
+    fun protectListener(vpn: VpnService) {
+        val ok = http?.protectWith(vpn) ?: false
+        log("리스너 VPN 보호(protect) → $ok")
     }
 
     private fun stopSession() {
@@ -139,6 +153,7 @@ class StreamService : Service() {
 
     override fun onDestroy() {
         stopSession()
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
@@ -151,6 +166,8 @@ class StreamService : Service() {
             private set
         const val TEST_CLIP = "test-720p30.cmp4"
 
+        @Volatile var instance: StreamService? = null
+            private set
         @Volatile var running = false
             private set
         @Volatile var controlPackets = 0L

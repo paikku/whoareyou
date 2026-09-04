@@ -3,6 +3,13 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+fun gitSha(): String {
+    System.getenv("GITHUB_SHA")?.takeIf { it.length >= 7 }?.let { return it.substring(0, 7) }
+    return runCatching {
+        providers.exec { commandLine("git", "rev-parse", "--short=7", "HEAD") }.standardOutput.asText.get().trim()
+    }.getOrDefault("dev")
+}
+
 android {
     namespace = "com.carcast"
     compileSdk = 36
@@ -15,6 +22,8 @@ android {
         versionName = "0.1.0"
         // Passed to the shell server on launch; the server refuses a mismatched id.
         buildConfigField("String", "SERVER_BUILD_ID", "\"${versionName}-${System.currentTimeMillis() / 1000}\"")
+        // Short git sha shown in the app so a screenshot tells us which build is running.
+        buildConfigField("String", "GIT_SHA", "\"${gitSha()}\"")
     }
 
     // A fixed debug key committed to the repo so every CI build carries the same signature

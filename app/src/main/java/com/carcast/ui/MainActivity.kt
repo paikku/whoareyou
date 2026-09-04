@@ -12,8 +12,10 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.carcast.BuildConfig
 import com.carcast.Config
 import com.carcast.R
+import com.carcast.service.NetDiag
 import com.carcast.service.SelfTest
 import com.carcast.service.StreamService
 import com.carcast.vpn.CarVpnService
@@ -24,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toggle: Button
     private lateinit var log: TextView
     private lateinit var selfTest: Button
+    private lateinit var netDiag: Button
     private lateinit var useVpn: android.widget.CheckBox
     private val handler = Handler(Looper.getMainLooper())
 
@@ -39,6 +42,8 @@ class MainActivity : AppCompatActivity() {
         toggle = findViewById(R.id.toggle)
         log = findViewById(R.id.log)
         selfTest = findViewById(R.id.selftest)
+        netDiag = findViewById(R.id.netdiag)
+        netDiag.setOnClickListener { shareDiagnostics() }
         useVpn = findViewById(R.id.use_vpn)
         selfTest.setOnClickListener {
             StreamService.log("self-test 시작 (인터페이스: ${SelfTest.interfaces().joinToString { "${it.name}=${it.address}" }})")
@@ -64,6 +69,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Collects routing rules, tables, sysctls and the app log into one text and opens the share
+     * sheet, so the whole picture can be pasted into a chat instead of typed from a screenshot.
+     * A short summary (VPN/prohibit rules, sysctls) also goes into the on-screen log.
+     */
+    private fun shareDiagnostics() {
+        netDiag.isEnabled = false
+        Thread {
+            val summary = runCatching { NetDiag.summary() }.getOrElse { listOf("진단 실패: $it") }
+            for (l in summary) StreamService.log("netdiag $l")
+            val text = runCatching { NetDiag.dump() }.getOrElse { "dump failed: $it" } +
+                "\n### app log\n" + StreamService.logLines.joinToString("\n")
+            runOnUiThread {
+                netDiag.isEnabled = true
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, "CarCast netdiag ${BuildConfig.GIT_SHA}")
+                    .putExtra(Intent.EXTRA_TEXT, text)
+                startActivity(Intent.createChooser(send, getString(R.string.netdiag)))
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
     private fun startSession() {
         startForegroundService(
             Intent(this, StreamService::class.java).putExtra(StreamService.EXTRA_USE_VPN, useVpn.isChecked)
@@ -75,7 +102,8 @@ class MainActivity : AppCompatActivity() {
             val running = StreamService.running
             toggle.text = getString(if (running) R.string.stop else R.string.start)
             status.text = buildString {
-                append(if (running) "실행 중" else getString(R.string.status_idle)).append('\n')
+                append(if (running) "실행 중" else getString(R.string.status_idle))
+                append("  (빌드 ").append(BuildConfig.GIT_SHA).append(")\n")
                 append("tun: ").append(CarVpnService.state.name).append('\n')
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")

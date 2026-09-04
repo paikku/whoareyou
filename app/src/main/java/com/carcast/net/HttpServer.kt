@@ -4,10 +4,8 @@ import android.content.res.AssetManager
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import android.net.VpnService
 import java.io.IOException
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
 import java.util.concurrent.Executors
 
 /**
@@ -25,7 +23,7 @@ class HttpServer(
         fun onWebSocket(path: String, query: Map<String, String>, conn: WebSocketConnection): Boolean
     }
 
-    private var server: ServerSocket? = null
+    private var server: TcpListener? = null
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "http").apply { isDaemon = true } }
     @Volatile private var running = false
     /** Called once per accepted TCP connection (after the 3-way handshake) with remote and local addresses. */
@@ -33,9 +31,7 @@ class HttpServer(
 
     @Throws(IOException::class)
     fun start() {
-        val s = ServerSocket()
-        s.reuseAddress = true
-        s.bind(InetSocketAddress("0.0.0.0", port), 16)
+        val s = TcpListener(port)
         server = s
         running = true
         Thread({ acceptLoop(s) }, "http-accept").apply { isDaemon = true }.start()
@@ -44,29 +40,39 @@ class HttpServer(
 
     fun stop() {
         running = false
-        try { server?.close() } catch (_: IOException) {}
+        server?.close()
         server = null
         pool.shutdownNow()
     }
 
-    private fun acceptLoop(s: ServerSocket) {
+    /**
+     * Marks the listening socket "protected from VPN" so the kernel routes our SYN-ACKs and every
+     * accepted connection like a non-VPN app's traffic even while our own tun is up. Must be called
+     * by the VpnService that owns the tun. Returns false when there is no listener or protect() failed.
+     */
+    fun protectWith(vpn: VpnService): Boolean {
+        val s = server ?: return false
+        return try { s.withRawFd { vpn.protect(it) } } catch (e: Exception) { Log.w(TAG, "protect failed", e); false }
+    }
+
+    private fun acceptLoop(s: TcpListener) {
         while (running) {
             val client = try { s.accept() } catch (e: IOException) { if (running) Log.w(TAG, "accept: $e"); break }
-            onAccept?.invoke("${client.inetAddress.hostAddress}:${client.port}", "${client.localAddress.hostAddress}:${client.localPort}")
+            onAccept?.invoke(client.remote, client.local)
             pool.execute { handle(client) }
         }
     }
 
-    private fun handle(socket: Socket) {
+    private fun handle(socket: TcpConn) {
         try {
-            socket.tcpNoDelay = true
-            socket.soTimeout = 15_000
-            val input = BufferedInputStream(socket.getInputStream(), 8192)
-            val output = BufferedOutputStream(socket.getOutputStream(), 64 * 1024)
+            socket.setTcpNoDelay(true)
+            socket.readTimeoutMs = 15_000
+            val input = BufferedInputStream(socket.input, 8192)
+            val output = BufferedOutputStream(socket.output, 64 * 1024)
             val req = HttpRequest.parse(input) ?: run { socket.close(); return }
 
             if (req.isWebSocketUpgrade) {
-                socket.soTimeout = 0
+                socket.readTimeoutMs = 0
                 WebSocketConnection.handshake(req, output)
                 val conn = WebSocketConnection(socket, input, output, queueCapacity = 64)
                 if (!wsHandler.onWebSocket(req.path, req.query, conn)) {
@@ -87,7 +93,7 @@ class HttpServer(
             socket.close()
         } catch (e: IOException) {
             Log.d(TAG, "connection: $e")
-            try { socket.close() } catch (_: IOException) {}
+            socket.close()
         }
     }
 

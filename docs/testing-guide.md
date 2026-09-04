@@ -110,6 +110,12 @@ APK를 새로 올릴 필요가 있을 때만 온다. 순서:
 5. 노트북 Chrome에서 `http://100.99.9.9:3333/` 열어 눈으로 확인. 이때 노트북도 Chrome 148이면 차와 거의 같은 조건이다.
 6. 결과를 `docs/car-tests/` 에 기록.
 
+**100.99.9.9가 안 될 때 (핫스팟 주소는 되는데 tun 주소만 timeout):** 앱 화면의
+"라우팅 진단 공유" 버튼을 누르면 `ip rule`, `ip route show table all`, sysctl 값, 앱 로그를 한 텍스트로
+묶어 공유 시트가 열린다. 이걸 그대로 전달하면 어떤 정책 라우팅 규칙이 SYN-ACK를 막는지 알 수 있다.
+앱 상단의 `(빌드 xxxxxxx)`가 지금 설치된 git 커밋이니, 새 APK를 올렸는지 먼저 확인한다.
+adb가 되면 같은 정보를 `adb shell ip rule; adb shell ip route show table all` 로도 얻을 수 있다.
+
 **M0 (코드 없이, 가장 먼저 한 번):** 노트북에 stock scrcpy 4.1을 깔고 `docs/car-tests/s26u-one-ui-8.md` 의 표를 채운다. 이게 M4 설정값을 결정한다.
 
 ### C. 실차

@@ -5,6 +5,7 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.carcast.Config
+import com.carcast.service.StreamService
 
 /**
  * Not a VPN in any meaningful sense: it only attaches [Config.TUN_ADDRESS] to the phone.
@@ -18,6 +19,9 @@ import com.carcast.Config
  *    clients and every other app's internet. A bypassable VPN has no such rule.
  *  - addDisallowedApplication(self): our own sockets are never subject to the VPN at all,
  *    so replies sourced from 100.99.9.9 are routed like any normal app's packets.
+ *  - protect(listener): belt and braces. The listening socket carries the "protected from VPN"
+ *    mark, which the kernel copies onto SYN-ACKs and accepted sockets (tcp_fwmark_accept), so
+ *    even a firmware that ignores the exclusion routes our replies past every VPN rule.
  */
 class CarVpnService : VpnService() {
 
@@ -53,6 +57,7 @@ class CarVpnService : VpnService() {
             tun = builder.establish()
             state = if (tun != null) State.UP else State.ERROR
             Log.i(TAG, "tun ${Config.TUN_ADDRESS}/${Config.TUN_PREFIX} state=$state")
+            if (tun != null) StreamService.instance?.protectListener(this)
         } catch (e: Exception) {
             state = State.ERROR
             Log.e(TAG, "establish failed", e)
@@ -65,6 +70,11 @@ class CarVpnService : VpnService() {
         state = State.DOWN
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
     override fun onRevoke() {
         closeTun()
         super.onRevoke()
@@ -72,6 +82,7 @@ class CarVpnService : VpnService() {
 
     override fun onDestroy() {
         closeTun()
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
@@ -83,6 +94,11 @@ class CarVpnService : VpnService() {
 
         @Volatile
         var state: State = State.DOWN
+            private set
+
+        /** Live service while the tun is being managed; StreamService uses it to protect its listener. */
+        @Volatile
+        var instance: CarVpnService? = null
             private set
     }
 }
