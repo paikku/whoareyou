@@ -1,0 +1,14 @@
+{
+  "name": "carcast-workspace",
+  "private": true,
+  "workspaces": [
+    "web",
+    "tools/fake-phone",
+    "tests/e2e"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace web",
+    "fake-phone": "npm start --workspace tools/fake-phone",
+    "e2e": "npm test --workspace tests/e2e"
+  }
+}

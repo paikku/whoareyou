@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">CarCast</string>
+    <string name="start">시작</string>
+    <string name="stop">중지</string>
+    <string name="status_idle">대기 중</string>
+    <string name="notif_channel">CarCast 스트리밍</string>
+    <string name="notif_title">CarCast 실행 중</string>
+    <string name="notif_text">차량 브라우저에서 http://%1$s:%2$d 을 여세요</string>
+</resources>

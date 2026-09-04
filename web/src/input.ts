@@ -1,0 +1,84 @@
+// Pointer events on the stage -> normalised touch packets. Coordinates are relative to the
+// rendered video area (object-fit: contain letterboxing is taken into account).
+import { TouchAction, encodeTouch } from './protocol';
+
+export interface InputSink {
+  send(data: ArrayBuffer): boolean;
+}
+
+export class TouchInput {
+  private readonly ids = new Map<number, number>(); // pointerId -> slot 0..9
+  private videoAspect = 16 / 9;
+
+  constructor(private readonly stage: HTMLElement, private readonly sink: InputSink) {
+    stage.addEventListener('pointerdown', this.onDown);
+    stage.addEventListener('pointermove', this.onMove);
+    stage.addEventListener('pointerup', this.onUp);
+    stage.addEventListener('pointercancel', this.onCancel);
+    stage.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  setVideoSize(w: number, h: number): void {
+    if (w > 0 && h > 0) this.videoAspect = w / h;
+  }
+
+  /** Maps a client point to normalised video coordinates, or null when outside the picture. */
+  normalise(clientX: number, clientY: number): { x: number; y: number } | null {
+    const r = this.stage.getBoundingClientRect();
+    const stageAspect = r.width / r.height;
+    let vw = r.width, vh = r.height, ox = 0, oy = 0;
+    if (stageAspect > this.videoAspect) {
+      vw = r.height * this.videoAspect;
+      ox = (r.width - vw) / 2;
+    } else {
+      vh = r.width / this.videoAspect;
+      oy = (r.height - vh) / 2;
+    }
+    const x = (clientX - r.left - ox) / vw;
+    const y = (clientY - r.top - oy) / vh;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+    return { x, y };
+  }
+
+  private slot(pointerId: number, allocate: boolean): number {
+    let s = this.ids.get(pointerId);
+    if (s === undefined && allocate) {
+      const used = new Set(this.ids.values());
+      s = 0;
+      while (used.has(s)) s++;
+      this.ids.set(pointerId, s);
+    }
+    return s ?? -1;
+  }
+
+  private onDown = (e: PointerEvent) => {
+    const p = this.normalise(e.clientX, e.clientY);
+    if (!p) return;
+    this.stage.setPointerCapture(e.pointerId);
+    const s = this.slot(e.pointerId, true);
+    this.sink.send(encodeTouch(TouchAction.Down, s, p.x, p.y, e.pressure || 1));
+  };
+
+  private onMove = (e: PointerEvent) => {
+    const s = this.slot(e.pointerId, false);
+    if (s < 0) return;
+    const p = this.normalise(e.clientX, e.clientY);
+    if (!p) return;
+    this.sink.send(encodeTouch(TouchAction.Move, s, p.x, p.y, e.pressure || 1));
+  };
+
+  private onUp = (e: PointerEvent) => {
+    const s = this.slot(e.pointerId, false);
+    if (s < 0) return;
+    const p = this.normalise(e.clientX, e.clientY) ?? { x: 0, y: 0 };
+    this.sink.send(encodeTouch(TouchAction.Up, s, p.x, p.y, 0));
+    this.ids.delete(e.pointerId);
+  };
+
+  private onCancel = (e: PointerEvent) => {
+    const s = this.slot(e.pointerId, false);
+    if (s < 0) return;
+    this.sink.send(encodeTouch(TouchAction.Cancel, s, 0, 0, 0));
+    this.ids.delete(e.pointerId);
+  };
+}

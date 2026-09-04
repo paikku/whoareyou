@@ -1,0 +1,20 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+*.apk
+*.aab
+
+# Web
+node_modules/
+app/src/main/assets/web/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+.cache/
+
+# OS
+.DS_Store

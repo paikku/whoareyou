@@ -1,0 +1,14 @@
+{
+  "name": "@carcast/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.6.0"
+  }
+}

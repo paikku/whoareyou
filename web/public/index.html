@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>CarCast</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="mjpeg" hidden></canvas>
+  <div id="overlay" class="overlay">
+    <div class="overlay-card">
+      <div class="overlay-title">CarCast</div>
+      <div id="overlay-msg">화면을 터치하면 시작합니다</div>
+    </div>
+  </div>
+</div>
+<nav id="bar">
+  <button data-key="back" title="뒤로">◀</button>
+  <button data-key="home" title="홈">●</button>
+  <button data-key="recents" title="최근 앱">■</button>
+  <span id="stats" class="stats"></span>
+  <button id="btn-keyboard" title="키보드">⌨</button>
+  <button id="btn-fullscreen" title="전체화면">⛶</button>
+  <a href="diag.html" class="link" title="진단">?</a>
+</nav>
+<input id="kbd" class="kbd" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+<script src="main.js"></script>
+</body>
+</html>

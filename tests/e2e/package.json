@@ -1,0 +1,14 @@
+{
+  "name": "@carcast/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "install-chrome": "puppeteer-browsers install chrome@148 --path ./.cache"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@puppeteer/browsers": "^2.10.0"
+  }
+}
