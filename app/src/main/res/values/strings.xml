@@ -2,6 +2,7 @@
     <string name="app_name">CarCast</string>
     <string name="start">시작</string>
     <string name="stop">중지</string>
+    <string name="selftest">네트워크 자가 테스트</string>
     <string name="status_idle">대기 중</string>
     <string name="notif_channel">CarCast 스트리밍</string>
     <string name="notif_title">CarCast 실행 중</string>
