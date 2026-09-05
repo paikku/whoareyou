@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
  * Both ports change on every toggle/reboot, so they are looked up every time, never stored.
  * Only services resolving to one of this phone's own addresses are reported (see [LocalHost]).
  */
-class AdbMdns(context: Context, private val type: String, private val onPort: (Int) -> Unit) {
+class AdbMdns(context: Context, private val type: String, private val requireLocal: Boolean = true, private val onPort: (Int) -> Unit) {
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val executor: Executor = Executors.newSingleThreadExecutor { r -> Thread(r, "adb-mdns").apply { isDaemon = true } }
     @Volatile private var running = false
@@ -37,7 +37,7 @@ class AdbMdns(context: Context, private val type: String, private val onPort: (I
                     val port = resolved.port
                     val local = LocalHost.isLocal(host)
                     Log.i(TAG, "${resolved.serviceName} → $host:$port local=$local")
-                    if (local && port > 0 && running && reported != port) {
+                    if ((local || !requireLocal) && port > 0 && running && reported != port) {
                         reported = port
                         onPort(port)
                     }

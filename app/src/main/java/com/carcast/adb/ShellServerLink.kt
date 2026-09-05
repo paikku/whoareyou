@@ -60,19 +60,20 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         var adbOffWarned = false
         while (active) {
             val status = serverStatus()
+            var replaceStale = false
             if (status != null) {
                 val build = Regex("\"build\":\"([^\"]*)\"").find(status)?.groupValues?.get(1)
                 if (build != null && build != BuildConfig.GIT_SHA) {
-                    // The APK was updated but the detached server still runs the old dex. Replace it when we can.
-                    if (onWifi()) {
-                        log("이전 빌드($build)의 서버가 실행 중 — 종료하고 이 빌드(${BuildConfig.GIT_SHA})로 다시 띄웁니다")
-                        stopServer()
-                        Thread.sleep(2000)
-                        wasUp = false
-                        // fall through to the launch path below
+                    // The APK was updated but the detached server still runs the old dex. Replace it ONLY once we
+                    // can actually connect and launch the new one — never kill a working server on spec.
+                    if (canTryAdb()) {
+                        if (!staleWarned) { staleWarned = true; log("이전 빌드($build)의 서버가 실행 중 — 이 빌드(${BuildConfig.GIT_SHA})로 교체를 시도합니다 (성공할 때까지 기존 서버는 유지)") }
+                        replaceStale = true
+                        // fall through to the launch path; the old server keeps running until the new one connects
                     } else {
-                        if (!staleWarned) { staleWarned = true; log("이전 빌드($build)의 서버가 실행 중 — Wi-Fi에 연결되면 새 빌드로 교체합니다 (지금은 그대로 사용)") }
-                        set(State.SERVER_UP, "이전 빌드 $build")
+                        if (!staleWarned) { staleWarned = true; log("이전 빌드($build)의 서버가 실행 중 — 잘 돌면 그대로 써도 됩니다. 교체하려면 Wi-Fi + 무선 디버깅") }
+                        set(State.SERVER_UP, "이전 빌드 $build (교체하려면 Wi-Fi)")
+                        wasUp = false
                         waitFor(5_000L); delay = 5_000L
                         continue
                     }
@@ -99,7 +100,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                 continue
             }
             adbOffWarned = false
-            val outcome = runCatching { launchOnce() }
+            val outcome = runCatching { launchOnce(replaceStale) }
             if (!active) break
             val reason = outcome.exceptionOrNull()
             when {
@@ -118,13 +119,19 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
 
     /** find port → connect → `id` → detached launch → wait until /api/status answers. */
     @Throws(IOException::class)
-    private fun launchOnce() {
-        val port = findPort() ?: throw IOException("adbd 포트를 찾지 못함 — 무선 디버깅이 켜져 있나요? ('포트 수동 입력…' 가능)")
+    private fun launchOnce(replaceStale: Boolean = false) {
+        val port = findPort() ?: throw IOException("adbd 접속 포트를 찾지 못함 — 무선 디버깅 화면의 'IP 주소 및 포트'의 포트를 '포트 수동…'에 넣으세요")
         set(State.CONNECTING, "127.0.0.1:$port")
         AdbLink(port).use { l ->
             val id = l.whoAmI()
             log("adb 접속: $id")
             if (!id.contains("uid=2000")) log("경고: shell(2000)이 아닌 uid — 핫스팟 클라이언트가 100.99.9.9에 닿지 못할 수 있음")
+            // Only now that adb is confirmed working do we retire an old-build server (kill switch), then relaunch.
+            if (replaceStale) {
+                log("이전 빌드 서버 종료 → 이 빌드로 교체")
+                stopServer()
+                for (i in 1..12) { if (!serverUp()) break; Thread.sleep(300) }
+            }
             val cmd = ServerCommand.detached(context.applicationInfo.sourceDir, BuildConfig.GIT_SHA, Config.HTTP_PORT)
             set(State.STARTING, cmd)
             val out = l.shell(cmd).trim()
@@ -157,14 +164,20 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         return cm.allNetworks.any { n -> cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
     }
 
-    /** Manual port wins; otherwise the first `_adb-tls-connect` record for one of our own addresses. */
+    private fun canTryAdb(): Boolean = onWifi() && adbWifiEnabled()
+
+    /**
+     * Manual port wins; otherwise a discovered `_adb-tls-connect` record. Locality is NOT required here
+     * because we always dial 127.0.0.1 (adbd listens on loopback too); an unrelated device's advert just
+     * fails the `id` check and we retry.
+     */
     private fun findPort(): Int? {
         val manual = AdbPrefs(context).manualConnectPort
         if (manual > 0) { set(State.FINDING_PORT, "수동 포트 $manual"); return manual }
         set(State.FINDING_PORT, "mDNS ${ADB_CONNECT_WAIT_S}s")
         val found = CountDownLatch(1)
         var port = 0
-        val mdns = AdbMdns(context, AdbMdns.CONNECT) { p -> port = p; found.countDown() }
+        val mdns = AdbMdns(context, AdbMdns.CONNECT, requireLocal = false) { p -> port = p; found.countDown() }
         mdns.start()
         try { found.await(ADB_CONNECT_WAIT_S, TimeUnit.SECONDS) } finally { mdns.stop() }
         return port.takeIf { it > 0 }
