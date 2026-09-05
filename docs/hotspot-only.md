@@ -1,16 +1,19 @@
-# 핫스팟 전용으로 가는 길 (Wi-Fi·개발자 옵션 없이)
+# 핫스팟 전용으로 가는 길 (Wi-Fi 요구 제거)
 
 작성 2026-09-05. 배경: 현재 운용 절차는 **재부팅할 때마다 집 Wi-Fi에서 앱을 한 번 켜야 한다**
-(무선 디버깅이 Wi-Fi 클라이언트 연결 중에만 켜지므로). 이건 제품으로 못 쓴다.
-이 문서는 그 요구를 어디서 없앨 수 있는지 사슬을 따라가며 따지고, 실행 순서를 정한다.
+(무선 디버깅이 Wi-Fi 클라이언트 연결 중에만 켜지므로). 제품으로 쓸 수 없다.
 
-결론 먼저:
+## 요약 (결론 먼저)
 
-- **Wi-Fi 요구는 ADB에서 나오고, ADB는 shell uid에서, shell uid는 "별도 가상 디스플레이 + 타 앱 실행 + 입력 주입"에서 나온다.**
-  이 셋 중 마지막을 포기하면 사슬 전체가 끊어진다. 다른 오픈소스가 핫스팟만으로 되는 이유가 정확히 이것이다(§1.4).
-- 따라서 **미러 모드(§3)를 기본 모드로 만들고**, 지금의 별도 VD 모드는 "파워 유저 모드"로 내린다.
-- 미러 모드로 가는 길목의 유일한 난관은 네트워크 고리인데, **이미 실측으로 뚫려 있는 것으로 보인다**(§2.1,
-  verification-log §3.2 실험 5·6: 앱 uid 서버도 `192.0.0.2:3333`은 핫스팟 클라이언트에서 접속됨).
+1. **테소르(Tesor)도 이 문제를 풀지 못했다.** 테소르는 Shizuku 위에서 돈다(§1.4) — 즉 우리와 같은 shell uid 경로다.
+   화면 분할은 미러링이 아니라 shell 권한으로 freeform을 켜서 얻는 것이고, Shizuku는 **재부팅할 때마다 무선 디버깅으로 다시 시작**해야 한다.
+   "설치 후엔 자동"은 재부팅 전까지만 참이다. 우리가 뒤처진 게 아니라 **같은 벽 앞에 있다.**
+2. 그러나 커뮤니티가 실제로 쓰는 우회가 있다: **adbd를 TCP 모드로 전환(`tcpip`)**. 한 번 전환하면 adbd가 Wi-Fi와 무관하게
+   포트를 열고 계속 살아 있어서, **차 안에서도 앱이 언제든 shell을 다시 얻어 서버를 재기동**할 수 있다(§2).
+   USB 디버깅 토글로 adbd를 살려 두던 현재의 임시방편도 함께 사라진다.
+3. 남는 것은 **콜드 부팅 1회**뿐이고, 그것마저 없앨 후보가 둘 있다(§3, 둘 다 우리가 이미 shell을 쥔 상태에서 공짜로 시험 가능).
+4. 그래도 개발자 옵션 자체를 못/안 켜는 사용자를 위해 **미러 모드**를 하위 티어로 둔다(§5). 이게 다른 오픈소스들이 핫스팟만으로 되는 이유이고,
+   대가는 "별도 화면"과 "폰 화면 완전 OFF"다.
 
 ---
 
@@ -19,157 +22,173 @@
 ```
 ① 테슬라 브라우저가 사설 IP(10/8, 172.16/12, 192.168/16) 차단
         ↓ 그래서
-② 폰에 비-사설 주소가 필요 → 루트 없이는 VpnService tun(100.99.9.9)뿐
+② 폰에 비-사설 주소 필요 → 루트 없이는 VpnService tun(100.99.9.9)뿐
         ↓ 그런데
-③ Android 14+ ingress-discard BPF: VPN 주소로 들어오는 패킷은 uid ≥ 10000 소켓에 배달 안 함
+③ Android 14+ ingress-discard BPF: VPN 주소로 오는 패킷은 uid ≥ 10000 소켓에 배달 안 함
         ↓ 그래서
-④ HTTP/WS 서버가 shell uid(2000)여야 함            ←┐
-                                                     │ 둘 다 shell을 요구
-⑤ 별도 VD 생성(ADD_TRUSTED_DISPLAY) + 타 앱 실행 +   │
-   입력 주입(INJECT_EVENTS) + 물리 패널 OFF          ←┘
+④ HTTP/WS 서버가 shell uid(2000)여야 함             ←┐
+⑤ 별도 VD(ADD_TRUSTED_DISPLAY) + 타 앱 실행 +        │ 둘 다 shell을 요구
+   입력 주입(INJECT_EVENTS) + 물리 패널 OFF + 화면분할←┘
         ↓ 그래서
 ⑥ 루트 없이 shell을 얻는 유일한 길 = 폰이 자기 자신에게 ADB
         ↓ 그래서
-⑦ 무선 디버깅 필요 → **Wi-Fi 클라이언트 연결 필요** (+ USB 디버깅 토글로 adbd 유지)
+⑦ 무선 디버깅 필요 → **Wi-Fi 클라이언트 연결 필요**
 ```
 
-고리마다 끊을 수 있는지 따로 본다.
+### 1.1 고리 ①: 테슬라의 차단 범위
 
-### 1.1 고리 ①: 테슬라의 차단 범위는 정확히 무엇인가
-
-공개 사례(TMC, tesla-carplay 문서)에서 일관되게 보고되는 것은 **RFC1918 3개 대역**이다.
-우회로로 알려진 것도 `240.3.3.x`(클래스 E)로 iptables DNAT하는 방식 — 즉 **"사설이 아니면 통과"** 라는 뜻이다.
-Chrome의 Private Network Access는 여기에 127/8, 169.254/16, fc00::/7, fe80::/10을 더한다.
-
-→ **`192.0.0.0/24`는 어느 목록에도 없다.** 이게 §2.1의 출발점이다.
+공개 사례(TMC, tesla-carplay 문서)에서 일관되게 보고되는 것은 **RFC1918 3개 대역**이고, 알려진 우회로는
+`240.3.3.x`(클래스 E)로 DNAT하는 방식이다. 즉 **"사설이 아니면 통과"**. Chrome의 Private Network Access는 여기에
+127/8, 169.254/16, fc00::/7, fe80::/10을 더한다. → **`192.0.0.0/24`(CLAT)는 어느 목록에도 없다**(§4.1).
 
 ### 1.2 고리 ③: ingress-discard를 앱 uid로 우회할 수 있나
 
-verification-log §3.2의 실험 7~13이 이미 다 해봤다(protect, LOCAL_NET_ID 바인드, allowBypass, 라우팅 규칙).
-전부 실패. **주소가 VPN 인터페이스의 주소인 한 앱 uid로는 안 된다.**
+verification-log §3.2 실험 7~13이 이미 다 해봤다(protect, LOCAL_NET_ID 바인드, allowBypass, 라우팅 규칙) — 전부 실패.
+**주소가 VPN 인터페이스의 주소인 한 앱 uid로는 안 된다.**
 
-다만 규칙은 "**VPN 인터페이스에 붙은 주소**로 향하는 패킷"을 검사한다. 그래서 남는 틈이 하나 있다:
+남는 틈 하나: 규칙은 "**VPN 인터페이스에 붙은 주소**"를 검사한다. tun에는 `100.99.9.1/32`만 붙이고
+`100.99.9.9/32`는 **주소가 아니라 라우트로만**(`addRoute`) 넣으면, 그 패킷은 로컬 배달이 아니라 **포워딩** 대상이 되어
+tun fd로 떨어진다. 커널 소켓을 안 쓰므로 검사할 소켓이 없다. 대신 **유저스페이스 TCP**를 구현해야 한다(HTTP/WS만 받으면 되니 600~1000줄).
+위험: 테더링의 `tetherctrl_FORWARD`가 swlan0→tun0을 막을 수 있다. **미검증. 플랜 B다.**
 
-- tun에는 `100.99.9.1/32`만 붙이고, `100.99.9.9/32`는 **주소가 아니라 라우트로만** 넣는다(`addRoute`).
-- 그러면 `100.99.9.9`행 패킷은 로컬 배달이 아니라 **포워딩** 대상이 되어 tun fd로 떨어지고, 앱이 원시 IP 패킷을 직접 읽는다.
-- 커널 소켓을 아예 안 쓰므로 ingress-discard가 검사할 소켓이 없다. 대신 **유저스페이스 TCP**를 우리가 구현해야 한다(HTTP/WS만 받으면 되니 축소 구현 가능, 약 600~1000줄).
-- 위험: 테더링의 `tetherctrl_FORWARD` 체인이 swlan0→tun0 포워딩을 허용하지 않을 수 있다. **미검증.**
+### 1.3 고리 ⑦: 무선 디버깅을 핫스팟만으로 켤 수 있나
 
-이건 §2.1이 실패했을 때의 플랜 B다. 먼저 할 일은 아니다.
+- 공식 문서·커뮤니티 정리: *"Android normally requires the phone to be connected to a Wi-Fi network for wireless debugging.
+  **A local hotspot may work on some devices, but manufacturer behavior differs.**"*
+- **S26U / One UI 8에서는 ❌** (2026-09-05 실측). 일부 기기에서 된다는 보고는 우리 대상 기기에 적용되지 않는다.
+- → 이 고리 자체는 못 끊는다. 대신 **adbd를 다른 모드로 돌리면 이 고리를 통과할 필요가 없어진다**(§2).
 
-### 1.3 고리 ⑦: adbd를 Wi-Fi 없이 살릴 수 있나
+### 1.4 테소르는 어떻게 하나 (추론 아니라 확인)
 
-- Android 11+ **무선 디버깅**(TLS, mDNS)은 Wi-Fi 클라이언트 게이트가 걸려 있다 — 실측 ❌.
-- 구형 경로인 **`service.adb.tcp.port` / `persist.adb.tcp.port`** 는 Wi-Fi와 무관하게 adbd가 모든 인터페이스에서 TCP를 열게 한다
-  (Android TV가 5555를 여는 방식). `persist.*`는 재부팅도 넘는다.
-- 문제: 이 프로퍼티를 **shell이 setprop 할 수 있는지**가 기기마다 다르고, 최근 삼성에서는 막혔다는 보고가 많다. **미검증, 기대치 낮음.**
-- 된다면 효과는 크다: 집에서 **딱 한 번** 실행 → 이후 모든 재부팅에서 adbd가 열려 있고, 앱이 `127.0.0.1:5555`로 붙어 서버를 띄운다.
-  Wi-Fi도 무선 디버깅 토글도 영구히 불필요. **비용이 명령 두 줄이라 무조건 먼저 시도해 볼 값어치가 있다**(§4 실험 2).
-- 보안: 핫스팟에 붙은 누구나 adb 포트를 볼 수 있게 된다(미인증 키는 다이얼로그가 뜨긴 한다). 채택 시 문서에 명시.
+- 테소르 설치 안내의 2단계가 **"Shizuku 설치 후 권한 부여"** 다. 즉 테소르는 Shizuku가 띄워 준 shell uid 프로세스로 동작한다.
+- 그래서 "미러링이 아니라 폰 화면과 독립"(제작사 설명: *"Unlike typical mirroring app, your phone's screen remains independent"*)이고,
+  **화면 분할**도 가능하다 — 이건 MediaProjection으로는 절대 안 되는 것으로, shell 권한 + freeform(`enable_freeform_support`,
+  `am start --windowingMode 5 --display N`)의 산물이다. 우리 `implementation-proposal.md` §2.6이 이미 같은 방식을 적어 뒀다.
+- 요구사항도 동일하다: **개발자 옵션 필수, 5GHz 핫스팟 필수.**
+- 그리고 Shizuku(비루팅)는 **재부팅하면 반드시 다시 시작해야 하고**, 그 시작에 무선 디버깅 = Wi-Fi가 필요하다.
+  Shizuku 문서: *"The non-root Shizuku service normally stops when the phone restarts."*
+  TCP 모드를 다룬 글의 결론도 같다: *"if you restart the OS itself, you will need a Wi-Fi environment to run Shizuku for the first time,
+  so you cannot avoid this even with TCP mode."*
 
-### 1.4 고리 ⑤: "다른 오픈소스는 핫스팟만으로 잘 한다"의 실체
-
-맞다. 그런데 **그들이 하는 일이 우리보다 좁다.**
-
-| 프로젝트 유형 | 화면 | 입력 | 권한 | 핫스팟 전용? |
-|---|---|---|---|---|
-| ScreenStream류 (브라우저로 미러링) | MediaProjection **미러** | 없음(보기 전용) | 없음 | ✅ |
-| TeslaMirror류 | MediaProjection **미러** | 없음/제한 | 없음 | ✅ |
-| scrcpy | 화면 미러 또는 새 VD | 주입 | **PC의 adb** | — |
-| Tesor 5.x / 현재 CarCast | **별도 VD** + 타 앱 실행 | 주입 | shell(내장 ADB) | ❌ Wi-Fi 1회 필요 |
-
-즉 핫스팟 전용의 대가는 **"폰 화면과 다른 별도 화면"** 과 **"물리 패널 완전 OFF"** 다.
-이 둘을 내려놓으면 shell이 전부 불필요해진다 — 아래가 그 설계다.
+**결론: 테소르의 UX도 "재부팅하면 Wi-Fi 있는 곳에서 한 번"이다.** 다만 사용자가 폰을 자주 재부팅하지 않아서 체감이 덜할 뿐이다.
+우리가 할 일은 테소르를 흉내내는 게 아니라, 아래 §2·§3으로 **테소르보다 나아지는 것**이다.
 
 ---
 
-## 2. 방안 A — 네트워크 고리만 끊기 (즉시, 코드 변경 거의 없음)
+## 2. 방안 1 — adbd TCP 모드 (지금 당장, 가장 큰 이득)
 
-### 2.1 CLAT 주소(`192.0.0.x`)를 그대로 쓴다
+### 2.1 무엇인가
 
-verification-log §3.1·§3.2에서 이미 관측된 사실:
+`adb tcpip <포트>`는 셸 명령이 아니라 **adbd에게 보내는 프로토콜 요청**(`tcpip:5555` 서비스)이다. 받은 adbd는
+스스로를 재시작해 **모든 인터페이스의 TCP 포트에서 대기**한다. 이 모드는 무선 디버깅(TLS/mDNS) 경로가 아니라
+구형 RSA 키 인증 경로여서 **Wi-Fi 연결 여부와 무관하다.**
 
-- 폰 인터페이스 목록에 `rmnet_data1 192.0.0.2`, `rmnet_data2 192.0.0.4` 가 있다(IPv6 전용 망 + 464XLAT의 CLAT 주소).
-- **실험 5·6: 노트북(핫스팟 클라이언트) → `http://192.0.0.2:3333` 이 앱 uid 서버로도 성공했다.** VPN이 켜져 있든 꺼져 있든 성공.
-- `192.0.0.0/24`는 RFC1918도, Chrome PNA 차단 목록도 아니다(§1.1).
+Shizuku 이슈 #864(Samsung S21, Android 14 / One UI 6.1)의 보고가 정확히 이것이다 — `adb tcpip 5555` 이후
+*"연결 후 Wi-Fi 연결 유지 불필요"*.
 
-→ **차가 `http://192.0.0.2:3333`을 열 수 있다면, VpnService도 shell uid도 네트워크 목적으로는 필요 없어진다.**
-서버는 이미 `0.0.0.0`에 바인드하므로(`core/net/HttpServer.kt`) 서버 코드 변경은 0이다.
+### 2.2 우리에게 무엇이 달라지나
 
-전제와 위험:
-- CLAT 주소는 **모바일 데이터가 IPv6 전용 망일 때만** 생긴다. 핫스팟을 쓰려면 어차피 모바일 데이터가 켜져 있어야 하므로 상황은 맞지만, **통신사·로밍에 따라 없을 수 있다.**
-- 주소가 `.2`인지 `.4`인지 부팅마다 다를 수 있다 → 앱이 현재 후보 주소를 골라 **URL과 QR로 보여주면** 된다(`SelfTest.kt`가 이미 인터페이스 목록을 뽑는다).
-- **차에서 실제로 열리는지는 미검증** — 실차 1분 테스트로 끝난다(§4 실험 1).
+| 지금 | TCP 모드 도입 후 |
+|---|---|
+| Wi-Fi가 끊기면 adbd가 멈추고 init이 **cgroup째 서버를 SIGKILL** → USB 디버깅 토글을 켜 두는 임시방편 필요 | adbd가 계속 살아 있음 → **cgroup 킬 없음, USB 디버깅 토글 요구 삭제** |
+| 차에서 서버가 죽으면 **복구 불가**(집에 가야 함) | 앱이 `127.0.0.1:<포트>`로 adbd에 붙어 **차 안에서 서버 재기동** |
+| 서버 수명 = "재부팅 전까지, 단 아무것도 안 죽으면" | 서버 수명 = "언제든 다시 띄울 수 있음" |
 
-### 2.2 방안 A만으로는 Wi-Fi가 안 없어진다
+즉 **콜드 부팅을 제외한 모든 상황에서 Wi-Fi가 사라진다.**
 
-고리 ⑤(별도 VD·입력 주입)가 그대로 남기 때문이다. 방안 A는 **방안 B의 선행 조건**이자, 실패해도
-현행 구조를 단순화(VpnService 제거)하는 이득이 있다.
+### 2.3 구현 메모
 
----
-
-## 3. 방안 B — 미러 모드: shell·ADB·Wi-Fi를 전부 없앤다 (권고)
-
-### 3.1 구조
-
-| 기능 | 현재 (shell) | 미러 모드 (앱 uid, 공개 API만) |
-|---|---|---|
-| 화면 | TRUSTED VD 생성 + `am start --display` | `MediaProjection` → `VirtualDisplay`(**물리 화면 미러**) → 같은 Surface를 MediaCodec에 |
-| 인코딩·먹싱·전송 | `core`/`mux` | **그대로 재사용** (변경 0) |
-| 터치·스크롤 | `InputManager.injectInputEvent(displayId)` | `AccessibilityService.dispatchGesture` |
-| 뒤로/홈/최근앱 | 키 주입 | `performGlobalAction(GLOBAL_ACTION_BACK/HOME/RECENTS)` |
-| 한글 입력 | UHID / IME 정책 | 자체 `InputMethodService`(`commitText`) 또는 접근성 `ACTION_SET_TEXT` |
-| 오디오 | REMOTE_SUBMIX (shell) | `AudioPlaybackCapture`(MediaProjection, API 29+) / 실패 시 **차와 블루투스 페어링** |
-| 폰 화면 끄기 | `SurfaceControl.setDisplayPowerMode` | 불가 → **밝기 0**(`WRITE_SETTINGS`, 사용자 1회 허용) + `KEEP_SCREEN_ON` |
-| 네트워크 | VPN 100.99.9.9 + shell 소켓 | 방안 A의 `192.0.0.x` (또는 §1.2 유저스페이스 TCP) |
-
-핵심: **`core`(HTTP/WS/fMP4/컨트롤 파싱)와 `mux`는 한 줄도 안 바뀐다.** 이미 PC JVM에서 도는 플랫폼 중립 코드라
-앱 프로세스 안에서 그대로 돌릴 수 있다. 바뀌는 것은 `VideoSource` 구현 하나와 컨트롤 싱크 하나다.
-
-### 3.2 사용자 경험
-
-설치 후 **최초 1회**: 접근성 서비스 켜기(설정 딥링크 1탭) + 밝기 권한 1탭.
-이후 **매번**: 앱 열고 시작 → MediaProjection 동의 1탭 → 차 브라우저에서 주소 열기. 끝.
-**Wi-Fi 불필요, 개발자 옵션 불필요, USB 디버깅 불필요, 재부팅 무관, 페어링 코드 없음.**
-
-MediaProjection 동의는 Android 14+에서 세션마다 필요하지만, 포그라운드 서비스로 붙잡아 두면
-앱이 죽기 전까지 유지된다 → 실질적으로 "하루 1탭".
-
-### 3.3 잃는 것 (정직하게)
-
-1. **폰 화면과 차 화면이 같다.** 차에서 유튜브를 보면 폰에도 유튜브가 뜬다. 폰을 따로 못 쓴다.
-2. **물리 패널을 완전히 끌 수 없다.** 밝기 0 + 화면 켜짐 유지 → 발열·배터리가 현재안보다 나쁘다(차에선 충전 중이라 실사용 영향은 작다).
-3. **회전·해상도가 폰 화면에 종속**된다. 별도 VD처럼 1280x720 고정을 못 한다(가로 고정 + 해상도 스케일로 완화).
-4. 일부 앱의 오디오는 캡처가 막힐 수 있다(`allowAudioPlaybackCapture=false`) → 블루투스 폴백.
-
-### 3.4 그래서 두 모드를 함께 둔다
-
-- **기본 = 미러 모드.** 설치하면 바로 쓰인다. 이게 "아무나 쓰는" 제품이다.
-- **고급 = 별도 화면 모드.** 지금 구현이 이미 동작하므로 그대로 남긴다. 개발자 옵션을 켤 의사가 있는 사용자만 쓴다.
-  UI에서 "폰을 따로 쓰고 싶다면" 로 안내하고, Wi-Fi 1회 절차는 그 모드 안에서만 노출한다.
-
-두 모드는 **전송·웹 클라이언트·진단 페이지를 100% 공유**하므로 유지비가 거의 늘지 않는다.
+- `AdbLink`(Kadb)에 `tcpip:<port>` 서비스를 여는 경로를 추가한다. 무선 디버깅으로 접속한 직후 **가장 먼저** 보낸다.
+- **순서 주의:** `tcpip`는 adbd를 재시작하므로 기존 adbd cgroup의 자식이 죽는다. 반드시 **서버 기동 전에** 전환한다.
+- 전환 후에는 **loopback으로 접속**한다(`127.0.0.1:<port>`). 핫스팟 인터페이스로 나갈 필요가 없다.
+- 인증: TLS 페어링 키와 구형 `adb_keys`는 저장소가 다르므로, 첫 loopback 접속에서 **"USB 디버깅을 허용하시겠습니까?"**
+  다이얼로그가 한 번 뜰 수 있다. "항상 허용" 체크로 끝 — 폰에서 1탭, Wi-Fi 불필요.
+- 포트는 5555 고정 대신 **랜덤 고포트**로. adbd는 모든 인터페이스에 열리므로 핫스팟에 붙은 기기도 포트를 볼 수 있다.
+  미인증 키는 다이얼로그가 막지만, 노출 자체를 줄인다. 앱 UI에 상태와 끄는 방법을 노출한다.
 
 ---
 
-## 4. 실행 순서 (비용이 싼 것부터, 각각 결정적)
+## 3. 방안 2 — 콜드 부팅까지 없애기 (둘 다 공짜 실험)
 
-| # | 실험 | 비용 | 무엇이 결정되나 |
+재부팅 직후에는 shell이 전혀 없으므로, **부팅 시점에 adbd가 스스로 열려 있게 만드는 영속 설정**만이 답이다. 후보 둘:
+
+| 후보 | 명령(이미 shell을 쥔 상태에서) | 기대 | 확인 방법 |
 |---|---|---|---|
-| 1 | **차에서 `http://192.0.0.2:3333` 열기** (현행 서버 그대로, 앱이 주소 표시). 안 되면 `192.0.0.4`, 그다음 핫스팟 주소 `10.x`로 대조군 | 실차 1분 | 방안 A 성립 여부 = VpnService·shell의 *네트워크* 이유가 사라지는가 |
-| 2 | 집에서 adb 붙은 김에 `setprop persist.adb.tcp.port 5555` → 재부팅 → `adb connect <핫스팟주소>:5555` | 5분 | 별도 화면 모드에서 Wi-Fi를 영구히 없앨 수 있는가 (기대치 낮음, 비용도 낮음) |
-| 3 | 미러 모드 프로토타입: MediaProjection VirtualDisplay → 기존 `H264Encoder` → `core` 서버를 앱 프로세스에서 기동 → 노트북에서 재생 확인 | 1일 | 방안 B의 영상 경로 |
-| 4 | 접근성 서비스 `dispatchGesture` 왕복 지연 측정 (노트북 클릭 → 폰 반응) | 반나절 | 방안 B의 입력 경로. 200ms 이상이면 UX 재검토 |
-| 5 | (1이 실패했을 때만) tun 라우트-온리 + 유저스페이스 TCP 스파이크: `addRoute("100.99.9.9",32)` 후 tun fd에 SYN이 실제로 떨어지는지만 확인 | 반나절 | §1.2 플랜 B의 가능 여부 |
+| `persist.adb.tcp.port` | `setprop persist.adb.tcp.port 5555` | adbd가 부팅마다 TCP 포트를 연다(안드로이드 TV가 5555를 여는 방식). `service.adb.tcp.port`가 없으면 이 값을 읽는다 | 재부팅 → 핫스팟만 켠 채 `adb connect <핫스팟주소>:5555` |
+| `adb_wifi_enabled` | `settings put global adb_wifi_enabled 1` | 무선 디버깅 토글의 실체가 이 전역 설정이고 **설정은 재부팅을 넘는다**. Wi-Fi 없이도 켜진 채로 남는지가 관건 | 재부팅 → Wi-Fi 없이 개발자 옵션에서 토글 상태·`_adb-tls-connect` mDNS 확인 |
 
-실험 1과 2는 **다음에 차/폰을 만질 때 곧바로** 할 수 있다. 3~4는 그 결과와 무관하게 착수해도 손해가 없다
-(전송 계층을 공유하므로).
+둘 다 **최근 삼성에서 막혔을 가능성이 높다**(`setprop`은 SELinux `shell_prop` 쓰기 권한, 후자는 부팅 시 Wi-Fi 콜백에서 되돌려질 수 있음).
+기대치는 낮지만 **비용이 명령 한 줄 + 재부팅 한 번**이라 안 해 볼 이유가 없다.
+
+성공하면 **Wi-Fi 요구가 영구히 사라진다.** 실패해도 §2 덕분에 "재부팅했을 때만"으로 좁혀진 상태는 유지된다.
 
 ---
 
-## 5. 이 문서가 바꾸는 기존 결정
+## 4. 방안 3 — 네트워크 고리 단순화 (실차 1분)
 
-- `implementation-proposal.md` §2.1 "MediaProjection만으로는 목표를 못 이룬다"는 **여전히 사실**이다.
-  다만 그 목표(별도 VD)를 **모든 사용자에게 기본값으로 요구한 것**이 잘못이었다. 목표를 모드로 쪼갠다.
-- `dev-plan.md` M3의 "Wi-Fi에서 1회 기동" 운용 조건은 **고급 모드에만** 적용된다.
-- 새 마일스톤 후보: **M8 미러 모드**(방안 B). M6 오디오보다 우선순위가 높다 — 쓸 수 있는 제품이 되는 것이 소리보다 먼저다.
+### 4.1 CLAT 주소(`192.0.0.x`)를 그대로 쓴다
+
+verification-log에 이미 있는 관측:
+
+- 폰 인터페이스에 `rmnet_data1 192.0.0.2`, `rmnet_data2 192.0.0.4` 존재(IPv6 전용 망 + 464XLAT).
+- **§3.2 실험 5·6: 핫스팟 클라이언트 → `http://192.0.0.2:3333` 이 앱 uid 서버로도 성공.** VPN on/off 무관.
+- `192.0.0.0/24`는 RFC1918도 PNA 차단 목록도 아니다(§1.1).
+
+→ 차가 이 주소를 열 수 있으면 **VpnService를 통째로 걷어낼 수 있고**, 네트워크 때문에 shell이 필요하던 이유(고리 ③④)가 사라진다.
+서버는 이미 `0.0.0.0` 바인드라 서버 코드 변경은 0. 앱은 후보 주소를 골라 **URL/QR로 표시**하면 된다.
+
+전제·위험: CLAT 주소는 모바일 데이터가 IPv6 전용 망일 때만 생기고(핫스팟을 쓰려면 어차피 데이터가 켜져 있어야 하니 상황은 맞다),
+통신사·로밍에 따라 없을 수 있으며, `.2`/`.4`가 부팅마다 바뀔 수 있다. **차에서 열리는지는 미검증.**
+
+※ 이것만으로는 Wi-Fi가 안 없어진다. 고리 ⑤(VD·입력·화면분할)가 남기 때문이다. §2·§3과 독립적인 **구조 단순화**다.
+
+---
+
+## 5. 방안 4 — 미러 모드 (하위 티어, 개발자 옵션 0)
+
+§2·§3이 다 실패해도, 그리고 성공하더라도 **개발자 옵션을 켜기 싫은 사용자**를 위한 티어가 필요하다.
+
+| 기능 | shell 모드 | 미러 모드 (공개 API만) |
+|---|---|---|
+| 화면 | TRUSTED VD + `am start --display` + 분할 | `MediaProjection` → `VirtualDisplay`(**물리 화면 미러**) |
+| 인코딩·먹싱·전송·웹 | `core`/`mux` | **그대로 재사용, 변경 0** |
+| 터치·스크롤 | `injectInputEvent(displayId)` | `AccessibilityService.dispatchGesture` |
+| 뒤로/홈/최근앱 | 키 주입 | `performGlobalAction(...)` |
+| 오디오 | REMOTE_SUBMIX | `AudioPlaybackCapture` / 실패 시 **차와 블루투스 페어링** |
+| 폰 화면 끄기 | `SurfaceControl.setDisplayPowerMode` | 불가 → 밝기 0 + `KEEP_SCREEN_ON` |
+
+- 최초 1회: 접근성 서비스 켜기(딥링크 1탭). 이후 매번: MediaProjection 동의 1탭. **Wi-Fi·개발자 옵션·페어링 전부 불필요.**
+- 잃는 것: **폰 화면과 차 화면이 같다**(폰을 따로 못 쓴다), **화면 분할 불가**, 물리 패널 완전 OFF 불가, 해상도·회전이 폰에 종속.
+- `core`·`mux`·웹 클라이언트·`/diag`를 100% 공유하므로 유지비는 `VideoSource` 구현 하나 + 컨트롤 싱크 하나다.
+
+---
+
+## 6. 실행 순서 (싼 것부터)
+
+| # | 실험/작업 | 비용 | 무엇이 결정되나 |
+|---|---|---|---|
+| 1 | **adbd TCP 모드**: 접속 직후 `tcpip:<port>` → loopback 재접속 → 서버 기동. Wi-Fi 끄고 핫스팟에서 **서버 재기동**까지 확인 | 1일 | 차 안 복구 가능 여부, USB 디버깅 토글 요구 제거 (§2) |
+| 2 | `setprop persist.adb.tcp.port 5555` → 재부팅 → 핫스팟만으로 `adb connect` | 5분 | 콜드 부팅 Wi-Fi 제거 (§3) |
+| 3 | `settings put global adb_wifi_enabled 1` → 재부팅 → Wi-Fi 없이 토글 상태 확인 | 5분 | 위와 동일한 목표의 2번째 후보 |
+| 4 | 차에서 `http://192.0.0.2:3333` 열기 (안 되면 `192.0.0.4`, 대조군으로 핫스팟 `10.x`) | 실차 1분 | VpnService 제거 가능 여부 (§4) |
+| 5 | 미러 모드 프로토타입(MediaProjection → 기존 `H264Encoder` → 앱 프로세스에서 `core` 기동) | 1일 | 개발자 옵션 0 티어 (§5) |
+| 6 | (4가 실패했을 때만) tun 라우트-온리 + 유저스페이스 TCP 스파이크 | 반나절 | §1.2 플랜 B |
+
+2·3번은 **다음에 폰을 만질 때 5분**이면 끝난다. 1번이 본 작업이다.
+
+---
+
+## 7. 이 문서가 바꾸는 기존 결정
+
+- `dev-plan.md` M3의 **"USB 디버깅 토글 ON이 운용 조건"** 은 §2가 성공하면 삭제된다.
+- M3의 "Wi-Fi에서 1회 기동"은 §2 이후 **"콜드 부팅 후 1회"** 로 좁혀지고, §3이 성공하면 사라진다.
+- `implementation-proposal.md` §2.1("MediaProjection만으로는 목표를 못 이룬다")은 여전히 사실이다 —
+  화면 분할이 그 증거다. 미러 모드는 목표를 낮춘 **별도 티어**이지 대체재가 아니다.
+- 새 마일스톤 후보: **M8 adbd TCP 모드**(우선), **M9 미러 모드**.
+
+## 8. 근거
+
+- Tesor: [Google Play](https://play.google.com/store/apps/details?id=com.arter97.tesor), [설정 절차 정리(Shizuku 사용)](https://www.bblogggg.com/2026/03/tesla-android-tesor-app-guide.html), [Tparts 소개("phone's screen remains independent")](https://www.tparts.com/blogs/tesla-knowledge-blogs/android-screen-mirroring-breakthrough-for-tesla-korean-developer-creates-tesor-app)
+- Shizuku 재부팅 제약·TCP 모드: [Shizuku 사용자 매뉴얼](https://shizuku.rikka.app/guide/setup/), [issue #864 "Keeping shizuku working after leaving wifi"](https://github.com/RikkaApps/Shizuku/issues/864), [TCP 모드 운용 정리](https://note.com/wise_tulip6598/n/n6b526e41a125?hl=en), [핫스팟은 기기마다 다름](https://shizukuhub.com/shizuku-wireless-debugging/)
+- 테슬라 사설 IP 차단: [TMC 스레드](https://teslamotorsclub.com/tmc/threads/cant-access-private-websites-on-wifi.44134/), [tesla-carplay 문서](https://github.com/marcdubois71450/tesla-carplay/blob/master/tesla-doc.md)
+- Chrome PNA 차단 대역: [Chrome for Developers](https://developer.chrome.com/blog/private-network-access-update)
