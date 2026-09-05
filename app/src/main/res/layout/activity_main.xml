@@ -52,6 +52,28 @@
         android:layout_height="wrap_content"
         android:text="@string/start" />
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+        <Button
+            android:id="@+id/pair"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_weight="2"
+            android:layout_height="wrap_content"
+            android:text="@string/pair" />
+        <Button
+            android:id="@+id/manual"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:text="@string/manual" />
+    </LinearLayout>
+
     <Button
         android:id="@+id/selftest"
         style="?attr/materialButtonOutlinedStyle"
@@ -76,14 +98,42 @@
         android:layout_marginTop="4dp"
         android:text="@string/share_reports" />
 
-    <TextView
-        android:id="@+id/log"
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="16dp">
+        <Button
+            android:id="@+id/copy_log"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="@string/copy_log" />
+        <Button
+            android:id="@+id/clear_log"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:text="@string/clear_log" />
+    </LinearLayout>
+
+    <!-- The log only re-renders when a line was added, and keeps the scroll position unless it was at the bottom. -->
+    <ScrollView
+        android:id="@+id/log_scroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="24dp"
-        android:fontFamily="monospace"
-        android:textSize="12sp"
-        android:scrollbars="vertical"
-        android:textIsSelectable="true" />
+        android:layout_marginTop="4dp"
+        android:scrollbars="vertical">
+        <TextView
+            android:id="@+id/log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:textIsSelectable="true" />
+    </ScrollView>
 </LinearLayout>

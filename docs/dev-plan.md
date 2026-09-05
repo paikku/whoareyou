@@ -95,6 +95,11 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - **M1 후속으로 이미 된 것:** `com.carcast.server.Server`가 `core`의 서버(HTTP/WS + 테스트 클립)를 shell uid로 띄운다.
   당장은 PC에서 `adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server <git-sha> port=3333'`
   로 기동(앱 화면에 명령 표시). M3의 목표는 이 명령을 앱이 내장 ADB로 직접 실행하는 것.
+- **구현됨(폰 검증 전):** `adb/`는 Kadb **2.1.1**(`com.flyfishxu:kadb-android`; 2.1.2+는 compileSdk 37 요구, SPAKE2 의존성은 JitPack)로
+  `AdbIdentity`(앱 키 `files/adb/adbkey.pem`), `AdbMdns`(NsdManager, 자기 주소로 resolve되는 레코드만), `AdbLink`(127.0.0.1:포트 접속·`id`·shell v2 스트림),
+  `ServerCommand`(`CLASSPATH='<sourceDir>' exec app_process / com.carcast.server.Server <sha> port=3333`), `ServerOutput`(서버 stdout 파싱).
+  앱: `AdbPairingService`(알림 RemoteInput으로 6자리 코드, `_adb-tls-pairing` 발견, 수동 포트 폴백), `ShellServerLink`(세션 동안 접속→기동→출력 중계→종료 시 백오프 재시도,
+  스트림 닫기 = 킬 스위치, 미페어링이면 대기), 개발자 옵션 무선 디버깅 딥링크(`:settings:fragment_args_key=toggle_adb_wireless`).
 - `adb/` 결정 순서: ① Maven의 Kadb로 `pair`/`connect`/`shell` 시도 (NDK 불필요). ② 안 되면 Shizuku `adb/` 포트: `AdbKey, AdbKeyStore, AdbProtocol, AdbMessage, AdbClient, AdbMdns, AdbPairingClient, AdbException` + `jni/{adb_pairing.cpp,misc.cpp,CMakeLists.txt}`(BoringSSL prefab), 숨은 API `com.android.org.conscrypt`는 `org.conscrypt:conscrypt-android`의 공개 `exportKeyingMaterial`로 교체, 인증서는 BouncyCastle 유지.
 - 앱 UI: 페어링 = 포그라운드 서비스 알림의 `RemoteInput`으로 6자리 코드 입력(Shizuku `AdbPairingService` 패턴) + 무선 디버깅 설정 딥링크, `_adb-tls-pairing` mDNS로 포트 발견. 접속 = `_adb-tls-connect` → `shellCommand("id")`.
 - `shell-server` 최소 `Server.main`: uid 출력, `/dev/uhid` 열기, TRUSTED VD 생성/파괴 (`wrappers/{ServiceManager,DisplayManager}`, `FakeContext`, `Workarounds` 이식). 실행: `CLASSPATH=<sourceDir> app_process / com.carcast.server.Server <build-id>`.

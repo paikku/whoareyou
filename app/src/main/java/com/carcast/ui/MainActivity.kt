@@ -15,6 +15,10 @@ import androidx.core.content.ContextCompat
 import com.carcast.BuildConfig
 import com.carcast.Config
 import com.carcast.R
+import com.carcast.adb.AdbIdentity
+import com.carcast.adb.AdbLink
+import com.carcast.adb.AdbPairingService
+import com.carcast.adb.AdbPrefs
 import com.carcast.service.NetDiag
 import com.carcast.service.SelfTest
 import com.carcast.service.StreamService
@@ -31,6 +35,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var selfTest: Button
     private lateinit var netDiag: Button
     private lateinit var shareReports: Button
+    private lateinit var pair: Button
+    private lateinit var logScroll: android.widget.ScrollView
+    private var lastLog = ""
+    private var lastCommand = ""
+    private lateinit var manual: Button
     private lateinit var useVpn: android.widget.CheckBox
     private lateinit var serverInApp: android.widget.CheckBox
     private val handler = Handler(Looper.getMainLooper())
@@ -52,6 +61,18 @@ class MainActivity : AppCompatActivity() {
         netDiag.setOnClickListener { shareDiagnostics() }
         shareReports = findViewById(R.id.share_reports)
         shareReports.setOnClickListener { shareCarReports() }
+        pair = findViewById(R.id.pair)
+        pair.setOnClickListener { startPairing() }
+        manual = findViewById(R.id.manual)
+        manual.setOnClickListener { manualDialog() }
+        logScroll = findViewById(R.id.log_scroll)
+        findViewById<Button>(R.id.copy_log).setOnClickListener {
+            val lines = StreamService.logLines.toList()
+            getSystemService(android.content.ClipboardManager::class.java)
+                .setPrimaryClip(android.content.ClipData.newPlainText("CarCast log", lines.joinToString("\n")))
+            android.widget.Toast.makeText(this, getString(R.string.copied, lines.size), android.widget.Toast.LENGTH_SHORT).show()
+        }
+        findViewById<Button>(R.id.clear_log).setOnClickListener { StreamService.logLines.clear(); lastLog = "" ; log.text = "" }
         useVpn = findViewById(R.id.use_vpn)
         serverInApp = findViewById(R.id.server_in_app)
         selfTest.setOnClickListener {
@@ -98,6 +119,50 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent.createChooser(send, getString(R.string.netdiag)))
             }
         }.apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Starts the pairing notification (which takes the code) and jumps to Developer options →
+     * Wireless debugging, where the user opens "Pair device with pairing code".
+     */
+    private fun startPairing() {
+        startForegroundService(Intent(this, AdbPairingService::class.java))
+        runCatching { startActivity(AdbPrefs.wirelessDebuggingIntent()) }
+            .onFailure { StreamService.log("개발자 옵션을 열지 못함: $it — 설정에서 직접 무선 디버깅으로 가세요") }
+    }
+
+    /** Fallback when mDNS finds nothing: type the ports the Wireless debugging screen shows. */
+    private fun manualDialog() {
+        val prefs = AdbPrefs(this)
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        val help = TextView(this).apply { text = getString(R.string.manual_hint) }
+        fun field(hintRes: Int, value: String = "") = android.widget.EditText(this).apply {
+            setHint(hintRes); inputType = android.text.InputType.TYPE_CLASS_NUMBER; setText(value)
+        }
+        val connectPort = field(R.string.manual_connect_port, if (prefs.manualConnectPort > 0) prefs.manualConnectPort.toString() else "")
+        val pairPort = field(R.string.manual_pair_port)
+        val pairCode = field(R.string.manual_pair_code)
+        for (v in listOf(help, connectPort, pairPort, pairCode)) box.addView(v)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.manual_title)
+            .setView(box)
+            .setPositiveButton(R.string.save) { _, _ ->
+                prefs.manualConnectPort = connectPort.text.toString().toIntOrNull() ?: 0
+                StreamService.log("접속 포트 수동 설정: ${prefs.manualConnectPort} (0=자동)")
+                startService(Intent(this, StreamService::class.java).setAction(StreamService.ACTION_CONNECT))
+            }
+            .setNeutralButton(R.string.manual_pair_now) { _, _ ->
+                val port = pairPort.text.toString().toIntOrNull() ?: 0
+                if (port <= 0) { StreamService.log("페어링 포트가 비어 있음"); return@setNeutralButton }
+                startForegroundService(
+                    Intent(this, AdbPairingService::class.java).setAction(AdbPairingService.ACTION_CODE)
+                        .putExtra(AdbPairingService.KEY_CODE, pairCode.text.toString())
+                        .putExtra(AdbPairingService.EXTRA_PORT, port)
+                )
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /**
@@ -148,20 +213,30 @@ class MainActivity : AppCompatActivity() {
                 append("서버: ").append(
                     when {
                         !running -> "-"
-                        st == null -> "응답 없음 — PC에서 shell 서버를 띄우세요 (아래 명령)"
+                        st == null -> "응답 없음 (앱이 adb로 기동 시도 중; 안 되면 PC에서 아래 명령)"
                         else -> "응답 중 " + Regex("\"process\":\"(\\w+)\"").find(st)?.groupValues?.get(1) +
                             " uid=" + (Regex("\"uid\":(\\d+)").find(st)?.groupValues?.get(1) ?: "?") +
                             " clients=" + (Regex("\"videoClients\":(\\d+)").find(st)?.groupValues?.get(1) ?: "?")
                     }
                 ).append('\n')
+                append("adb: ").append(StreamService.linkState ?: if (AdbPrefs(this@MainActivity).paired) "페어링됨, 세션 없음" else "미페어링").append('\n')
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
                 append("차에서 보낸 진단: ").append(lastReportLine(st)).append('\n')
                 append("인터페이스:\n")
                 for (i in SelfTest.interfaces()) append("  ").append(i.name).append(' ').append(i.address).append('\n')
             }
-            command.text = StreamService.shellCommand()
-            log.text = StreamService.logLines.joinToString("\n")
+            val cmd = StreamService.shellCommand()
+            if (cmd != lastCommand) { lastCommand = cmd; command.text = cmd }
+            val lines = StreamService.logLines.joinToString("\n")
+            if (lines != lastLog) {
+                // Re-setting the text drops the selection and scroll, so only do it when a line was added,
+                // and follow the tail only if the user was already looking at the tail.
+                val atBottom = !logScroll.canScrollVertically(1)
+                lastLog = lines
+                log.text = lines
+                if (atBottom) logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
+            }
             handler.postDelayed(this, 1000)
         }
     }

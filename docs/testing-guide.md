@@ -99,27 +99,38 @@ npm run fake-phone              # http://localhost:3333/
 ### B. 폰(S26U) + 노트북
 
 APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 돌아야 차(핫스팟 클라이언트)가 100.99.9.9에
-닿는다(이유: dev-plan "검증된 사실"). M3 전까지는 그 서버를 PC의 adb로 띄운다. 순서:
+닿는다(이유: dev-plan "검증된 사실"). M3부터는 앱이 폰 자신의 무선 디버깅에 접속해 서버를 직접 띄운다. 순서:
 
 1. APK 받기. Actions 탭 → `android` → 아티팩트 `carcast-debug-apk`. 또는 로컬 `./gradlew :app:assembleDebug`.
-2. 폰에 설치, 앱에서 **시작** → VPN 동의 → `tun: UP`. 화면에 `(빌드 xxxxxxx)`와 아래 adb 명령이 보인다.
-3. 폰 USB 연결(USB 디버깅 켜기) 후 PC에서 서버 기동. 창을 닫거나 Ctrl-C 하면 서버도 죽는다(킬 스위치):
-   ```powershell
-   adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server <빌드 sha> port=3333'
-   # → carcast-server uid=2000 build=<sha> ... / carcast-server ready
-   ```
-   앱 화면의 "서버:" 줄이 `응답 중 shell uid=2000`으로 바뀐다.
-4. 폰 핫스팟 켜고(5GHz 권장) 노트북을 붙인다.
-5. 노트북에서:
+2. 폰에 설치. 설정 → 개발자 옵션 → **무선 디버깅** 켜기.
+3. **최초 1회 페어링:** 앱에서 **"무선 디버깅 페어링"** 버튼 → 개발자 옵션 화면이 열린다 → 무선 디버깅 →
+   **"페어링 코드로 기기 페어링"** → 알림창을 내려 CarCast 알림의 **"코드 입력"**에 6자리 코드를 입력.
+   앱 로그에 `페어링 포트 발견` → `페어링 성공`이 찍히고, 무선 디버깅 화면의 "페어링된 기기"에 `CarCast`가 생긴다.
+   mDNS로 포트를 못 찾으면(로그 `페어링 포트를 찾지 못함`) **"포트 수동 입력…"**에서 대화상자의 포트와 코드를 넣는다.
+4. 앱에서 **시작** → VPN 동의 → `tun: UP`. 화면의 `adb:` 줄이 `FINDING_PORT → CONNECTING → STARTING → RUNNING (uid=2000 …)`으로
+   바뀌고 "서버:" 줄이 `응답 중 shell uid=2000`이 된다. `NEEDS_PAIRING`이면 3번을 다시. 접속 포트를 못 찾으면
+   무선 디버깅 화면의 "IP 주소 및 포트"의 포트를 **"포트 수동 입력…"** 접속 포트에 넣는다(재부팅·토글마다 바뀐다).
+   **PC 폴백:** 앱이 못 띄우면 화면에 보이는 adb 명령을 PC에서 실행한다(아래 "PC 없이" 절과 M3 이전 절차).
+5. 폰 핫스팟 켜고(5GHz 권장) 노트북을 붙인다.
+6. 노트북에서:
    ```bash
    curl http://100.99.9.9:3333/api/status          # {"running":true,"process":"shell","uid":2000,...} 나오면 가정 1 통과
    BASE_URL=http://100.99.9.9:3333 npx playwright test   # PC용 테스트를 그대로 폰에 대고 실행
    ```
    (`BASE_URL`을 주면 가짜 폰을 띄우지 않고, 가짜 폰이 필요한 터치·재연결 테스트는 자동 skip)
-6. 노트북 Chrome에서 `http://100.99.9.9:3333/` 열어 눈으로 확인. 이때 노트북도 Chrome 148이면 차와 거의 같은 조건이다.
-7. 결과를 `docs/car-tests/` 에 기록.
+7. 노트북 Chrome에서 `http://100.99.9.9:3333/` 열어 눈으로 확인. 이때 노트북도 Chrome 148이면 차와 거의 같은 조건이다.
+8. **킬 스위치 확인:** 앱에서 **중지** → 몇 초 안에 "서버:"가 `-`, 노트북 curl이 실패해야 한다(스트림을 닫으면 서버가 stdin EOF로 종료).
+9. 결과를 `docs/car-tests/` 에 기록.
 
-**PC 없이 차에서 쓸 때 (M3 전):** 서버를 adb 창과 분리해 띄워 두고 USB를 뽑는다. 종료는 `pkill`.
+**M3 폰 검증 체크리스트** (verification-log §3.4에 결과 기록):
+- 페어링 성공 / mDNS 페어링 포트 발견 여부 / 수동 포트로도 되는지
+- 시작 → `RUNNING uid=2000` 까지 걸린 시간, 접속 포트 mDNS 발견 여부
+- 무선 디버깅 off→on, 폰 재부팅 후 시작 버튼 한 번으로 복구되는지
+- 중지 → 서버 종료(킬 스위치), 앱 강제 종료 시 서버가 같이 죽는지
+- 화면 OFF 30분 후 서버·adb 스트림 유지 여부 (도즈)
+
+**PC에서 띄울 때 (앱의 adb 링크가 안 될 때의 폴백):** 서버를 adb 창과 분리해 띄워 두고 USB를 뽑는다. 종료는 `pkill`.
+`<빌드 sha>`는 앱 화면의 `(빌드 xxxxxxx)` 값으로 **꺾쇠 없이** 바꿔 넣는다 (예: `... com.carcast.server.Server 4eef57e port=3333 ...`).
 ```powershell
 adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) setsid nohup app_process / com.carcast.server.Server <빌드 sha> port=3333 daemon=true >/dev/null 2>&1 &'
 adb shell 'pkill -f com.carcast.server.Server'      # 끝낼 때

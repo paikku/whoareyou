@@ -118,6 +118,7 @@
 **결론:** 가정 1은 "서버 소켓이 shell uid"라는 조건 아래 실기기에서 통과. 앱이 자기 APK를 `app_process`로 shell에서 띄우는 방식(가정 3의 전제)도 함께 확인됨.
 
 ### 3.4 아직 B층에서 안 한 것
+- **M3 앱 내장 ADB(커밋 이후 첫 폰 테스트):** 페어링(mDNS/수동), 시작 → `RUNNING uid=2000`, 접속 포트 발견, 킬 스위치, 재부팅 후 복구, 도즈 30분 — 체크리스트는 testing-guide B절.
 - `BASE_URL=http://100.99.9.9:3333 npx playwright test`를 노트북에서 폰에 대고 실행(자동화된 fps·지연 수치).
 - 5GHz 핫스팟에서 720p30 10분 연속(대역폭).
 - M0 scrcpy 4.1 체크리스트(VD 생성, 앱 실행, 터치, IME, 오디오, 화면 OFF, DeX 노출) — [car-tests/s26u-one-ui-8.md](car-tests/s26u-one-ui-8.md) 표.
@@ -139,7 +140,7 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 ## 5. 열린 질문 (다음 검증 대상)
 1. 차 브라우저에서 `100.64/10` 대역이 실제로 열리는지, MSE H.264 디코드 fps (가정 2).
 2. M0: One UI 8에서 shell의 VD 생성·`--start-app`·`display_ime_policy=local`·오디오 소스 선택 (가정 3·4).
-3. M3: Kadb `pair`/`connect`가 One UI 8 무선 디버깅과 호환되는지, 재부팅 후 포트 재발견, `adb_wifi_enabled` 토글로 킬 스위치.
+3. M3: Kadb 2.1.1 `pair`/`connect`가 One UI 8 무선 디버깅과 호환되는지(코드는 들어감, 폰 미검증), NsdManager가 `_adb-tls-pairing`/`_adb-tls-connect`를 Android 16에서 잡는지(Shizuku #1125류), 재부팅 후 포트 재발견, `adb_wifi_enabled` 토글로 킬 스위치.
 4. shell 서버의 수명: 화면 OFF/도즈 30분, 앱이 죽었을 때 정리.
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
