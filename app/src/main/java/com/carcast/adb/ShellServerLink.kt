@@ -66,10 +66,20 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         var wasUp = false
         var staleWarned = false
         var adbOffWarned = false
+        var tcpSwitchAnnounced = false
         while (active) {
             val status = serverStatus()
             var replaceStale = false
-            if (status != null) {
+            // The switch to TCP mode can only happen over adb, and adb is only touched when the server is
+            // down — so a healthy server would postpone it forever. When the user has asked for it, go
+            // connect anyway; the switch restarts adbd and takes the server with it either way, and
+            // launchOnce puts it back. Capped by tcpModeFailures so a device that refuses cannot loop.
+            val wantTcpSwitch = prefs.tcpModeOptIn && prefs.tcpModeFailures < TCP_MODE_MAX_TRIES && !tcpModeReachable()
+            if (wantTcpSwitch && status != null && !tcpSwitchAnnounced) {
+                tcpSwitchAnnounced = true
+                log("TCP 모드 전환을 위해 adb에 접속합니다 — 전환 중 서버가 잠시 내려갔다가 다시 뜹니다")
+            }
+            if (status != null && !wantTcpSwitch) {
                 val build = Regex("\"build\":\"([^\"]*)\"").find(status)?.groupValues?.get(1)
                 if (build != null && build != BuildConfig.GIT_SHA) {
                     // The APK was updated but the detached server still runs the old dex. Replace it ONLY once we
@@ -107,6 +117,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
             if (!tcpModeReachable()) {
                 if (!onWifi()) {
                     set(State.NO_WIFI, "Wi-Fi 미연결: 무선 디버깅 불가")
+                    if (delay == 5_000L && prefs.tcpModeOptIn) log("TCP 모드 전환 대기 — 전환은 adb로만 할 수 있으니 Wi-Fi에 연결하고 무선 디버깅을 켜 주세요")
                     if (delay == 5_000L) log("서버가 없고 Wi-Fi도 아님 — Wi-Fi에 연결된 곳에서 '시작'을 한 번 누르면 앱이 adbd를 TCP 모드로 바꿔 다음부터는 Wi-Fi 없이 됩니다 (또는 PC 명령)")
                     waitFor(delay); delay = (delay * 2).coerceAtMost(60_000L)
                     continue
@@ -251,7 +262,10 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private fun maybeSwitchToTcpMode(link: AdbLink, via: Candidate): AdbLink {
         if (via.why == "TCP 모드") return link
         if (!prefs.tcpModeOptIn) return link
-        if (prefs.tcpModeFailures >= TCP_MODE_MAX_TRIES) return link
+        if (prefs.tcpModeFailures >= TCP_MODE_MAX_TRIES) {
+            log("TCP 모드 전환을 ${TCP_MODE_MAX_TRIES}회 실패해 더 시도하지 않습니다 — 다시 시도하려면 'TCP 모드 끄기' 후 다시 켜세요")
+            return link
+        }
         return switchToTcpMode(link)
     }
 
