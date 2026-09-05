@@ -170,33 +170,99 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         throw IOException("서버가 10초 안에 응답하지 않음 — 서버 로그 $logFile:\n$detail")
     }
 
+    private data class Candidate(val port: Int, val why: String)
+
     /**
-     * A connected adb link, shell confirmed. Prefers the TCP-mode port, which needs no Wi-Fi; otherwise goes
-     * in over wireless debugging and, the first couple of times, switches adbd to TCP mode so that the next
-     * time — in the car, on the hotspot — the Wi-Fi path is not needed at all.
+     * Every port worth dialling, best first. adbd picks a new port on every wireless-debugging toggle and
+     * reboot, and mDNS can still carry an old record (or another phone's), so one guess is not enough — the
+     * whole list is tried and logged, and the log names what each port was.
+     */
+    private fun candidates(): List<Candidate> {
+        val out = LinkedHashMap<Int, String>()
+        val tcp = prefs.tcpPort
+        if (tcp > 0) {
+            val open = portOpen(tcp)
+            log("TCP 모드 포트 $tcp: " + if (open) "열려 있음" else "닫힘 (adbd가 TCP 모드가 아님)")
+            if (open) out[tcp] = "TCP 모드"
+        }
+        val manual = prefs.manualConnectPort
+        if (manual > 0) out.putIfAbsent(manual, "수동 입력")
+        set(State.FINDING_PORT, "mDNS ${ADB_CONNECT_WAIT_S}s")
+        val found = mdnsPorts()
+        if (found.isEmpty()) log("mDNS _adb-tls-connect 레코드 없음 — 무선 디버깅이 꺼져 있거나 아직 광고 전입니다")
+        for ((port, host, local) in found) {
+            log("mDNS _adb-tls-connect: ${host ?: "주소 없음"}:$port${if (local) " (이 폰)" else " (다른 기기)"}")
+            out.putIfAbsent(port, if (local) "mDNS" else "mDNS(외부)")
+        }
+        return out.map { Candidate(it.key, it.value) }
+    }
+
+    /** Collects every advertised connect port for the window, ours first; stops early once one of ours shows up. */
+    private fun mdnsPorts(): List<Triple<Int, String?, Boolean>> {
+        val found = java.util.concurrent.CopyOnWriteArrayList<Triple<Int, String?, Boolean>>()
+        val ours = CountDownLatch(1)
+        val mdns = AdbMdns(context, AdbMdns.CONNECT, requireLocal = false) { port, host, local ->
+            found.add(Triple(port, host, local))
+            if (local) ours.countDown()
+        }
+        mdns.start()
+        try { ours.await(ADB_CONNECT_WAIT_S, TimeUnit.SECONDS) } finally { mdns.stop() }
+        return found.sortedByDescending { it.third }
+    }
+
+    /**
+     * A connected adb link, shell confirmed: dials [candidates] in turn until one answers `id`. Being unpaired is
+     * reported ahead of connection failures, because that is the one thing the user can act on directly.
      */
     @Throws(IOException::class)
     private fun openLink(): AdbLink {
-        val tcp = prefs.tcpPort
-        // Probe the port before dialling it: when adbd is not in TCP mode (a reboot, or it never took) a full
-        // connect would stall for the connect timeout on every round and log a failure line each time.
-        if (tcp > 0 && tcpModeReachable()) {
-            set(State.CONNECTING, "TCP 모드 127.0.0.1:$tcp")
-            val l = AdbLink(tcp)
+        val tried = StringBuilder()
+        var notPaired: AdbLink.NotPairedException? = null
+        for (c in candidates()) {
+            if (!active) throw IOException("중지됨")
+            set(State.CONNECTING, "${c.why} 127.0.0.1:${c.port}")
+            val l = AdbLink(c.port, connectTimeoutMs = CONNECT_TIMEOUT_MS)
             val id = runCatching { l.whoAmI() }
-            id.getOrNull()?.let { checkShell(it, "TCP 모드, Wi-Fi 불필요"); return l }
+            id.getOrNull()?.let {
+                if (c.port == prefs.manualConnectPort) prefs.manualPortFailures = 0
+                checkShell(it, c.why)
+                return maybeSwitchToTcpMode(l, c)
+            }
             l.close()
             val e = id.exceptionOrNull()
-            log("TCP 모드 포트 $tcp 접속 실패 (${e?.message}) — 무선 디버깅으로 되돌립니다" +
-                if (e is AdbLink.NotPairedException) ". 폰에 'USB 디버깅을 허용하시겠습니까?'가 떠 있으면 '항상 허용'으로 수락하세요" else "")
+            if (e is AdbLink.NotPairedException) notPaired = e
+            tried.append("\n  · ${c.port} (${c.why}): ${e?.message?.take(80)}")
         }
-        val port = findPort() ?: throw IOException("adbd 접속 포트를 찾지 못함 — 무선 디버깅 화면의 'IP 주소 및 포트'의 포트를 '포트 수동…'에 넣으세요")
-        set(State.CONNECTING, "127.0.0.1:$port")
-        val tls = AdbLink(port)
-        val id = try { tls.whoAmI() } catch (e: Throwable) { tls.close(); throw e }
-        checkShell(id, "무선 디버깅")
-        if (prefs.tcpModeFailures >= TCP_MODE_MAX_TRIES) return tls
-        return switchToTcpMode(tls)
+        notPaired?.let { throw it }
+        dropManualPortIfHopeless()
+        throw IOException(
+            if (tried.isEmpty()) "adbd 접속 포트를 찾지 못함 — 개발자 옵션에서 무선 디버깅을 켜세요"
+            else "adbd에 붙지 못함. 시도한 포트:$tried\n무선 디버깅은 껐다 켤 때마다 포트가 바뀝니다 — 토글을 껐다 켜고 다시 시도해 보세요"
+        )
+    }
+
+    /**
+     * TCP mode is only entered when the user asked for it ([AdbPrefs.tcpModeOptIn]): the switch restarts adbd,
+     * so if adbd does not come back serving wireless debugging, the only way in is gone until the user toggles it.
+     */
+    @Throws(IOException::class)
+    private fun maybeSwitchToTcpMode(link: AdbLink, via: Candidate): AdbLink {
+        if (via.why == "TCP 모드") return link
+        if (!prefs.tcpModeOptIn) return link
+        if (prefs.tcpModeFailures >= TCP_MODE_MAX_TRIES) return link
+        return switchToTcpMode(link)
+    }
+
+    /** A manual port that keeps refusing is worse than none: it hides mDNS. Drop it after a few rounds. */
+    private fun dropManualPortIfHopeless() {
+        val manual = prefs.manualConnectPort
+        if (manual <= 0) return
+        prefs.manualPortFailures++
+        if (prefs.manualPortFailures >= MANUAL_PORT_MAX_FAILURES) {
+            prefs.manualConnectPort = 0
+            prefs.manualPortFailures = 0
+            log("수동 포트 $manual 이 계속 거부됨 — 지우고 자동(mDNS) 탐색으로 되돌립니다")
+        }
     }
 
     private fun checkShell(id: String, how: String) {
@@ -214,7 +280,8 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private fun switchToTcpMode(tls: AdbLink): AdbLink {
         val port = prefs.tcpPort.takeIf { it > 0 } ?: newTcpPort().also { prefs.tcpPort = it }
         set(State.TCP_MODE, "127.0.0.1:$port")
-        log("adbd를 TCP 모드로 전환합니다 (포트 $port) — 성공하면 이후에는 Wi-Fi도 무선 디버깅 토글도 필요 없고, 차에서도 서버를 다시 띄울 수 있습니다")
+        log("adbd를 TCP 모드로 전환합니다 (포트 $port) — 성공하면 이후에는 Wi-Fi도 무선 디버깅 토글도 필요 없고, 차에서도 서버를 다시 띄울 수 있습니다. " +
+            "실패하면 무선 디버깅을 껐다 켜야 할 수 있습니다")
         val reply = try { tls.use { it.tcpip(port) } } catch (e: Exception) {
             prefs.tcpModeFailures++
             throw IOException("TCP 모드 전환 요청 실패: ${e.message}", e)
@@ -262,15 +329,13 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     /** adbd binds the TCP port on every interface, so avoid 5555: a random high port is one less thing on the hotspot to find. */
     private fun newTcpPort(): Int = 30_000 + java.security.SecureRandom().nextInt(15_000)
 
-    /** Cheap gate: is adbd listening on the TCP-mode port? A full handshake is too slow for the poll loop. */
-    private fun tcpModeReachable(): Boolean {
-        val p = prefs.tcpPort
-        if (p <= 0) return false
-        return runCatching {
-            java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", p), 300) }
-            true
-        }.getOrDefault(false)
-    }
+    /** Cheap gate: is anything listening there? A full adb handshake is far too slow for the poll loop. */
+    private fun portOpen(port: Int): Boolean = runCatching {
+        java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), PORT_PROBE_MS) }
+        true
+    }.getOrDefault(false)
+
+    private fun tcpModeReachable(): Boolean = prefs.tcpPort > 0 && portOpen(prefs.tcpPort)
 
     /** The /api/status body when a server answers on loopback, else null. */
     private fun serverStatus(): String? = try {
@@ -292,29 +357,15 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
 
     private fun canTryAdb(): Boolean = tcpModeReachable() || (onWifi() && adbWifiEnabled())
 
-    /**
-     * Manual port wins; otherwise a discovered `_adb-tls-connect` record. Locality is NOT required here
-     * because we always dial 127.0.0.1 (adbd listens on loopback too); an unrelated device's advert just
-     * fails the `id` check and we retry.
-     */
-    private fun findPort(): Int? {
-        val manual = prefs.manualConnectPort
-        if (manual > 0) { set(State.FINDING_PORT, "수동 포트 $manual"); return manual }
-        set(State.FINDING_PORT, "mDNS ${ADB_CONNECT_WAIT_S}s")
-        val found = CountDownLatch(1)
-        var port = 0
-        val mdns = AdbMdns(context, AdbMdns.CONNECT, requireLocal = false) { p -> port = p; found.countDown() }
-        mdns.start()
-        try { found.await(ADB_CONNECT_WAIT_S, TimeUnit.SECONDS) } finally { mdns.stop() }
-        return port.takeIf { it > 0 }
-    }
-
     private fun waitFor(ms: Long) {
         synchronized(wake) { runCatching { if (ms == Long.MAX_VALUE) wake.wait() else wake.wait(ms) } }
     }
 
     companion object {
         private const val ADB_CONNECT_WAIT_S = 15L
+        private const val CONNECT_TIMEOUT_MS = 2_000
+        private const val PORT_PROBE_MS = 300
+        private const val MANUAL_PORT_MAX_FAILURES = 3
         private const val TCP_MODE_WAIT_S = 20
         private const val TCP_MODE_MAX_TRIES = 2
         private const val SERVER_DIR = "/data/local/tmp/carcast"

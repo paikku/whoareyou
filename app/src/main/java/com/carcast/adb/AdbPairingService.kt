@@ -50,10 +50,10 @@ class AdbPairingService : Service() {
 
     private fun ensureDiscovery() {
         if (mdns != null) return
-        mdns = AdbMdns(this, AdbMdns.PAIRING, requireLocal = false) { p ->
+        mdns = AdbMdns(this, AdbMdns.PAIRING, requireLocal = false) { p, host, local ->
             port = p
             portFound.countDown()
-            StreamService.log("페어링 포트 발견: $p")
+            StreamService.log("페어링 포트 발견: $p (${host ?: "주소 없음"}${if (local) ", 이 폰" else ", 다른 기기"})")
         }.also { it.start() }
     }
 

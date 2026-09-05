@@ -13,8 +13,8 @@ import java.io.IOException
  * A connection to this phone's own adbd over wireless debugging (always 127.0.0.1, the port comes
  * from mDNS or the user). Everything here blocks; call from a background thread.
  */
-class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
-    private val kadb = Kadb.create(host, port, connectTimeout = 5000, socketTimeout = 0)
+class AdbLink(val port: Int, val host: String = "127.0.0.1", connectTimeoutMs: Int = 5000) : AutoCloseable {
+    private val kadb = Kadb.create(host, port, connectTimeout = connectTimeoutMs, socketTimeout = 0)
 
     class NotPairedException(cause: Throwable) : IOException("이 앱의 키가 페어링되어 있지 않음", cause)
 

@@ -15,11 +15,18 @@ import java.util.concurrent.Executors
  * Both ports change on every toggle/reboot, so they are looked up every time, never stored.
  * Only services resolving to one of this phone's own addresses are reported (see [LocalHost]).
  */
-class AdbMdns(context: Context, private val type: String, private val requireLocal: Boolean = true, private val onPort: (Int) -> Unit) {
+class AdbMdns(
+    context: Context,
+    private val type: String,
+    private val requireLocal: Boolean = true,
+    /** Called once per distinct port, with the address it resolved to and whether that address is ours. */
+    private val onPort: (port: Int, host: String?, local: Boolean) -> Unit,
+) {
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val executor: Executor = Executors.newSingleThreadExecutor { r -> Thread(r, "adb-mdns").apply { isDaemon = true } }
     @Volatile private var running = false
-    private var reported = -1
+    /** Every port already reported. A device can advertise several records, and the first is not always the live one. */
+    private val reported = java.util.Collections.synchronizedSet(HashSet<Int>())
     private val callbacks = HashMap<String, NsdManager.ServiceInfoCallback>()
 
     private val discovery = object : NsdManager.DiscoveryListener {
@@ -37,9 +44,8 @@ class AdbMdns(context: Context, private val type: String, private val requireLoc
                     val port = resolved.port
                     val local = LocalHost.isLocal(host)
                     Log.i(TAG, "${resolved.serviceName} → $host:$port local=$local")
-                    if ((local || !requireLocal) && port > 0 && running && reported != port) {
-                        reported = port
-                        onPort(port)
+                    if ((local || !requireLocal) && port > 0 && running && reported.add(port)) {
+                        onPort(port, host?.hostAddress?.substringBefore('%'), local)
                     }
                 }
                 override fun onServiceLost() {}
@@ -59,7 +65,7 @@ class AdbMdns(context: Context, private val type: String, private val requireLoc
     fun start() {
         if (running) return
         running = true
-        reported = -1
+        reported.clear()
         nsd.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, discovery)
     }
 

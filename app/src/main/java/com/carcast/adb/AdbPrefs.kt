@@ -18,7 +18,10 @@ class AdbPrefs(context: Context) {
         get() = p.getBoolean("paired", false)
         set(v) = p.edit().putBoolean("paired", v).apply()
 
-    /** A user-typed connect port (from the Wireless debugging screen), used instead of mDNS when > 0. */
+    /**
+     * A user-typed connect port (from the Wireless debugging screen). adbd picks a new one on every toggle and
+     * reboot, so this is only a hint that is tried alongside mDNS and dropped once it has failed a few times.
+     */
     var manualConnectPort: Int
         get() = p.getInt("connectPort", 0)
         set(v) = p.edit().putInt("connectPort", v).apply()
@@ -31,6 +34,20 @@ class AdbPrefs(context: Context) {
     var tcpPort: Int
         get() = p.getInt("tcpPort", 0)
         set(v) = p.edit().putInt("tcpPort", v).apply()
+
+    /**
+     * Whether the user asked for TCP mode. Off by default and never turned on by the app itself: the switch
+     * restarts adbd, and on a device whose adbd does not come back serving wireless debugging that leaves the
+     * only way in broken until the user toggles it. Opt in from the app, where the warning is.
+     */
+    var tcpModeOptIn: Boolean
+        get() = p.getBoolean("tcpModeOptIn", false)
+        set(v) = p.edit().putBoolean("tcpModeOptIn", v).apply()
+
+    /** Consecutive failures of [manualConnectPort]; it is dropped after a few so a stale port cannot trap the app. */
+    var manualPortFailures: Int
+        get() = p.getInt("manualPortFailures", 0)
+        set(v) = p.edit().putInt("manualPortFailures", v).apply()
 
     /**
      * How many times switching to TCP mode has failed. Switching restarts adbd, so a failure costs the
