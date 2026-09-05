@@ -23,6 +23,7 @@
 | — | 앱 하나(APK)에 shell 서버 dex를 넣고 `CLASSPATH=<base.apk> app_process`로 실행할 수 있다 | ✅ uid=2000, build id 검증 동작 | B | §3.3 |
 | — | Kadb(순수 JVM ADB 페어링)로 NDK 없이 갈 수 있다 | ✅ POM 확인(okio, spake2-java, hiddenapibypass, BouncyCastle). 코드는 M3에서 | A | dev-plan |
 | — | 매 CI 빌드의 APK를 덮어 설치할 수 있다 | ✅ 고정 debug keystore 커밋 후 | B | §3.1 |
+| — | Kadb 페어링 + NsdManager `_adb-tls-pairing` 발견이 One UI 8(Android 16)에서 된다 | ✅ 2026-09-05 빌드 `15ea085`: 포트 39727 발견 → 페어링 성공 (수동 입력 불필요) | B | §3.5 |
 | — | 무선 디버깅을 핫스팟 상태에서 켤 수 있다 | ❌ Wi-Fi 클라이언트 연결 중에만 토글 활성 (사용자 실측 2026-09-05) → 서버는 Wi-Fi에서 분리 실행, 차에서는 adb 불사용 | B | dev-plan M3 |
 | — | `daemon=true` 서버가 USB 분리 후 유지된다 | ✅ PC adb로 `setsid nohup … daemon=true` 기동 후 앱 "서버 응답 확인" (2026-09-05). Wi-Fi off/핫스팟/화면 OFF 장시간은 ⏳ | B | — |
 
@@ -118,6 +119,15 @@
 | 19 | 노트북 Chrome → `http://100.99.9.9:3333/` | ✅ `video 클라이언트 접속 (1)`, `control 패킷 1개 (kind=1)` — 영상·터치 채널 모두 동작 |
 
 **결론:** 가정 1은 "서버 소켓이 shell uid"라는 조건 아래 실기기에서 통과. 앱이 자기 APK를 `app_process`로 shell에서 띄우는 방식(가정 3의 전제)도 함께 확인됨.
+
+### 3.5 M3: 앱 내장 ADB (빌드 `15ea085`, 2026-09-05)
+| # | 확인 | 결과 |
+|---|---|---|
+| 1 | 집 Wi-Fi 연결 → 무선 디버깅 토글 활성 | ✅ (핫스팟만으로는 ❌ 비활성) |
+| 2 | 앱 "무선 디버깅 페어링" → 알림 RemoteInput에 코드 입력 | ✅ `페어링 포트 발견: 39727` → `페어링 성공` (알림 띄운 뒤 약 10초) |
+| 3 | 시작 → adb 접속 → 분리 실행 → `SERVER_UP` | ⏳ |
+| 4 | Wi-Fi off + 핫스팟 on 후 서버 유지 | ⏳ |
+| 5 | "서버 종료" 킬 스위치, 재부팅 후 복구 | ⏳ |
 
 ### 3.4 아직 B층에서 안 한 것
 - **M3 앱 내장 ADB(커밋 이후 첫 폰 테스트):** 페어링(mDNS/수동), 시작 → `RUNNING uid=2000`, 접속 포트 발견, 킬 스위치, 재부팅 후 복구, 도즈 30분 — 체크리스트는 testing-guide B절.
