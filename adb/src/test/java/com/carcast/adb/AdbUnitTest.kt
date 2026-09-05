@@ -21,7 +21,8 @@ class ServerCommandTest {
     @Test
     fun detachedFormRunsInItsOwnSessionWithDaemonFlag() {
         assertEquals(
-            "mkdir -p /data/local/tmp/carcast; CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true >/data/local/tmp/carcast/server.log 2>&1 </dev/null & echo launched pid=$!",
+            "pkill -f com.carcast.server.Server 2>/dev/null; sleep 1; mkdir -p /data/local/tmp/carcast; " +
+                "CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true >/data/local/tmp/carcast/server.log 2>&1 </dev/null & echo launched pid=$!",
             ServerCommand.detached("/a/base.apk", "abc1234", 3333),
         )
     }

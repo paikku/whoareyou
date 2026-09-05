@@ -42,7 +42,8 @@ final class ScreenPower {
         try {
             previousStayOn = Settings.getAndPutValue("global", STAY_ON, STAY_ON_ALL);
             Ln.i(STAY_ON + " = " + STAY_ON_ALL + " (was " + previousStayOn + ")");
-        } catch (SettingsException e) {
+        } catch (Throwable e) {
+            // Never fatal: the server must come up even if this settings write is rejected.
             Ln.w("Could not set " + STAY_ON + ": " + e);
         }
     }

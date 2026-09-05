@@ -68,7 +68,14 @@ object ServerMain {
         session.extraApi = extraApi
         val stopped = java.util.concurrent.CountDownLatch(1)
         session.onStopRequest = { stopped.countDown() }
-        session.start()
+        try {
+            session.start()
+        } catch (e: Exception) {
+            println("carcast-server: could not start on port ${opts.port}: $e")
+            e.printStackTrace()
+            System.out.flush()
+            throw e
+        }
         println("carcast-server ready build=${opts.buildId} port=${opts.port}")
         System.out.flush()
         Runtime.getRuntime().addShutdownHook(Thread { session.stop() })

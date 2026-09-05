@@ -142,8 +142,8 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
             if (serverUp()) { log("서버 기동 확인 (${i * 500}ms)"); return }
             Thread.sleep(500)
         }
-        val tail = runCatching { AdbLink(port).use { it.shell("tail -n 20 /data/local/tmp/carcast/server.log") } }.getOrNull()?.trim()
-        throw IOException("서버가 10초 안에 응답하지 않음" + (if (!tail.isNullOrEmpty()) "\n$tail" else ""))
+        val tail = runCatching { AdbLink(port).use { it.shell("tail -n 40 /data/local/tmp/carcast/server.log") } }.getOrNull()?.trim()
+        throw IOException("서버가 10초 안에 응답하지 않음 — 서버 로그:\n" + (tail ?: "(로그 없음)"))
     }
 
     /** The /api/status body when a server answers on loopback, else null. */

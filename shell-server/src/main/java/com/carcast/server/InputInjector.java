@@ -37,7 +37,17 @@ final class InputInjector {
     private final float[] lastY = new float[MAX_POINTERS];
     private final float[] lastPressure = new float[MAX_POINTERS];
     private long lastTouchDown;
-    private final KeyCharacterMap charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+    private final KeyCharacterMap charMap = loadCharMap();
+
+    private static KeyCharacterMap loadCharMap() {
+        try {
+            return KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+        } catch (Throwable t) {
+            // Never fatal: without it, ASCII text goes through the clipboard path instead of key events.
+            Ln.w("KeyCharacterMap unavailable: " + t);
+            return null;
+        }
+    }
     private volatile long injected;
     private volatile long failed;
 
@@ -168,8 +178,8 @@ final class InputInjector {
             return true;
         }
         // Characters the virtual keyboard can type directly (ASCII etc.): key events, like scrcpy's injectText.
-        boolean allTyped = true;
-        for (char c : text.toCharArray()) {
+        boolean allTyped = charMap != null;
+        if (allTyped) for (char c : text.toCharArray()) {
             KeyEvent[] events = charMap.getEvents(new char[] {c});
             if (events == null) {
                 allTyped = false;

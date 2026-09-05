@@ -39,6 +39,15 @@ public final class Server {
     }
 
     public static void main(String... args) {
+        // Detached (daemon) runs redirect stdout/stderr to a log file; make lines flush and be UTF-8,
+        // and make sure any uncaught crash lands in that log instead of vanishing.
+        System.setOut(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, java.nio.charset.StandardCharsets.UTF_8));
+        System.setErr(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.err), true, java.nio.charset.StandardCharsets.UTF_8));
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            System.out.println("carcast-server: FATAL on thread " + t.getName() + ": " + e);
+            e.printStackTrace(System.out);
+            System.out.flush();
+        });
         prepareMainLooper();
         if (args.length == 0 || !BuildConfig.SERVER_BUILD_ID.equals(args[0])) {
             System.err.println("carcast-server: build id mismatch, expected " + BuildConfig.SERVER_BUILD_ID
@@ -78,12 +87,24 @@ public final class Server {
         final DisplayVideoSource source = display;
         final String initialApp = raw.get("app");
         final ScreenPower screen = new ScreenPower();
-        final InputInjector injector = source == null ? null : new InputInjector(source.width(), source.height(), source::displayId);
-        if (!"false".equals(raw.get("stay_awake"))) {
-            screen.stayAwake();
+        InputInjector injectorTmp = null;
+        if (source != null) {
+            try {
+                injectorTmp = new InputInjector(source.width(), source.height(), source::displayId);
+            } catch (Throwable t) {
+                System.out.println("carcast-server: input injector unavailable: " + t);
+            }
         }
-        if ("true".equals(raw.get("screen_off"))) {
-            screen.setMainScreen(false);
+        final InputInjector injector = injectorTmp;
+        try {
+            if (!"false".equals(raw.get("stay_awake"))) {
+                screen.stayAwake();
+            }
+            if ("true".equals(raw.get("screen_off"))) {
+                screen.setMainScreen(false);
+            }
+        } catch (Throwable t) {
+            System.out.println("carcast-server: screen setup skipped: " + t);
         }
         if (source != null && initialApp != null) {
             // Give the display a moment to exist, then launch the requested app on it.

@@ -29,7 +29,9 @@ object ServerCommand {
     fun detached(apkPath: String, buildId: String, port: Int, logFile: String = "/data/local/tmp/carcast/server.log"): String {
         require(!logFile.contains(Regex("[\\s'\"]"))) { "bad log path" }
         val inner = build(apkPath, buildId, port, mapOf("daemon" to "true")).removePrefix("CLASSPATH='$apkPath' exec ")
-        return "mkdir -p ${logFile.substringBeforeLast('/')}; CLASSPATH='$apkPath' setsid nohup $inner >$logFile 2>&1 </dev/null & echo launched pid=$!"
+        // Kill any previous carcast server first: a hung one (bound but not answering) would block the port.
+        return "pkill -f $MAIN_CLASS 2>/dev/null; sleep 1; mkdir -p ${logFile.substringBeforeLast('/')}; " +
+            "CLASSPATH='$apkPath' setsid nohup $inner >$logFile 2>&1 </dev/null & echo launched pid=$!"
     }
 
     /** What the user types from a PC when the app cannot do it itself; shown on screen. */
