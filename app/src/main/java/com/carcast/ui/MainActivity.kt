@@ -269,7 +269,8 @@ class MainActivity : AppCompatActivity() {
                 append("adb: ").append(StreamService.linkState ?: if (prefs.paired) "페어링됨, 세션 없음" else "미페어링").append('\n')
                 append("TCP 모드: ").append(
                     when {
-                        prefs.tcpPort > 0 -> "포트 ${prefs.tcpPort} (Wi-Fi 없이 adb 가능)"
+                        // The port alone does not mean adbd is serving it — the log's probe line is the truth.
+                        prefs.tcpModeOptIn && prefs.tcpPort > 0 -> "포트 ${prefs.tcpPort} (전환 시도됨 — 로그의 '열려 있음/닫힘' 확인)"
                         prefs.tcpModeOptIn -> "켜는 중 — 다음 adb 접속에서 전환합니다"
                         else -> "꺼짐 (아래 버튼으로 시도)"
                     }

@@ -179,7 +179,9 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
      */
     private fun candidates(): List<Candidate> {
         val out = LinkedHashMap<Int, String>()
-        val tcp = prefs.tcpPort
+        // Only when the user opted in: otherwise a port left over from an earlier attempt would probe and log
+        // every round, saying "closed" about a mode nobody asked for.
+        val tcp = if (prefs.tcpModeOptIn) prefs.tcpPort else 0
         if (tcp > 0) {
             val open = portOpen(tcp)
             log("TCP 모드 포트 $tcp: " + if (open) "열려 있음" else "닫힘 (adbd가 TCP 모드가 아님)")
@@ -335,7 +337,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         true
     }.getOrDefault(false)
 
-    private fun tcpModeReachable(): Boolean = prefs.tcpPort > 0 && portOpen(prefs.tcpPort)
+    private fun tcpModeReachable(): Boolean = prefs.tcpModeOptIn && prefs.tcpPort > 0 && portOpen(prefs.tcpPort)
 
     /** The /api/status body when a server answers on loopback, else null. */
     private fun serverStatus(): String? = try {
