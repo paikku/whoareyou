@@ -17,8 +17,22 @@ object Log {
         t?.printStackTrace()
     }
 
-    fun d(tag: String, msg: String) = sink.log('D', tag, msg, null)
-    fun i(tag: String, msg: String) = sink.log('I', tag, msg, null)
-    fun w(tag: String, msg: String, t: Throwable? = null) = sink.log('W', tag, msg, t)
-    fun e(tag: String, msg: String, t: Throwable? = null) = sink.log('E', tag, msg, t)
+    /** Last [RECENT_MAX] lines, served as /api/log so a detached shell server can still be read from the app or a laptop. */
+    private val recent = ArrayDeque<String>()
+    const val RECENT_MAX = 300
+
+    fun recentLines(): List<String> = synchronized(recent) { recent.toList() }
+
+    private fun emit(level: Char, tag: String, msg: String, t: Throwable?) {
+        synchronized(recent) {
+            recent.addLast("${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())} $level/$tag: $msg${if (t != null) " ($t)" else ""}")
+            while (recent.size > RECENT_MAX) recent.removeFirst()
+        }
+        sink.log(level, tag, msg, t)
+    }
+
+    fun d(tag: String, msg: String) = emit('D', tag, msg, null)
+    fun i(tag: String, msg: String) = emit('I', tag, msg, null)
+    fun w(tag: String, msg: String, t: Throwable? = null) = emit('W', tag, msg, t)
+    fun e(tag: String, msg: String, t: Throwable? = null) = emit('E', tag, msg, t)
 }

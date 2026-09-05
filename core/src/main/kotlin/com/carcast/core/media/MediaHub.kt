@@ -11,7 +11,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Backpressure: a client whose send queue is full drops frames until the next keyframe,
  * so it never receives a delta frame whose reference it missed.
  */
-class MediaHub {
+open class MediaHub {
     private class Client(val conn: WebSocketConnection) {
         @Volatile var waitingForKey = true
     }
@@ -21,6 +21,9 @@ class MediaHub {
     @Volatile private var lastKey: ByteArray? = null
 
     val clientCount: Int get() = clients.size
+
+    /** Called after a client attached (the live source answers with a keyframe request). */
+    @Volatile var onClientAttached: () -> Unit = {}
 
     fun attach(conn: WebSocketConnection) {
         val c = Client(conn)
@@ -33,15 +36,16 @@ class MediaHub {
         initSegment?.let { conn.send(it) }
         // A late joiner gets the last keyframe immediately so the picture appears without waiting for the GOP.
         lastKey?.let { if (conn.offer(it)) c.waitingForKey = false }
+        onClientAttached()
     }
 
-    fun onInit(packet: ByteArray) {
+    open fun onInit(packet: ByteArray) {
         initSegment = packet
         lastKey = null
         for (c in clients) { c.waitingForKey = true; c.conn.send(packet) }
     }
 
-    fun onFrame(packet: ByteArray, keyframe: Boolean) {
+    open fun onFrame(packet: ByteArray, keyframe: Boolean) {
         if (keyframe) lastKey = packet
         for (c in clients) {
             if (c.waitingForKey && !keyframe) continue

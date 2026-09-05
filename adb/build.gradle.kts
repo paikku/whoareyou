@@ -18,6 +18,7 @@ kotlin {
 }
 
 dependencies {
+    api(libs.kadb.android)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
 }

@@ -48,5 +48,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Streams a virtual display to a car browser over the phone hotspot" />
         </service>
+
+        <!-- One-time wireless debugging pairing; the notification takes the 6-digit code. -->
+        <service
+            android:name=".adb.AdbPairingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Pairs with the phone's own wireless debugging to start the streaming server" />
+        </service>
     </application>
 </manifest>

@@ -13,6 +13,8 @@ import com.carcast.BuildConfig
 import com.carcast.CarCastApp
 import com.carcast.Config
 import com.carcast.R
+import com.carcast.adb.ServerCommand
+import com.carcast.adb.ShellServerLink
 import com.carcast.core.Assets
 import com.carcast.core.StreamSession
 import com.carcast.ui.MainActivity
@@ -35,6 +37,7 @@ class StreamService : Service() {
 
     private var inApp: StreamSession? = null
     private var watcher: Thread? = null
+    private var shellLink: ShellServerLink? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -43,6 +46,10 @@ class StreamService : Service() {
             stopSession()
             stopSelf()
             return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_CONNECT) {
+            if (running) shellLink?.reconnect()
+            return START_STICKY
         }
         useVpn = intent?.getBooleanExtra(EXTRA_USE_VPN, true) ?: true
         serverInApp = intent?.getBooleanExtra(EXTRA_SERVER_IN_APP, false) ?: false
@@ -56,7 +63,11 @@ class StreamService : Service() {
         running = true
         if (useVpn) startService(Intent(this, CarVpnService::class.java)) else log("VPN 없이 시작 (핫스팟 주소로만 접속 가능)")
         if (serverInApp) {
-            val s = StreamSession(AssetManagerAssets(assets), Config.HTTP_PORT, "app") { mapOf("vpn" to CarVpnService.state.name, "address" to Config.TUN_ADDRESS) }
+            val s = StreamSession(
+                AssetManagerAssets(assets), Config.HTTP_PORT, "app",
+                extraStatus = { mapOf("vpn" to CarVpnService.state.name, "address" to Config.TUN_ADDRESS) },
+                reportDir = java.io.File(filesDir, "reports"),
+            )
             s.onEvent = ::log
             try {
                 s.start(); inApp = s
@@ -64,7 +75,11 @@ class StreamService : Service() {
                 log("앱 내장 서버 실패: $e (shell 서버가 이미 3333을 쓰고 있나요?)")
             }
         } else {
-            log("shell 서버를 기다리는 중 — PC에서: ${shellCommand()}")
+            // M3: the app itself connects to adbd (wireless debugging) and runs the server as uid 2000.
+            // Until that succeeds the PC command stays on screen as the fallback.
+            val link = ShellServerLink(this, ::log)
+            shellLink = link
+            link.start()
         }
         watcher = Thread({ watchShellServer() }, "shell-watch").apply { isDaemon = true; start() }
     }
@@ -73,24 +88,26 @@ class StreamService : Service() {
         if (!running) return
         running = false
         watcher?.interrupt(); watcher = null
+        shellLink?.stop(); shellLink = null
         inApp?.stop(); inApp = null
         startService(Intent(this, CarVpnService::class.java).setAction(CarVpnService.ACTION_STOP))
         shellStatus = null
-        log("세션 종료")
+        log("세션 종료 (shell 서버는 그대로 둠 — 끄려면 '서버 종료')")
     }
 
     /** Polls the local port so the screen shows whether the shell server (or the in-app one) is answering. */
     private fun watchShellServer() {
         var wasUp = false
         while (running && !Thread.currentThread().isInterrupted) {
-            val s = try {
-                val c = URL("http://127.0.0.1:${Config.HTTP_PORT}/api/status").openConnection() as HttpURLConnection
-                c.connectTimeout = 1000; c.readTimeout = 1000
-                c.inputStream.use { String(it.readBytes()) }
-            } catch (_: Exception) { null }
+            val s = try { fetchLocal("/api/status") } catch (_: Exception) { null }
             shellStatus = s
             val up = s != null
-            if (up != wasUp) log(if (up) "서버 응답 확인: ${s?.take(120)}" else "서버 응답 없음 (127.0.0.1:${Config.HTTP_PORT})")
+            if (up != wasUp) log(
+                if (up) {
+                    val j = runCatching { org.json.JSONObject(s!!) }.getOrNull()
+                    "서버 응답 확인: process=${j?.optString("process")} uid=${j?.opt("uid") ?: "?"} build=${j?.optString("build")} source=${j?.optString("source")}"
+                } else "서버 응답 없음 (127.0.0.1:${Config.HTTP_PORT})"
+            )
             wasUp = up
             try { Thread.sleep(2000) } catch (_: InterruptedException) { return }
         }
@@ -113,8 +130,11 @@ class StreamService : Service() {
             .build()
     }
 
+    override fun onCreate() { super.onCreate(); instance = this }
+
     override fun onDestroy() {
         stopSession()
+        instance = null
         super.onDestroy()
     }
 
@@ -127,6 +147,8 @@ class StreamService : Service() {
         private const val TAG = "StreamService"
         private const val NOTIF_ID = 1
         const val ACTION_STOP = "com.carcast.service.STOP"
+        /** Sent after pairing so the running session connects right away instead of waiting out its backoff. */
+        const val ACTION_CONNECT = "com.carcast.service.CONNECT"
         const val EXTRA_USE_VPN = "useVpn"
         const val EXTRA_SERVER_IN_APP = "serverInApp"
 
@@ -140,9 +162,21 @@ class StreamService : Service() {
         @Volatile var shellStatus: String? = null
             private set
 
-        /** The exact command to start the shell server from a PC until the app launches it itself (M3). */
-        fun shellCommand(): String =
-            "adb shell 'CLASSPATH=\$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server ${BuildConfig.GIT_SHA} port=${Config.HTTP_PORT}'"
+        /** GET [path] from the local server (shell or in-app) over loopback; throws when nothing answers. */
+        @Throws(IOException::class)
+        fun fetchLocal(path: String, timeoutMs: Int = 1000): String {
+            val c = URL("http://127.0.0.1:${Config.HTTP_PORT}$path").openConnection() as HttpURLConnection
+            c.connectTimeout = timeoutMs; c.readTimeout = timeoutMs
+            return c.inputStream.use { String(it.readBytes()) }
+        }
+
+        /** The exact command to start the shell server from a PC when the app cannot (not paired, no wireless debugging). */
+        fun shellCommand(): String = ServerCommand.forPc("com.carcast", BuildConfig.GIT_SHA, Config.HTTP_PORT)
+
+        /** ADB link state for the screen: null when no session or the in-app server is used. */
+        val linkState: String?
+            get() = instance?.shellLink?.let { "${it.state}${if (it.detail.isNotEmpty()) " (${it.detail.take(60)})" else ""}" }
+        @Volatile private var instance: StreamService? = null
 
         /** Simple in-memory log the activity polls; good enough until a real log view exists. */
         val logLines = java.util.concurrent.ConcurrentLinkedDeque<String>()

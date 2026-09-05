@@ -1,5 +1,7 @@
 package com.carcast.core
 
+import com.carcast.core.media.ControlMessage
+import com.carcast.core.media.VideoSource
 import java.io.File
 
 /**
@@ -11,6 +13,8 @@ import java.io.File
  *  - apk=<path>         where to read the web client and clips from; defaults to the CLASSPATH
  *                       environment variable, which app_process sets to the APK path
  *  - assets=<dir>       alternative to apk= for development (e.g. app/src/main/assets)
+ *  - reports=<dir>      where /diag reports posted by the car are kept (one JSON file each). Defaults to
+ *                       /data/local/tmp/carcast on Android (writable by shell), memory-only elsewhere.
  *  - daemon=true        do not watch stdin; run until killed (pkill -f com.carcast.server.Server).
  *                       For car tests without a PC in the car:
  *                       adb shell 'CLASSPATH=... setsid nohup app_process / com.carcast.server.Server <sha> daemon=true >/dev/null 2>&1 &'
@@ -21,6 +25,8 @@ import java.io.File
 object ServerMain {
     class Options(val port: Int, val assets: Assets, val buildId: String, val raw: Map<String, String>) {
         val daemon: Boolean get() = raw["daemon"] == "true"
+        val reportDir: File? get() = raw["reports"]?.let { File(it) }
+            ?: File("/data/local/tmp").takeIf { it.isDirectory && it.canWrite() }?.let { File(it, "carcast") }
     }
 
     fun parse(args: Array<String>): Options {
@@ -42,24 +48,51 @@ object ServerMain {
         return Options(kv["port"]?.toInt() ?: 3333, assets, args[0], kv)
     }
 
-    /** Runs a session until stdin closes (or [stopOnStdinEof] is false and the thread is interrupted). */
-    fun run(opts: Options, extraStatus: () -> Map<String, Any?> = { emptyMap() }, stopOnStdinEof: Boolean = !opts.daemon) {
-        val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus)
-        session.start()
+    /**
+     * Runs a session until stdin closes (or [stopOnStdinEof] is false), or until loopback posts
+     * `/api/stop` — the app's kill switch for a detached (`daemon=true`) server.
+     */
+    fun run(
+        opts: Options,
+        extraStatus: () -> Map<String, Any?> = { emptyMap() },
+        stopOnStdinEof: Boolean = !opts.daemon,
+        videoSource: VideoSource? = null,
+        startApp: ((String) -> String)? = null,
+        control: ((ControlMessage) -> Unit)? = null,
+        extraApi: ((String, String, Map<String, String>) -> String?)? = null,
+        onStopped: () -> Unit = {},
+    ) {
+        val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource)
+        session.onStartApp = startApp
+        session.controlHandler = control
+        session.extraApi = extraApi
+        val stopped = java.util.concurrent.CountDownLatch(1)
+        session.onStopRequest = { stopped.countDown() }
+        try {
+            session.start()
+        } catch (e: Throwable) {
+            println("carcast-server: could not start on port ${opts.port}: $e")
+            e.printStackTrace()
+            System.out.flush()
+            throw e
+        }
         println("carcast-server ready build=${opts.buildId} port=${opts.port}")
         System.out.flush()
         Runtime.getRuntime().addShutdownHook(Thread { session.stop() })
         try {
             if (stopOnStdinEof) {
-                val buf = ByteArray(256)
-                while (System.`in`.read(buf) >= 0) { /* ignore input, wait for EOF */ }
-                println("stdin closed, stopping")
-            } else {
-                Thread.currentThread().join()
+                Thread({
+                    val buf = ByteArray(256)
+                    runCatching { while (System.`in`.read(buf) >= 0) { /* ignore input, wait for EOF */ } }
+                    println("stdin closed, stopping")
+                    stopped.countDown()
+                }, "stdin").apply { isDaemon = true }.start()
             }
+            stopped.await()
         } catch (_: InterruptedException) {
         } finally {
             session.stop()
+            onStopped()
         }
     }
 

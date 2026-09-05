@@ -20,5 +20,6 @@ application {
 }
 
 dependencies {
+    api(project(":mux"))   // fMP4 muxer for the live encoder output (EncodedH264Sink)
     testImplementation(libs.junit)
 }
