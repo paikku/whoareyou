@@ -29,5 +29,5 @@ scrcpy 버전: 4.1 (Windows)
 ## 결정
 - 오디오 소스 (`output` / `playback`): **`output`** (차 스피커로만, 폰 무음). `playback+dup`도 되므로 "폰에서도 소리" 옵션으로 남겨둘 수 있음
 - `vd_system_decorations` 값: **false** 기본. true면 DeX식 데스크톱이 떠서 M9 런처 대안으로 검토
-- 화면 끄기 (M7): scrcpy `--turn-screen-off` 방식(메인 디스플레이만 `requestDisplayPower(0,false)`) + `--stay-awake`(`stay_on_while_plugged_in`)로 확정. 전원 버튼은 전체 정지이므로 금지
+- 화면 끄기 (M7): scrcpy `--turn-screen-off` 방식(`Device.setDisplayPower` = 물리 디스플레이 `SurfaceControl.setDisplayPowerMode(OFF)`; Android 15 `requestDisplayPower`는 scrcpy도 비활성이고 S26U에서 실패) + `--stay-awake`(`stay_on_while_plugged_in`)로 확정. 전원 버튼은 전체 정지이므로 금지
 - 키보드: IME 로컬 정책으로 삼성 키보드가 VD 안에 뜸. UHID 한글 입력도 됨 (차 브라우저 키보드 텍스트 주입은 M5에서 별도)

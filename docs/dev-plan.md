@@ -133,7 +133,7 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - 검증: Playwright 오디오 버퍼 진행. [차] A/V 동기, 폰 스피커 무음 설정.
 
 ### M7. 라이프사이클/화면 끄기/재연결/킬스위치 [세션 → 폰]
-- **일부 구현(2026-09-05):** `ScreenPower` — 메인 디스플레이만 `requestDisplayPower(0, on)`(M0 4번 확인 방식), `stay_on_while_plugged_in=7`(서버 종료 시 복원).
+- **일부 구현(2026-09-05):** `ScreenPower` — scrcpy `Device.setDisplayPower` 그대로: 물리 디스플레이 전부 `SurfaceControl.setDisplayPowerMode`(Android 14+는 `DisplayControl` 토큰). Android 15의 `requestDisplayPower`는 scrcpy도 꺼 둔 경로(#5530)이고 S26U에서 실패 확인(d98be88). `stay_on_while_plugged_in=7`(서버 종료 시 복원, 강제로 끈 화면도 복원).
   서버 옵션 `stay_awake=true`(기본) `screen_off=true`, `GET/POST /api/screen?on=0|1`, 웹 📵 버튼. 킬 스위치는 M3의 `POST /api/stop`. 전원 버튼은 전체 정지이므로 쓰지 않는다.
 - `Device.setDisplayPower`(API 35 `requestDisplayPower`), `screen_off_timeout`, 재연결 시 I-frame 재송신, 재부팅 후 포트 재발견, 종료 순서 `am force-stop`/태스크 제거 → VD 파괴 → 스트림 닫기 → `adb_wifi_enabled 0`.
 - 검증: [폰] 화면 OFF 30분 연속(발열/배터리 `/diag` 로그), 통화 수신, 재부팅 후 한 번 탭으로 재시작.

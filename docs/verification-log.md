@@ -18,7 +18,7 @@
 | 2 | 테슬라 2026.26 브라우저가 `http://100.99.9.9`를 열고 MSE H.264를 디코딩한다 | ⏳ 실차 미실시. PC의 Chrome 148(테슬라 프로필)에서는 ✅ | C | §2.3 |
 | 3 | shell 권한으로 띄운 scrcpy 서버 포크가 갤럭시에서 VD 생성 + 타 앱 실행 + 터치 주입이 된다 | ✅ M0 (stock scrcpy 4.1, 2026-09-05, 8/8 항목): VD 생성·앱 실행·터치·IME 로컬·UHID 한글·`--turn-screen-off --stay-awake`로 폰 화면만 끄기·서버 단독 기동 모두 됨. 전원 버튼 화면 OFF는 전체 정지. 단 "앱 자신의 APK를 `app_process`로 shell uid에서 실행"은 ✅, **앱이 내장 ADB로 직접 띄우는 것도 ✅** | B | §3.3, §3.5 |
 | 4 | 오디오 캡처(`output`/`playback`)가 One UI 8에서 된다 | ✅ `output`: 원격 재생 + 폰 무음. `playback --audio-dup`: 양쪽 재생 (M0 2026-09-05) | B | car-tests/s26u |
-| — | 폰 화면만 끄고 VD를 유지할 수 있다 (`--turn-screen-off --stay-awake`) | ✅ M0 4번 (충전 중). 앱 구현은 `requestDisplayPower` — 폰 ⏳ | B | car-tests/s26u |
+| — | 폰 화면만 끄고 VD를 유지할 수 있다 (`--turn-screen-off --stay-awake`) | ✅ M0 4번 (충전 중). 앱 구현: `requestDisplayPower` 경로는 ❌ "전환 실패"(d98be88) → scrcpy와 같은 SurfaceControl 경로로 교체, 폰 ⏳ | B | car-tests/s26u, §3.6 |
 | 5 | WS 간헐 실패가 재시도로 해결된다 | PC ✅ (거부 34%·절단 5초마다 → 15초 내 복구) / 실차 ⏳ | A → C | §2.3 |
 | 6 | MSE 지연이 터치 조작에 견딜 수준(<300ms) | PC ✅ (fps ≥ 25, lag < 300ms) / 실기기·실차 ⏳ | A → B/C | §2.3 |
 | — | 앱 하나(APK)에 shell 서버 dex를 넣고 `CLASSPATH=<base.apk> app_process`로 실행할 수 있다 | ✅ uid=2000, build id 검증 동작 | B | §3.3 |
@@ -142,9 +142,15 @@
 | 4 | USB 디버깅 켠 채 핫스팟 전환 → 노트북 `http://100.99.9.9:3333/` | ✅ 접속됨 (사용자 보고, 순서는 핫스팟 먼저/Wi-Fi 먼저 무관) |
 | 5 | 이전 f37c6fd에서 uid 줄 직후 죽던 크래시 | 재현 안 됨 — 1번의 실행 버그로 이후 빌드가 한 번도 돌지 않아 생긴 착시였을 가능성. 방어 코드(step 마커·미처리 예외 기록)는 유지 |
 
-### 3.6 M4·M5·M7: 가상 디스플레이 라이브 송출·터치·화면 끄기 — ⏳ (코드 완료, 폰 미검증)
-확인할 것: `/api/status.source == "display"`, 노트북 브라우저에 폰 가상 화면, ▶로 유튜브 실행, 클릭·스크롤·키보드 반응(`injected`/`injectFailed`),
-📵로 폰 화면만 OFF, fps·lag(Playwright `BASE_URL`), 세로 고정 앱에서의 회전 동작.
+### 3.6 M4·M5·M7: 가상 디스플레이 라이브 송출·터치·화면 끄기 (빌드 `d98be88`, 2026-09-05, 핫스팟 + 노트북)
+| # | 확인 | 결과 |
+|---|---|---|
+| M4 | 노트북 브라우저에 폰 가상 화면 영상 | ✅ `source=display 1280x720 displayId=7 encoder=c2.qti.avc.encoder`, `frames=3716 keyframes=32`. ▶로 유튜브 실행 ✅ (`app=com.google.android.youtube/.app.honeycomb.Shell$HomeActivity`) |
+| M5 | 클릭·스크롤·키보드 | ✅ `input=true injected=72 injectFailed=0 controlErrors=0` |
+| M6 | 소리 | ⏳ 미구현 — 소리는 폰에서 남 (오디오 캡처는 M6에서) |
+| M7 | 📵 폰 화면만 OFF | ❌ "폰 화면 전환 실패": `requestDisplayPower(0,false)`가 실패. scrcpy 4.1은 이 API를 `USE_ANDROID_15_DISPLAY_POWER=false`로 꺼 두고(#5530) `SurfaceControl.setDisplayPowerMode`를 쓴다 — M0에서 된 것은 그 경로. 같은 경로로 교체(다음 빌드), 폰 ⏳ |
+| — | 노트북 `/diag` 보고 | `no-Tesla-UA, 1108x632@1.25, mse=O, ws 20/20 35ms, video 61f 0fps lag 3224ms` (진단 페이지 자체 측정; 본 화면은 영상 재생됨) |
+아직: fps·lag(Playwright `BASE_URL`), 세로 고정 앱에서의 회전 동작, 5GHz 720p30 10분 연속.
 
 ### 3.4 아직 B층에서 안 한 것
 - **M3 앱 내장 ADB(커밋 이후 첫 폰 테스트):** 페어링(mDNS/수동), 시작 → `RUNNING uid=2000`, 접속 포트 발견, 킬 스위치, 재부팅 후 복구, 도즈 30분 — 체크리스트는 testing-guide B절.
