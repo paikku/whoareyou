@@ -52,6 +52,47 @@ class ServerMainTest {
         }
     }
 
+    @Test
+    fun acceptsDiagReportsAndListsThem() {
+        val port = ServerSocket(0).use { it.localPort }
+        val dir = Files.createTempDirectory("reports").toFile()
+        val session = StreamSession(ZipAssets(fakeApk().path), port, "test", reportDir = dir)
+        session.start()
+        try {
+            val bad = post("http://127.0.0.1:$port/api/report", "nope")
+            assertTrue(bad, bad.contains("\"ok\":false"))
+            val ok = post("http://127.0.0.1:$port/api/report", "{\"summary\":\"fps 29\",\"ua\":\"Tesla/2026.26\"}")
+            assertTrue(ok, ok.startsWith("{\"ok\":true,\"id\":1,"))
+            val list = get("http://127.0.0.1:$port/api/reports")
+            assertTrue(list, list.contains("\"remote\":\"127.0.0.1:") && list.contains("\"report\":{\"summary\":\"fps 29\",\"ua\":\"Tesla/2026.26\"}"))
+            val status = get("http://127.0.0.1:$port/api/status")
+            assertTrue(status, status.contains("\"reports\":1") && status.contains("\"lastReport\":{\"id\":1,") && status.contains("\"summary\":\"fps 29\""))
+            assertEquals(1, dir.listFiles()!!.size)
+            val c = URL("http://127.0.0.1:$port/api/report").openConnection() as HttpURLConnection
+            assertEquals(404, c.responseCode) // GET on the POST-only endpoint
+            // Oversized body: refused from the headers alone, before any of it is read.
+            java.net.Socket("127.0.0.1", port).use { sock ->
+                sock.soTimeout = 2000
+                sock.getOutputStream().write(
+                    "POST /api/report HTTP/1.1\r\nHost: x\r\nContent-Length: ${com.carcast.core.net.HttpServer.MAX_BODY + 1}\r\n\r\n".toByteArray()
+                )
+                val line = BufferedReader(InputStreamReader(sock.getInputStream())).readLine()
+                assertEquals("HTTP/1.1 413 Payload Too Large", line)
+            }
+        } finally {
+            session.stop()
+        }
+    }
+
+    private fun post(url: String, body: String): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 2000; c.readTimeout = 2000
+        c.requestMethod = "POST"; c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/json")
+        c.outputStream.use { it.write(body.toByteArray()) }
+        return BufferedReader(InputStreamReader(c.inputStream)).use { it.readText() }
+    }
+
     private fun get(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 2000; c.readTimeout = 2000

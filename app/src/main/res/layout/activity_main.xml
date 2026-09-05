@@ -68,6 +68,14 @@
         android:layout_marginTop="4dp"
         android:text="@string/netdiag" />
 
+    <Button
+        android:id="@+id/share_reports"
+        style="?attr/materialButtonOutlinedStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/share_reports" />
+
     <TextView
         android:id="@+id/log"
         android:layout_width="match_parent"

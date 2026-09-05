@@ -19,6 +19,8 @@ import com.carcast.service.NetDiag
 import com.carcast.service.SelfTest
 import com.carcast.service.StreamService
 import com.carcast.vpn.CarVpnService
+import org.json.JSONArray
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,6 +30,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var command: TextView
     private lateinit var selfTest: Button
     private lateinit var netDiag: Button
+    private lateinit var shareReports: Button
     private lateinit var useVpn: android.widget.CheckBox
     private lateinit var serverInApp: android.widget.CheckBox
     private val handler = Handler(Looper.getMainLooper())
@@ -47,6 +50,8 @@ class MainActivity : AppCompatActivity() {
         selfTest = findViewById(R.id.selftest)
         netDiag = findViewById(R.id.netdiag)
         netDiag.setOnClickListener { shareDiagnostics() }
+        shareReports = findViewById(R.id.share_reports)
+        shareReports.setOnClickListener { shareCarReports() }
         useVpn = findViewById(R.id.use_vpn)
         serverInApp = findViewById(R.id.server_in_app)
         selfTest.setOnClickListener {
@@ -95,6 +100,34 @@ class MainActivity : AppCompatActivity() {
         }.apply { isDaemon = true }.start()
     }
 
+    /**
+     * The car's /diag page posts what it measured to the shell server (POST /api/report); this pulls
+     * the stored list back over loopback and opens the share sheet, so the car visit needs no photos.
+     */
+    private fun shareCarReports() {
+        shareReports.isEnabled = false
+        Thread {
+            val text = runCatching { StreamService.fetchLocal("/api/reports") }
+                .map { runCatching { JSONArray(it).toString(2) }.getOrDefault(it) }
+                .getOrElse { "서버 응답 없음 (127.0.0.1:${Config.HTTP_PORT}): $it" }
+            runOnUiThread {
+                shareReports.isEnabled = true
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, "CarCast car reports ${BuildConfig.GIT_SHA}")
+                    .putExtra(Intent.EXTRA_TEXT, text)
+                startActivity(Intent.createChooser(send, getString(R.string.share_reports)))
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /** One line about the newest report the car sent, from the /api/status JSON the service polls. */
+    private fun lastReportLine(statusJson: String?): String {
+        val st = runCatching { JSONObject(statusJson ?: return "-") }.getOrNull() ?: return "-"
+        val n = st.optInt("reports", 0)
+        val last = st.optJSONObject("lastReport") ?: return if (n == 0) "없음" else "${n}건"
+        return "#${last.optInt("id")} ${last.optString("receivedAt").replace("T", " ").removeSuffix("Z")} ${last.optString("remote").substringBefore(':')}\n  ${last.optString("summary")}"
+    }
+
     private fun startSession() {
         startForegroundService(
             Intent(this, StreamService::class.java)
@@ -123,6 +156,7 @@ class MainActivity : AppCompatActivity() {
                 ).append('\n')
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
+                append("차에서 보낸 진단: ").append(lastReportLine(st)).append('\n')
                 append("인터페이스:\n")
                 for (i in SelfTest.interfaces()) append("  ").append(i.name).append(' ').append(i.address).append('\n')
             }

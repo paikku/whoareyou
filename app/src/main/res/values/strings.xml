@@ -4,6 +4,7 @@
     <string name="stop">중지</string>
     <string name="selftest">네트워크 자가 테스트</string>
     <string name="netdiag">라우팅 진단 공유 (ip rule/route)</string>
+    <string name="share_reports">차에서 보낸 진단 결과 공유 (/api/reports)</string>
     <string name="use_vpn">가짜 IP(100.99.9.9) 사용 — 끄면 핫스팟 주소로만 접속</string>
     <string name="server_in_app">서버를 앱 프로세스에서 실행 (핫스팟 주소 테스트 전용, 100.99.9.9 불가)</string>
     <string name="status_idle">대기 중</string>

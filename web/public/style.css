@@ -19,3 +19,6 @@ body.diag td { padding: 4px 12px 4px 0; border-bottom: 1px solid #222; }
 body.diag td:first-child { color: #aaa; }
 body.diag pre { background: #111; padding: 8px; max-height: 40vh; overflow: auto; white-space: pre-wrap; }
 .ok { color: #6d6; } .bad { color: #e66; }
+body.diag .summary-box { margin: 8px 0 4px; padding: 10px 12px; border: 1px solid #345; border-radius: 8px; background: #0b1520; }
+body.diag #summary { font-size: 18px; font-weight: 600; line-height: 1.4; word-break: break-word; }
+body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }

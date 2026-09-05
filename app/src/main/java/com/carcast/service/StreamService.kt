@@ -56,7 +56,11 @@ class StreamService : Service() {
         running = true
         if (useVpn) startService(Intent(this, CarVpnService::class.java)) else log("VPN 없이 시작 (핫스팟 주소로만 접속 가능)")
         if (serverInApp) {
-            val s = StreamSession(AssetManagerAssets(assets), Config.HTTP_PORT, "app") { mapOf("vpn" to CarVpnService.state.name, "address" to Config.TUN_ADDRESS) }
+            val s = StreamSession(
+                AssetManagerAssets(assets), Config.HTTP_PORT, "app",
+                extraStatus = { mapOf("vpn" to CarVpnService.state.name, "address" to Config.TUN_ADDRESS) },
+                reportDir = java.io.File(filesDir, "reports"),
+            )
             s.onEvent = ::log
             try {
                 s.start(); inApp = s
@@ -83,11 +87,7 @@ class StreamService : Service() {
     private fun watchShellServer() {
         var wasUp = false
         while (running && !Thread.currentThread().isInterrupted) {
-            val s = try {
-                val c = URL("http://127.0.0.1:${Config.HTTP_PORT}/api/status").openConnection() as HttpURLConnection
-                c.connectTimeout = 1000; c.readTimeout = 1000
-                c.inputStream.use { String(it.readBytes()) }
-            } catch (_: Exception) { null }
+            val s = try { fetchLocal("/api/status") } catch (_: Exception) { null }
             shellStatus = s
             val up = s != null
             if (up != wasUp) log(if (up) "서버 응답 확인: ${s?.take(120)}" else "서버 응답 없음 (127.0.0.1:${Config.HTTP_PORT})")
@@ -139,6 +139,14 @@ class StreamService : Service() {
         /** Last /api/status body from 127.0.0.1:3333, null when nothing answers. */
         @Volatile var shellStatus: String? = null
             private set
+
+        /** GET [path] from the local server (shell or in-app) over loopback; throws when nothing answers. */
+        @Throws(IOException::class)
+        fun fetchLocal(path: String, timeoutMs: Int = 1000): String {
+            val c = URL("http://127.0.0.1:${Config.HTTP_PORT}$path").openConnection() as HttpURLConnection
+            c.connectTimeout = timeoutMs; c.readTimeout = timeoutMs
+            return c.inputStream.use { String(it.readBytes()) }
+        }
 
         /** The exact command to start the shell server from a PC until the app launches it itself (M3). */
         fun shellCommand(): String =

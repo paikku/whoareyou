@@ -6,6 +6,8 @@
 //                   [--ws-drop-every 5] close every media/control socket every N seconds (tests reconnect)
 //                   [--delay-ms 200]    add latency to every media frame
 //                   [--web ../../app/src/main/assets/web]
+//                   [--addresses 192.168.43.1,10.136.114.168]  "phone" addresses reported in /api/status;
+//                                       the diag page probes them as the private-IP control group
 import { createServer } from 'node:http';
 import { readFile, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -27,6 +29,7 @@ const CLIP = resolve(here, args.clip ?? '../clips/assets/clips/test-720p30.cmp4'
 const WS_REJECT = Number(args['ws-reject'] ?? 0);
 const WS_DROP_EVERY = Number(args['ws-drop-every'] ?? 0);
 const DELAY_MS = Number(args['delay-ms'] ?? 0);
+const ADDRESSES = (args.addresses ?? 'swlan0=192.168.43.1').split(',').filter(Boolean);
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json' };
 
@@ -66,13 +69,40 @@ function packet(type, ptsUs, payload) {
 
 // ---- state exposed to tests --------------------------------------------------------------
 const state = { touches: [], keys: [], texts: [], videoClients: 0, controlClients: 0, framesSent: 0, wsRejected: 0, wsAccepted: 0 };
+// Diagnostic reports posted by /diag (same API as the phone's ReportStore, memory only).
+const reports = [];
 
 // ---- http -------------------------------------------------------------------------------
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api/status') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ type: 'status', running: true, source: 'fake', width: 1280, height: 720, ...state }));
+    const last = reports[reports.length - 1];
+    res.end(JSON.stringify({
+      type: 'status', running: true, source: 'fake', width: 1280, height: 720, addresses: ADDRESSES,
+      reports: reports.length, lastReport: last ? { id: last.id, receivedAt: last.receivedAt, remote: last.remote, summary: last.summary } : null,
+      ...state,
+    }));
+    return;
+  }
+  if (url.pathname === '/api/report' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      let body;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { body = null; }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!body || typeof body !== 'object' || Array.isArray(body)) { res.end(JSON.stringify({ ok: false, error: 'body is not a JSON object' })); return; }
+      const r = { id: reports.length + 1, receivedAt: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), remote: `${req.socket.remoteAddress}:${req.socket.remotePort}`, summary: String(body.summary ?? ''), report: body };
+      reports.push(r);
+      console.log(`report #${r.id} from ${r.remote}: ${r.summary}`);
+      res.end(JSON.stringify({ ok: true, id: r.id, receivedAt: r.receivedAt, stored: reports.length }));
+    });
+    return;
+  }
+  if (url.pathname === '/api/reports') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify([...reports].reverse()));
     return;
   }
   if (url.pathname === '/api/reset') {

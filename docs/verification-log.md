@@ -45,7 +45,8 @@
 | `mux` | `SpsTest` | 테스트 클립 SPS → 1280x720, profile 66 level 31, codec 문자열 `avc1.42C01F` |
 | `mux` | `Fmp4WriterTest` | init 세그먼트(ftyp/moov, duration 0, mehd 없음)와 프래그먼트(moof+mdat, tfhd default-base-is-moof, tfdt v1, trun data_offset) 박스 구조 |
 | `core` | `JsonTest` | `/api/status` JSON 직렬화(이스케이프, 중첩) |
-| `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합 |
+| `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합, `POST /api/report` 저장·비JSON 거부·256KB 초과 413·`GET /api/reports`·status의 `lastReport` |
+| `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
 ### 2.3 Playwright (테슬라 브라우저 프로필)
@@ -54,7 +55,7 @@
 
 | spec | 확인한 것 | 가짜 폰 | JVM shell 서버(APK assets) |
 |---|---|---|---|
-| `diag.spec` | UA 표시, `isSecureContext=false`, MediaSource·`avc1.42E01E` 지원, WS 20회 중 ≥18 성공, 5초 프로브에서 >30 프레임, 에러 없음 | ✅ | ✅ (loopback 오리진은 secure-context 검사만 생략) |
+| `diag.spec` | UA 표시, `isSecureContext=false`, MediaSource·`avc1.42E01E` 지원, WS 20회 중 ≥18 성공, 5초 프로브에서 >30 프레임, 에러 없음, 사설 주소 대조군이 `reachable`이 아님, 결과가 `POST /api/report`로 저장되고 `/api/reports`·`/api/status.lastReport`에 나타남 | ✅ | ✅ (loopback 오리진은 secure-context 검사만 생략) |
 | `stream.spec` | MSE 렌더러 fps ≥ 25, pts 대비 렌더 지연 < 300ms, 10초 무정지, `?renderer=mjpeg` 강제 | ✅ | ✅ |
 | `input.spec` | 클릭 → 서버가 받은 정규화 좌표(레터박스 보정) 검증, 네비 바 → Android 키코드 | ✅ | skip(가짜 폰 전용 API) |
 | `reconnect.spec` | 핸드셰이크 거부 34% + 150ms 지연 + 5초마다 소켓 절단 하에서 15초 내 영상 복구 | ✅ | skip |
@@ -126,8 +127,12 @@
 
 ## 4. C층: 실차 (Model Y, 2026.26) — ⏳ 미실시
 
-기록할 것(testing-guide C 절): `/diag`의 UA·viewport·DPR, MSE 코덱 지원, WS 20회 성공률, 디코드 fps, lag,
-`http://10.136.114.168:3333`이 차단되는지(대조군), 첫 터치 후 재생·전체화면. 결과는 `car-tests/<펌웨어>.md`와 이 문서 §1의 가정 2·5·6에 반영.
+기록 틀: [car-tests/model-y-2026.26.md](car-tests/model-y-2026.26.md). `/diag`가 UA·viewport·DPR, MSE 코덱 지원,
+WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168` 등) 차단 여부를 측정해 폰 서버에 저장한다
+(`POST /api/report` → `/data/local/tmp/carcast/`, 조회 `GET /api/reports` 또는 앱의 공유 버튼). 첫 터치 후 재생·전체화면은 손으로.
+결과는 `car-tests/<펌웨어>.md`와 이 문서 §1의 가정 2·5·6에 반영.
+
+선행 조건(B층, 미실시): `daemon=true` 서버가 USB 분리·화면 OFF 후 유지되는지 — §3.4.
 
 ---
 

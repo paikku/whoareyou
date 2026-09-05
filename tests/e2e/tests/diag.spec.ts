@@ -16,4 +16,26 @@ test('diag page reports environment, API support, WS success and decode', async 
   expect(diag.ws.ok).toBeGreaterThanOrEqual(18);
   expect(diag.video.frames).toBeGreaterThan(30);
   expect(diag.video.error).toBe('');
+
+  // The private-IP control group: every address the phone reports (other than the one we came in on)
+  // must be unreachable, exactly as in the car. Locally the config maps RFC1918 to NXDOMAIN; against a
+  // real phone (BASE_URL) the laptop CAN reach the hotspot address — only the car cannot — so just log.
+  const addresses = diag.addresses as Record<string, string>;
+  expect(Object.keys(addresses).length).toBeGreaterThan(0);
+  if (process.env.BASE_URL) console.log('private-address probe from this host:', addresses);
+  else for (const [addr, state] of Object.entries(addresses)) expect(state, addr).not.toBe('reachable');
+
+  // The page pushed everything it measured to the phone, and the phone lists it back.
+  expect(diag.report.ok, JSON.stringify(diag.report)).toBe(true);
+  await expect(page.locator('#report-result')).toContainText('저장됨');
+  await expect(page.locator('#summary')).toContainText('Tesla 2026.26');
+  const reports = await page.evaluate(async () => (await fetch('/api/reports')).json());
+  const mine = reports.find((r: any) => r.id === diag.report.id);
+  expect(mine).toBeTruthy();
+  expect(mine.report.env.UA).toContain('Tesla/');
+  expect(mine.report.ws.ok).toBe(diag.ws.ok);
+  expect(mine.summary).toContain('ws ');
+  const status = await page.evaluate(async () => (await fetch('/api/status')).json());
+  expect(status.reports).toBeGreaterThanOrEqual(1);
+  expect(status.lastReport.id).toBe(mine.id);
 });

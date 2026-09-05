@@ -14,7 +14,7 @@
 **shell uid 프로세스**(`com.carcast.server.Server`, `app_process`로 기동)가 서빙한다. Android 14+는 VPN 주소로
 오는 패킷을 앱 uid 소켓에는 전달하지 않기 때문이다(실측: docs/dev-plan.md). 가상 디스플레이 대신 아직은
 **번들된 테스트 클립**(720p30 H.264)을 fMP4/WebSocket으로 송출한다. 차에서 `/diag`를 열면 브라우저 환경·API
-지원·WS 성공률·디코드 fps를 표시한다. M3 전까지 서버 기동은 PC의 adb로:
+지원·WS 성공률·디코드 fps·사설 주소 차단 여부를 측정해 폰 서버에 저장한다(`/api/reports`, 앱의 공유 버튼). M3 전까지 서버 기동은 PC의 adb로:
 
 ```powershell
 adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server <빌드 sha> port=3333'

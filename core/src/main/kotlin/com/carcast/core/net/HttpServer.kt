@@ -22,11 +22,16 @@ class HttpServer(
     private val assets: Assets,
     private val port: Int,
     private val wsHandler: WsHandler,
-    private val statusJson: () -> String,
+    private val api: ApiHandler,
 ) {
     fun interface WsHandler {
         /** Called on a fresh connection; return false to reject (404). */
         fun onWebSocket(path: String, query: Map<String, String>, conn: WebSocketConnection): Boolean
+    }
+
+    /** JSON endpoints under /api. Return the response body, or null for 404. [body] is empty for GET. */
+    fun interface ApiHandler {
+        fun handle(method: String, path: String, query: Map<String, String>, body: ByteArray, remote: String): String?
     }
 
     private var server: ServerSocket? = null
@@ -82,10 +87,9 @@ class HttpServer(
             }
 
             when {
+                req.path.startsWith("/api/") -> serveApi(req, input, output, "${socket.inetAddress.hostAddress}:${socket.port}")
                 req.method != "GET" && req.method != "HEAD" ->
                     HttpResponse.write(output, 405, "Method Not Allowed", "text/plain", "405".toByteArray())
-                req.path == "/api/status" ->
-                    HttpResponse.write(output, 200, "OK", "application/json; charset=utf-8", statusJson().toByteArray())
                 else -> serveStatic(req.path, output)
             }
             socket.close()
@@ -93,6 +97,25 @@ class HttpServer(
             Log.d(TAG, "connection: $e")
             try { socket.close() } catch (_: IOException) {}
         }
+    }
+
+    private fun serveApi(req: HttpRequest, input: BufferedInputStream, output: BufferedOutputStream, remote: String) {
+        val length = req.header("content-length")?.toIntOrNull() ?: 0
+        if (length > MAX_BODY) {
+            HttpResponse.write(output, 413, "Payload Too Large", "text/plain", "413".toByteArray()); return
+        }
+        val body = ByteArray(length)
+        var off = 0
+        while (off < length) {
+            val n = input.read(body, off, length - off)
+            if (n < 0) throw IOException("body truncated at $off/$length")
+            off += n
+        }
+        val json = api.handle(req.method, req.path, req.query, body, remote)
+        if (json == null) {
+            HttpResponse.write(output, 404, "Not Found", "text/plain", "404 ${req.path}".toByteArray()); return
+        }
+        HttpResponse.write(output, 200, "OK", "application/json; charset=utf-8", json.toByteArray())
     }
 
     private fun serveStatic(rawPath: String, output: BufferedOutputStream) {
@@ -111,5 +134,7 @@ class HttpServer(
 
     companion object {
         private const val TAG = "HttpServer"
+        /** Diagnostic reports from the car are a few KB; anything larger is not ours. */
+        const val MAX_BODY = 256 * 1024
     }
 }
