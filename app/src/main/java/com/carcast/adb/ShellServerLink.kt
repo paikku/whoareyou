@@ -105,7 +105,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
             when {
                 reason is AdbLink.NotPairedException -> {
                     set(State.NEEDS_PAIRING, "이 앱의 키가 페어링되어 있지 않음")
-                    log("adbd가 이 앱의 키를 거부함 — '무선 디버깅 페어링' 버튼으로 한 번 페어링하세요")
+                    log("adbd가 이 앱의 키를 거부함 (지문 ${AdbIdentity.fingerprint()?.take(16)}…) — '무선 디버깅 페어링'으로 다시 페어링하세요. 설정의 '페어링된 기기'에 CarCast가 없으면 폰이 지운 것")
                     waitFor(Long.MAX_VALUE) // until reconnect() after pairing
                     delay = 5_000L
                     continue

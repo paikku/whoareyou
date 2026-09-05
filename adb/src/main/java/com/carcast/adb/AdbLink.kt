@@ -24,6 +24,12 @@ class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
         kadb.shell("id").allOutput.trim()
     } catch (e: AdbAuthException) { throw NotPairedException(e) }
       catch (e: AdbPairAuthException) { throw NotPairedException(e) }
+      catch (e: Exception) {
+          // adbd closes the TLS handshake with CERTIFICATE_UNKNOWN when our key is not in its paired list.
+          val msg = (e.message ?: "") + (e.cause?.message ?: "")
+          if (msg.contains("CERTIFICATE_UNKNOWN") || msg.contains("certificate", ignoreCase = true)) throw NotPairedException(e)
+          throw e
+      }
 
     @Throws(IOException::class)
     fun shell(command: String): String = kadb.shell(command).allOutput
