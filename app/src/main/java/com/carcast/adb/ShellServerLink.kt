@@ -85,6 +85,13 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                     continue
                 }
             }
+            if (wasUp) {
+                // It answered a moment ago and is gone without our /api/stop: with the whole process SIGKILLed nothing
+                // reaches the log, so say what kills it. init kills adbd's entire cgroup when adbd stops, and adbd
+                // stops when wireless debugging goes off (Wi-Fi dropped) while USB debugging is off too.
+                log("서버가 사라짐 — 무선 디버깅이 꺼지며 adbd가 종료되면 adbd가 띄운 프로세스는 cgroup째 SIGKILL됩니다(setsid/nohup으로 못 막음). " +
+                    "이 빌드의 서버는 시작할 때 cgroup 탈출을 시도하고 결과를 'step: cgroup' 줄에 남깁니다. 확실한 방법: 개발자 옵션에서 USB 디버깅을 켜 두면 adbd가 살아 있어 서버가 유지됩니다")
+            }
             wasUp = false
             if (!onWifi()) {
                 set(State.NO_WIFI, "Wi-Fi 미연결: 무선 디버깅 불가")

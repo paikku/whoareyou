@@ -143,7 +143,10 @@ APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 
 **M3 폰 검증 체크리스트** (verification-log §3.4에 결과 기록):
 - 페어링 성공 / mDNS 페어링 포트 발견 여부 / 수동 포트로도 되는지
 - 시작 → `SERVER_UP` 까지 걸린 시간, 접속 포트 mDNS 발견 여부
-- **Wi-Fi 끄고 핫스팟 켠 뒤 서버 유지** (무선 디버깅이 꺼져도 분리 실행된 서버가 남는지) — 이 설계의 성립 조건
+- **Wi-Fi 끄고 핫스팟 켠 뒤 서버 유지** (무선 디버깅이 꺼져도 분리 실행된 서버가 남는지) — 이 설계의 성립 조건.
+  **USB 디버깅도 켜 둔다.** 무선 디버깅이 꺼질 때 USB 디버깅마저 꺼져 있으면 시스템이 adbd를 멈추고, init은 adbd의
+  cgroup 안의 프로세스를 전부 SIGKILL한다(setsid/nohup 무관) — 306d41a에서 핫스팟 전환 직후 서버가 사라진 원인.
+  서버는 시작 시 cgroup 탈출을 시도하고 결과를 `step: cgroup` 줄에 남긴다(`left adbd's group`이면 USB 디버깅 없이도 유지).
 - 화면 OFF 30분·하룻밤 뒤 서버 유지 (도즈), 앱 강제 종료 후 서버 유지
 - "서버 종료" → 종료(킬 스위치); 폰 재부팅 후 Wi-Fi에서 "시작" 한 번으로 복구
 
@@ -151,7 +154,7 @@ APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 
 `<빌드 sha>`는 앱 화면의 `(빌드 xxxxxxx)` 값으로 **꺾쇠 없이** 바꿔 넣는다 (예: `... com.carcast.server.Server 4eef57e port=3333 ...`).
 ```powershell
 adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) setsid nohup app_process / com.carcast.server.Server <빌드 sha> port=3333 daemon=true >/dev/null 2>&1 &'
-adb shell 'pkill -f com.carcast.server.Server'      # 끝낼 때
+adb shell "pkill -f '^app_process / com.carcast.server.Server'"   # 끝낼 때 (앞을 고정해야 이 셸 자신은 안 죽음)
 ```
 앱 화면의 "서버:" 줄이 `응답 중 shell uid=2000`이면 살아 있는 것이다. 폰을 재부팅하면 사라진다.
 

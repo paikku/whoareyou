@@ -75,6 +75,9 @@ public final class Server {
             return;
         }
         step("options " + opts.getRaw());
+        // First thing, before anything slow: get out of adbd's cgroup, or the server dies with adbd when
+        // wireless debugging turns off. The report says whether it worked; the app shows it.
+        step("cgroup: " + CgroupEscape.apply());
         Map<String, String> raw = opts.getRaw();
         if (!"clip".equals(raw.get("source"))) {
             // Like scrcpy: fake an app context before touching framework classes (KeyCharacterMap, DisplayManager,
