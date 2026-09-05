@@ -1,6 +1,7 @@
 package com.carcast.core
 
 import com.carcast.core.media.ClipSource
+import com.carcast.core.media.ControlMessage
 import com.carcast.core.media.MediaHub
 import com.carcast.core.media.VideoSource
 import com.carcast.core.net.HttpServer
@@ -55,6 +56,12 @@ class StreamSession(
 
     /** `POST /api/app?name=<package or package/.Activity>`: start an app on the streamed display. Returns a message. */
     var onStartApp: ((String) -> String)? = null
+
+    /** Receives parsed car → phone control messages (touch/key/text); the shell process injects them. */
+    var controlHandler: ((ControlMessage) -> Unit)? = null
+
+    /** Extra /api endpoints from the host process (e.g. /api/screen); return JSON or null for "not mine". */
+    var extraApi: ((method: String, path: String, query: Map<String, String>) -> String?)? = null
 
     private fun event(s: String) { Log.i(TAG, s); onEvent(s) }
 
@@ -125,7 +132,12 @@ class StreamSession(
         }
     }
 
-    private fun onApi(method: String, path: String, query: Map<String, String>, body: ByteArray, remote: String): String? = when {
+    private fun onApi(method: String, path: String, query: Map<String, String>, body: ByteArray, remote: String): String? {
+        extraApi?.invoke(method, path, query)?.let { return it }
+        return onCoreApi(method, path, query, body, remote)
+    }
+
+    private fun onCoreApi(method: String, path: String, query: Map<String, String>, body: ByteArray, remote: String): String? = when {
         path == "/api/status" -> statusJson()
         path == "/api/reports" && method == "GET" -> reports.listJson(query["limit"]?.toIntOrNull() ?: ReportStore.MAX)
         path == "/api/app" && method == "POST" -> {
@@ -156,11 +168,18 @@ class StreamSession(
         else -> null
     }
 
+    @Volatile var controlErrors = 0L
+        private set
+
     private fun onControl(data: ByteArray) {
-        // M5 wires this into the input injector. For now count it so /diag and the UI show activity.
-        if (data.isNotEmpty()) {
-            controlPackets++
-            if (controlPackets % 50 == 1L) event("control 패킷 ${controlPackets}개 (kind=${data[0]})")
+        if (data.isEmpty()) return
+        controlPackets++
+        if (controlPackets % 200 == 1L) event("control 패킷 ${controlPackets}개 (kind=${data[0]})")
+        val msg = ControlMessage.parse(data) ?: run { controlErrors++; return }
+        val handler = controlHandler ?: return
+        try { handler(msg) } catch (e: Exception) {
+            controlErrors++
+            if (controlErrors % 100 == 1L) Log.w(TAG, "control inject failed: $e")
         }
     }
 
@@ -173,6 +192,8 @@ class StreamSession(
             "videoClients" to videoHub.clientCount,
             "controlClients" to controlClients.size,
             "controlPackets" to controlPackets,
+            "controlErrors" to controlErrors,
+            "input" to (controlHandler != null),
             "source" to if (clip != null) "clip" else if (liveSourceRunning) "display" else "none",
             "width" to 1280,
             "height" to 720,

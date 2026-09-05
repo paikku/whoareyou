@@ -80,6 +80,14 @@ public final class DisplayVideoSource implements VideoSource {
         return display.displayId();
     }
 
+    public int width() {
+        return display.width;
+    }
+
+    public int height() {
+        return display.height;
+    }
+
     /**
      * Starts an app on the virtual display. [name] is a package (its launcher activity is resolved)
      * or an explicit component `pkg/.Activity`. Returns the `am` output.

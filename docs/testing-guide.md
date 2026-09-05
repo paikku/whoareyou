@@ -134,7 +134,11 @@ APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 
 하단 바의 **▶** 버튼에 `com.google.android.youtube`를 넣으면 폰의 가상 화면에 유튜브가 뜨고 노트북에 보여야 한다
 (또는 `curl -X POST "http://100.99.9.9:3333/api/app?name=com.google.android.youtube"`). `/api/status`의 `source`가 `display`면 라이브,
 `clip`이면 VD 생성에 실패해 클립으로 대체된 것 — 앱 로그의 `라이브 소스 실패 …` 줄과 `/api/log`(또는 `/data/local/tmp/carcast/server.log`)를 보고 알려 준다.
-터치는 M5 전까지 전달되지 않는다.
+**M5 확인 (터치):** 노트북 브라우저에서 유튜브 영상을 클릭·스크롤하면 폰의 가상 화면 앱이 반응해야 한다. 안 되면 `/api/status`의
+`injectFailed`가 늘어나는지 보고, `/api/log`에 `INJECT_EVENTS permission`이 있으면 개발자 옵션의 **"USB 디버깅(보안 설정)"** 을 켜고 재부팅한다(삼성).
+키보드 ⌨ 버튼으로 영문·한글 입력(한글은 클립보드 붙여넣기 방식).
+**M7 확인 (폰 화면 끄기):** 폰을 충전기에 꽂고 하단 바 📵 버튼 → 폰 화면만 꺼지고 노트북 영상·터치는 계속되어야 한다. 다시 누르면 켜진다.
+`/api/status.screenOn`으로도 확인. 전원 버튼은 누르지 않는다(전체 정지).
 
 **M3 폰 검증 체크리스트** (verification-log §3.4에 결과 기록):
 - 페어링 성공 / mDNS 페어링 포트 발견 여부 / 수동 포트로도 되는지

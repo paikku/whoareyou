@@ -122,6 +122,9 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - 검증: [폰] 핫스팟 노트북에서 `BASE_URL=http://100.99.9.9:3333`로 Playwright 실행. [차] `/diag` fps·지연.
 
 ### M5. 입력 [세션 → 폰]
+- **구현됨(폰 검증 전, 2026-09-05):** 웹 컨트롤 패킷(터치/키/텍스트) → core `ControlMessage` 파서(단위 테스트) → shell `InputInjector`:
+  멀티터치 MotionEvent(finger, SOURCE_TOUCHSCREEN, `setDisplayId`), KeyEvent, 텍스트는 VIRTUAL_KEYBOARD `getEvents`로 되는 문자만 키 이벤트, 나머지(한글)는 클립보드 + `KEYCODE_PASTE`.
+  scrcpy `ControlMessage` 와이어 포맷은 쓰지 않고(우리 웹 포맷이 이미 있음) 주입 로직만 Controller에서 옮김. `/api/status.injected/injectFailed`. UHID 키보드는 미이식.
 - `ControlBridge`: WS 컨트롤 프레임 → scrcpy `ControlMessage` 와이어 포맷 그대로 (이식한 `ControlMessageReader` 무수정). 멀티터치, 백/홈/최근앱 키, UHID 키보드(`UhidManager`, API 35+ VD 연결).
 - 검증: Playwright 좌표 왕복. [폰] 스크롤/롱프레스/핀치, VD 안 삼성 키보드로 한글 입력.
 
@@ -130,6 +133,8 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - 검증: Playwright 오디오 버퍼 진행. [차] A/V 동기, 폰 스피커 무음 설정.
 
 ### M7. 라이프사이클/화면 끄기/재연결/킬스위치 [세션 → 폰]
+- **일부 구현(2026-09-05):** `ScreenPower` — 메인 디스플레이만 `requestDisplayPower(0, on)`(M0 4번 확인 방식), `stay_on_while_plugged_in=7`(서버 종료 시 복원).
+  서버 옵션 `stay_awake=true`(기본) `screen_off=true`, `GET/POST /api/screen?on=0|1`, 웹 📵 버튼. 킬 스위치는 M3의 `POST /api/stop`. 전원 버튼은 전체 정지이므로 쓰지 않는다.
 - `Device.setDisplayPower`(API 35 `requestDisplayPower`), `screen_off_timeout`, 재연결 시 I-frame 재송신, 재부팅 후 포트 재발견, 종료 순서 `am force-stop`/태스크 제거 → VD 파괴 → 스트림 닫기 → `adb_wifi_enabled 0`.
 - 검증: [폰] 화면 OFF 30분 연속(발열/배터리 `/diag` 로그), 통화 수신, 재부팅 후 한 번 탭으로 재시작.
 

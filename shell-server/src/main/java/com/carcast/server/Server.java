@@ -11,7 +11,10 @@ import java.util.Map;
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [decorations=false] [app=com.google.android.youtube] [source=clip]
+ *     [stay_awake=true] [screen_off=false]
  * </pre>
+ * Extra endpoints: {@code POST /api/screen?on=0|1} turns only the phone's main display off/on (the virtual
+ * display keeps running); {@code GET /api/screen} reports it.
  * The video comes from a virtual display (scrcpy-style, M4) unless {@code source=clip} forces the bundled test clip.
  *
  * The build id is the git sha the APK was built from ({@link BuildConfig#SERVER_BUILD_ID}); a mismatch
@@ -74,6 +77,14 @@ public final class Server {
         }
         final DisplayVideoSource source = display;
         final String initialApp = raw.get("app");
+        final ScreenPower screen = new ScreenPower();
+        final InputInjector injector = source == null ? null : new InputInjector(source.width(), source.height(), source::displayId);
+        if (!"false".equals(raw.get("stay_awake"))) {
+            screen.stayAwake();
+        }
+        if ("true".equals(raw.get("screen_off"))) {
+            screen.setMainScreen(false);
+        }
         if (source != null && initialApp != null) {
             // Give the display a moment to exist, then launch the requested app on it.
             Thread t = new Thread(() -> {
@@ -91,6 +102,11 @@ public final class Server {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("uid", uid);
             extra.put("build", BuildConfig.SERVER_BUILD_ID);
+            extra.put("screenOn", screen.isMainScreenOn());
+            if (injector != null) {
+                extra.put("injected", injector.injected());
+                extra.put("injectFailed", injector.failed());
+            }
             return extra;
         }, !opts.getDaemon(), source, source == null ? null : name -> {
             try {
@@ -98,6 +114,22 @@ public final class Server {
             } catch (Exception e) {
                 throw new RuntimeException(e.getMessage(), e);
             }
+        }, injector == null ? null : msg -> {
+            injector.handle(msg);
+            return kotlin.Unit.INSTANCE;
+        }, (method, path, query) -> {
+            if (!"/api/screen".equals(path)) {
+                return null;
+            }
+            if ("POST".equals(method)) {
+                boolean on = !"0".equals(query.get("on")) && !"false".equals(query.get("on"));
+                boolean ok = screen.setMainScreen(on);
+                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + "}";
+            }
+            return "{\"screenOn\":" + screen.isMainScreenOn() + "}";
+        }, () -> {
+            screen.restore();
+            return kotlin.Unit.INSTANCE;
         });
     }
 

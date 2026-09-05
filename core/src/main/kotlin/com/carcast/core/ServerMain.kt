@@ -1,5 +1,6 @@
 package com.carcast.core
 
+import com.carcast.core.media.ControlMessage
 import com.carcast.core.media.VideoSource
 import java.io.File
 
@@ -57,9 +58,14 @@ object ServerMain {
         stopOnStdinEof: Boolean = !opts.daemon,
         videoSource: VideoSource? = null,
         startApp: ((String) -> String)? = null,
+        control: ((ControlMessage) -> Unit)? = null,
+        extraApi: ((String, String, Map<String, String>) -> String?)? = null,
+        onStopped: () -> Unit = {},
     ) {
         val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource)
         session.onStartApp = startApp
+        session.controlHandler = control
+        session.extraApi = extraApi
         val stopped = java.util.concurrent.CountDownLatch(1)
         session.onStopRequest = { stopped.countDown() }
         session.start()
@@ -79,6 +85,7 @@ object ServerMain {
         } catch (_: InterruptedException) {
         } finally {
             session.stop()
+            onStopped()
         }
     }
 

@@ -18,6 +18,7 @@
 | 2 | 테슬라 2026.26 브라우저가 `http://100.99.9.9`를 열고 MSE H.264를 디코딩한다 | ⏳ 실차 미실시. PC의 Chrome 148(테슬라 프로필)에서는 ✅ | C | §2.3 |
 | 3 | shell 권한으로 띄운 scrcpy 서버 포크가 갤럭시에서 VD 생성 + 타 앱 실행 + 터치 주입이 된다 | ✅ M0 (stock scrcpy 4.1, 2026-09-05, 8/8 항목): VD 생성·앱 실행·터치·IME 로컬·UHID 한글·`--turn-screen-off --stay-awake`로 폰 화면만 끄기·서버 단독 기동 모두 됨. 전원 버튼 화면 OFF는 전체 정지. 단 "앱 자신의 APK를 `app_process`로 shell uid에서 실행"은 ✅, **앱이 내장 ADB로 직접 띄우는 것도 ✅** | B | §3.3, §3.5 |
 | 4 | 오디오 캡처(`output`/`playback`)가 One UI 8에서 된다 | ✅ `output`: 원격 재생 + 폰 무음. `playback --audio-dup`: 양쪽 재생 (M0 2026-09-05) | B | car-tests/s26u |
+| — | 폰 화면만 끄고 VD를 유지할 수 있다 (`--turn-screen-off --stay-awake`) | ✅ M0 4번 (충전 중). 앱 구현은 `requestDisplayPower` — 폰 ⏳ | B | car-tests/s26u |
 | 5 | WS 간헐 실패가 재시도로 해결된다 | PC ✅ (거부 34%·절단 5초마다 → 15초 내 복구) / 실차 ⏳ | A → C | §2.3 |
 | 6 | MSE 지연이 터치 조작에 견딜 수준(<300ms) | PC ✅ (fps ≥ 25, lag < 300ms) / 실기기·실차 ⏳ | A → B/C | §2.3 |
 | — | 앱 하나(APK)에 shell 서버 dex를 넣고 `CLASSPATH=<base.apk> app_process`로 실행할 수 있다 | ✅ uid=2000, build id 검증 동작 | B | §3.3 |
@@ -49,6 +50,7 @@
 | `mux` | `Fmp4WriterTest` | init 세그먼트(ftyp/moov, duration 0, mehd 없음)와 프래그먼트(moof+mdat, tfhd default-base-is-moof, tfdt v1, trun data_offset) 박스 구조 |
 | `core` | `JsonTest` | `/api/status` JSON 직렬화(이스케이프, 중첩) |
 | `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합, `POST /api/report` 저장·비JSON 거부·256KB 초과 413·`GET /api/reports`·status의 `lastReport` |
+| `core` | `ControlMessageTest` | 웹 터치/키/텍스트 패킷 파싱(정규화 좌표, UTF-8), 잘린·미지 패킷 거부 |
 | `core` | `EncodedH264SinkTest` | 인코더 출력(config 버퍼 + Annex-B AU, 원본 .h264에서 추출) → init 세그먼트 1개 + 프레임당 moof/mdat 1개, 첫 패킷 TYPE_KEY, pts 유지, SPS/PPS 인라인 키프레임만으로도 부트스트랩 |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
@@ -131,8 +133,9 @@
 | 5 | 화면 OFF 후 시간 경과 → 서버 유지 | ✅ 화면 끄고 시간이 지난 뒤 다시 열어도 `응답 중` (정확한 시간 미기록; 하룻밤은 ⏳) |
 | 6 | "서버 종료" 킬 스위치, 재부팅 후 복구 | ⏳ |
 
-### 3.6 M4: 가상 디스플레이 라이브 송출 — ⏳ (코드 완료, 폰 미검증)
-확인할 것: `/api/status.source == "display"`, 노트북 브라우저에 폰 가상 화면, ▶로 유튜브 실행, fps·lag(Playwright `BASE_URL`), 세로 고정 앱에서의 회전 동작.
+### 3.6 M4·M5·M7: 가상 디스플레이 라이브 송출·터치·화면 끄기 — ⏳ (코드 완료, 폰 미검증)
+확인할 것: `/api/status.source == "display"`, 노트북 브라우저에 폰 가상 화면, ▶로 유튜브 실행, 클릭·스크롤·키보드 반응(`injected`/`injectFailed`),
+📵로 폰 화면만 OFF, fps·lag(Playwright `BASE_URL`), 세로 고정 앱에서의 회전 동작.
 
 ### 3.4 아직 B층에서 안 한 것
 - **M3 앱 내장 ADB(커밋 이후 첫 폰 테스트):** 페어링(mDNS/수동), 시작 → `RUNNING uid=2000`, 접속 포트 발견, 킬 스위치, 재부팅 후 복구, 도즈 30분 — 체크리스트는 testing-guide B절.
