@@ -98,8 +98,11 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - **구현됨(폰 검증 전):** `adb/`는 Kadb **2.1.1**(`com.flyfishxu:kadb-android`; 2.1.2+는 compileSdk 37 요구, SPAKE2 의존성은 JitPack)로
   `AdbIdentity`(앱 키 `files/adb/adbkey.pem`), `AdbMdns`(NsdManager, 자기 주소로 resolve되는 레코드만), `AdbLink`(127.0.0.1:포트 접속·`id`·shell v2 스트림),
   `ServerCommand`(`CLASSPATH='<sourceDir>' exec app_process / com.carcast.server.Server <sha> port=3333`), `ServerOutput`(서버 stdout 파싱).
-  앱: `AdbPairingService`(알림 RemoteInput으로 6자리 코드, `_adb-tls-pairing` 발견, 수동 포트 폴백), `ShellServerLink`(세션 동안 접속→기동→출력 중계→종료 시 백오프 재시도,
-  스트림 닫기 = 킬 스위치, 미페어링이면 대기), 개발자 옵션 무선 디버깅 딥링크(`:settings:fragment_args_key=toggle_adb_wireless`).
+  앱: `AdbPairingService`(알림 RemoteInput으로 6자리 코드, `_adb-tls-pairing` 발견, 수동 포트 폴백), `ShellServerLink`(`/api/status`가 죽어 있고 Wi-Fi일 때만
+  adb로 **분리 실행** `setsid nohup … daemon=true`, 미페어링이면 대기), 개발자 옵션 무선 디버깅 딥링크(`:settings:fragment_args_key=toggle_adb_wireless`).
+- **제약(실측, 2026-09-05): 무선 디버깅은 Wi-Fi 클라이언트 연결 중에만 켜지고 Wi-Fi가 끊기면 자동으로 꺼진다.** 차(모바일 데이터+핫스팟)에서는 adb가 없다.
+  따라서 서버는 집 Wi-Fi에서 분리 실행해 재부팅 전까지 유지하고, 킬 스위치는 adb 스트림이 아니라 **loopback 전용 `POST /api/stop`**(앱 "서버 종료")이다.
+  서버 로그는 `/data/local/tmp/carcast/server.log`와 `GET /api/log`. 이전 계획의 "shell 스트림 유지 = 킬 스위치"와 "`adb_wifi_enabled` 토글"은 폐기.
 - `adb/` 결정 순서: ① Maven의 Kadb로 `pair`/`connect`/`shell` 시도 (NDK 불필요). ② 안 되면 Shizuku `adb/` 포트: `AdbKey, AdbKeyStore, AdbProtocol, AdbMessage, AdbClient, AdbMdns, AdbPairingClient, AdbException` + `jni/{adb_pairing.cpp,misc.cpp,CMakeLists.txt}`(BoringSSL prefab), 숨은 API `com.android.org.conscrypt`는 `org.conscrypt:conscrypt-android`의 공개 `exportKeyingMaterial`로 교체, 인증서는 BouncyCastle 유지.
 - 앱 UI: 페어링 = 포그라운드 서비스 알림의 `RemoteInput`으로 6자리 코드 입력(Shizuku `AdbPairingService` 패턴) + 무선 디버깅 설정 딥링크, `_adb-tls-pairing` mDNS로 포트 발견. 접속 = `_adb-tls-connect` → `shellCommand("id")`.
 - `shell-server` 최소 `Server.main`: uid 출력, `/dev/uhid` 열기, TRUSTED VD 생성/파괴 (`wrappers/{ServiceManager,DisplayManager}`, `FakeContext`, `Workarounds` 이식). 실행: `CLASSPATH=<sourceDir> app_process / com.carcast.server.Server <build-id>`.

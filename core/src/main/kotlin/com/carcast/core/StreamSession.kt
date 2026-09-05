@@ -42,6 +42,13 @@ class StreamSession(
     /** Human-readable events (also logged); the app shows them on screen, the shell prints them. */
     var onEvent: (String) -> Unit = {}
 
+    /**
+     * Called when loopback asks for `POST /api/stop`: the app's kill switch for a detached shell
+     * server (wireless debugging is off whenever Wi-Fi is, so adb cannot be relied on to kill it).
+     * Only 127.x may ask; the car or anyone on the hotspot cannot.
+     */
+    var onStopRequest: () -> Unit = {}
+
     private fun event(s: String) { Log.i(TAG, s); onEvent(s) }
 
     @Throws(IOException::class)
@@ -97,6 +104,11 @@ class StreamSession(
     private fun onApi(method: String, path: String, query: Map<String, String>, body: ByteArray, remote: String): String? = when {
         path == "/api/status" -> statusJson()
         path == "/api/reports" && method == "GET" -> reports.listJson(query["limit"]?.toIntOrNull() ?: ReportStore.MAX)
+        path == "/api/log" && method == "GET" -> Json.array(Log.recentLines().takeLast(query["limit"]?.toIntOrNull() ?: Log.RECENT_MAX))
+        path == "/api/stop" && method == "POST" -> {
+            if (!remote.startsWith("127.")) Json.obj(mapOf("ok" to false, "error" to "loopback only"))
+            else { event("종료 요청 ($remote)"); Thread({ Thread.sleep(200); onStopRequest() }, "stop").apply { isDaemon = true }.start(); Json.obj(mapOf("ok" to true)) }
+        }
         path == "/api/report" && method == "POST" -> {
             val r = reports.add(String(body, Charsets.UTF_8), remote)
             if (r == null) Json.obj(mapOf("ok" to false, "error" to "body is not a JSON object"))

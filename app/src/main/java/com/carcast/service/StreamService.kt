@@ -92,7 +92,7 @@ class StreamService : Service() {
         inApp?.stop(); inApp = null
         startService(Intent(this, CarVpnService::class.java).setAction(CarVpnService.ACTION_STOP))
         shellStatus = null
-        log("세션 종료")
+        log("세션 종료 (shell 서버는 그대로 둠 — 끄려면 '서버 종료')")
     }
 
     /** Polls the local port so the screen shows whether the shell server (or the in-app one) is answering. */

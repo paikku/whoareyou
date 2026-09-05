@@ -19,6 +19,14 @@ class ServerCommandTest {
     }
 
     @Test
+    fun detachedFormRunsInItsOwnSessionWithDaemonFlag() {
+        assertEquals(
+            "mkdir -p /data/local/tmp/carcast; CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true >/data/local/tmp/carcast/server.log 2>&1 </dev/null & echo launched pid=$!",
+            ServerCommand.detached("/a/base.apk", "abc1234", 3333),
+        )
+    }
+
+    @Test
     fun rejectsShellMetacharacters() {
         for (bad in listOf({ ServerCommand.build("/a'b.apk", "x", 1) }, { ServerCommand.build("/a.apk", "x;rm", 1) }, { ServerCommand.build("/a.apk", "x", 1, mapOf("daemon" to "true; id")) })) {
             assertTrue(runCatching(bad).exceptionOrNull() is IllegalArgumentException)

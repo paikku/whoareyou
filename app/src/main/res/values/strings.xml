@@ -15,6 +15,7 @@
     <string name="manual">포트 수동 입력…</string>
     <string name="pair_channel">CarCast 페어링</string>
     <string name="pair_title">CarCast 페어링</string>
+    <string name="wifi_hint">무선 디버깅은 Wi-Fi에 연결된 동안만 켜집니다 (핫스팟은 해당 없음). 집 Wi-Fi에서 페어링·시작을 하면 서버는 재부팅 전까지 유지됩니다.</string>
     <string name="pair_prompt">무선 디버깅 화면에서 \'페어링 코드로 기기 페어링\'을 누르고, 여기에 6자리 코드를 입력하세요</string>
     <string name="pair_working">페어링 중…</string>
     <string name="pair_done">페어링 완료. 앱이 서버를 직접 시작합니다.</string>
@@ -28,6 +29,8 @@
     <string name="manual_pair_code">페어링 코드 (6자리)</string>
     <string name="manual_pair_now">이 포트·코드로 페어링</string>
     <string name="save">저장</string>
+    <string name="stop_server">서버 종료</string>
+    <string name="stop_server_confirm">shell 서버를 종료합니다. 다시 띄우려면 Wi-Fi에 연결된 곳에서 \'시작\'을 눌러야 합니다 (무선 디버깅은 Wi-Fi에서만 켜짐). 종료할까요?</string>
     <string name="copy_log">로그 복사</string>
     <string name="clear_log">로그 지우기</string>
     <string name="copied">로그 %1$d줄을 클립보드에 복사했습니다</string>

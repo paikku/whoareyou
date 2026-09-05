@@ -84,6 +84,34 @@ class ServerMainTest {
         }
     }
 
+    @Test
+    fun stopIsLoopbackOnlyAndLogIsServed() {
+        val port = ServerSocket(0).use { it.localPort }
+        val session = StreamSession(ZipAssets(fakeApk().path), port, "test")
+        var stops = 0
+        session.onStopRequest = { stops++ }
+        session.start()
+        try {
+            val log = get("http://127.0.0.1:$port/api/log?limit=5")
+            assertTrue(log, log.startsWith("[\"") && log.contains("HTTP"))
+            assertEquals("{\"ok\":true}", post("http://127.0.0.1:$port/api/stop", ""))
+            Thread.sleep(500)
+            assertEquals(1, stops)
+            // From a non-loopback address the same request must be refused. Use any non-loopback
+            // local address if the host has one; otherwise the loopback path above is all we can check.
+            val other = java.net.NetworkInterface.getNetworkInterfaces().toList()
+                .flatMap { it.inetAddresses.toList() }.filterIsInstance<java.net.Inet4Address>()
+                .firstOrNull { !it.isLoopbackAddress }
+            if (other != null) {
+                val r = post("http://${other.hostAddress}:$port/api/stop", "")
+                assertTrue(r, r.contains("loopback only"))
+                assertEquals(1, stops)
+            }
+        } finally {
+            session.stop()
+        }
+    }
+
     private fun post(url: String, body: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 2000; c.readTimeout = 2000

@@ -65,6 +65,14 @@ class MainActivity : AppCompatActivity() {
         pair.setOnClickListener { startPairing() }
         manual = findViewById(R.id.manual)
         manual.setOnClickListener { manualDialog() }
+        findViewById<Button>(R.id.stop_server).setOnClickListener {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setMessage(R.string.stop_server_confirm)
+                .setPositiveButton(R.string.stop_server) { _, _ ->
+                    Thread { val r = com.carcast.adb.ShellServerLink.stopServer(); StreamService.log("서버 종료 요청: $r") }.start()
+                }
+                .setNegativeButton(android.R.string.cancel, null).show()
+        }
         logScroll = findViewById(R.id.log_scroll)
         findViewById<Button>(R.id.copy_log).setOnClickListener {
             val lines = StreamService.logLines.toList()
@@ -220,6 +228,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 ).append('\n')
                 append("adb: ").append(StreamService.linkState ?: if (AdbPrefs(this@MainActivity).paired) "페어링됨, 세션 없음" else "미페어링").append('\n')
+                if (!onWifi()) append("※ ").append(getString(R.string.wifi_hint)).append('\n')
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
                 append("차에서 보낸 진단: ").append(lastReportLine(st)).append('\n')
@@ -239,6 +248,11 @@ class MainActivity : AppCompatActivity() {
             }
             handler.postDelayed(this, 1000)
         }
+    }
+
+    private fun onWifi(): Boolean {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        return cm.allNetworks.any { cm.getNetworkCapabilities(it)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true }
     }
 
     override fun onResume() { super.onResume(); handler.post(refresh) }

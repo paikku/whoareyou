@@ -46,21 +46,28 @@ object ServerMain {
         return Options(kv["port"]?.toInt() ?: 3333, assets, args[0], kv)
     }
 
-    /** Runs a session until stdin closes (or [stopOnStdinEof] is false and the thread is interrupted). */
+    /**
+     * Runs a session until stdin closes (or [stopOnStdinEof] is false), or until loopback posts
+     * `/api/stop` — the app's kill switch for a detached (`daemon=true`) server.
+     */
     fun run(opts: Options, extraStatus: () -> Map<String, Any?> = { emptyMap() }, stopOnStdinEof: Boolean = !opts.daemon) {
         val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir)
+        val stopped = java.util.concurrent.CountDownLatch(1)
+        session.onStopRequest = { stopped.countDown() }
         session.start()
         println("carcast-server ready build=${opts.buildId} port=${opts.port}")
         System.out.flush()
         Runtime.getRuntime().addShutdownHook(Thread { session.stop() })
         try {
             if (stopOnStdinEof) {
-                val buf = ByteArray(256)
-                while (System.`in`.read(buf) >= 0) { /* ignore input, wait for EOF */ }
-                println("stdin closed, stopping")
-            } else {
-                Thread.currentThread().join()
+                Thread({
+                    val buf = ByteArray(256)
+                    runCatching { while (System.`in`.read(buf) >= 0) { /* ignore input, wait for EOF */ } }
+                    println("stdin closed, stopping")
+                    stopped.countDown()
+                }, "stdin").apply { isDaemon = true }.start()
             }
+            stopped.await()
         } catch (_: InterruptedException) {
         } finally {
             session.stop()

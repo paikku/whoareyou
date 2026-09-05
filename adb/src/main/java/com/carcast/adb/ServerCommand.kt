@@ -21,6 +21,17 @@ object ServerCommand {
         return "CLASSPATH='$apkPath' exec app_process / $MAIN_CLASS $buildId $args"
     }
 
+    /**
+     * Detached form: the server outlives the adb stream, wireless debugging (which Android turns off
+     * with Wi-Fi) and the app, until reboot or `POST /api/stop` from loopback. Output goes to [logFile]
+     * (shell-writable; the app reads the same lines via /api/log). This is how the app starts it.
+     */
+    fun detached(apkPath: String, buildId: String, port: Int, logFile: String = "/data/local/tmp/carcast/server.log"): String {
+        require(!logFile.contains(Regex("[\\s'\"]"))) { "bad log path" }
+        val inner = build(apkPath, buildId, port, mapOf("daemon" to "true")).removePrefix("CLASSPATH='$apkPath' exec ")
+        return "mkdir -p ${logFile.substringBeforeLast('/')}; CLASSPATH='$apkPath' setsid nohup $inner >$logFile 2>&1 </dev/null & echo launched pid=$!"
+    }
+
     /** What the user types from a PC when the app cannot do it itself; shown on screen. */
     fun forPc(packageName: String, buildId: String, port: Int): String =
         "adb shell 'CLASSPATH=\$(pm path $packageName | cut -d: -f2) app_process / $MAIN_CLASS $buildId port=$port'"

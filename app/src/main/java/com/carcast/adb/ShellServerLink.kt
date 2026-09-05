@@ -1,20 +1,28 @@
 package com.carcast.adb
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.carcast.BuildConfig
 import com.carcast.Config
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Keeps the shell-uid server running for as long as the session is active:
- * find adbd's port (mDNS or the user's manual port) → connect with our paired key → `id` →
- * run [ServerCommand] on a shell stream and relay its output → when it exits, retry with backoff.
- * Closing the stream ends the server (it exits on stdin EOF), which is the kill switch.
+ * Makes sure the shell-uid server is running while the session is active.
+ *
+ * Wireless debugging only works while the phone is a Wi-Fi *client* (Android turns it off with
+ * Wi-Fi), so in the car — mobile data + hotspot — adb is unavailable. Therefore the server is
+ * started **detached** (`setsid nohup … daemon=true`, see [ServerCommand.detached]) whenever adb is
+ * reachable (at home on Wi-Fi), and it then outlives the adb stream, wireless debugging and this
+ * app until reboot or `POST /api/stop` from loopback ([stopServer], the kill switch).
+ * This class polls /api/status and only touches adb when the server is not answering.
  */
 class ShellServerLink(private val context: Context, private val log: (String) -> Unit) {
-    enum class State { IDLE, FINDING_PORT, CONNECTING, NEEDS_PAIRING, STARTING, RUNNING, RETRYING, STOPPED }
+    enum class State { IDLE, SERVER_UP, FINDING_PORT, CONNECTING, NEEDS_PAIRING, NO_WIFI, STARTING, RETRYING, STOPPED }
 
     @Volatile var state = State.IDLE
         private set
@@ -22,8 +30,6 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         private set
     @Volatile private var active = false
     private var thread: Thread? = null
-    private var link: AdbLink? = null
-    private var process: AdbLink.ShellProcess? = null
     private val wake = Object()
 
     fun start() {
@@ -32,16 +38,15 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         thread = Thread({ loop() }, "shell-link").apply { isDaemon = true; start() }
     }
 
-    /** Also used after pairing: interrupts a wait and reconnects immediately. */
+    /** After pairing or a manual port: retry now instead of waiting out the backoff. */
     fun reconnect() {
         if (!active) start() else synchronized(wake) { wake.notifyAll() }
     }
 
+    /** Stops watching. Does NOT stop the server: restarting it needs Wi-Fi, so that is a separate, explicit action. */
     fun stop() {
         active = false
         set(State.STOPPED, "")
-        process?.close(); process = null
-        link?.close(); link = null
         synchronized(wake) { wake.notifyAll() }
         thread?.interrupt(); thread = null
     }
@@ -50,8 +55,23 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
 
     private fun loop() {
         var delay = 5_000L
+        var wasUp = false
         while (active) {
-            val outcome = runCatching { runOnce() }
+            if (serverUp()) {
+                if (!wasUp) log("shell 서버 응답 중 — adb는 쓰지 않음")
+                wasUp = true
+                set(State.SERVER_UP, "")
+                waitFor(5_000L); delay = 5_000L
+                continue
+            }
+            wasUp = false
+            if (!onWifi()) {
+                set(State.NO_WIFI, "Wi-Fi 미연결: 무선 디버깅 불가")
+                if (delay == 5_000L) log("서버가 없고 Wi-Fi도 아님 — Wi-Fi에 연결된 곳에서 '시작'을 누르면 앱이 서버를 띄웁니다 (또는 PC 명령)")
+                waitFor(delay); delay = (delay * 2).coerceAtMost(60_000L)
+                continue
+            }
+            val outcome = runCatching { launchOnce() }
             if (!active) break
             val reason = outcome.exceptionOrNull()
             when {
@@ -62,51 +82,51 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                     delay = 5_000L
                     continue
                 }
-                reason != null -> { set(State.RETRYING, "${reason.message}"); log("shell 링크 실패: ${reason.message ?: reason}") }
-                else -> set(State.RETRYING, "서버 종료")
+                reason != null -> { set(State.RETRYING, "${reason.message}"); log("서버 기동 실패: ${reason.message ?: reason}"); waitFor(delay); delay = (delay * 2).coerceAtMost(60_000L) }
+                else -> delay = 5_000L
             }
-            waitFor(delay)
-            delay = (delay * 2).coerceAtMost(60_000L)
         }
     }
 
-    /** One connect → launch → wait-for-exit cycle. Returns normally when the server exits. */
+    /** find port → connect → `id` → detached launch → wait until /api/status answers. */
     @Throws(IOException::class)
-    private fun runOnce() {
-        val port = findPort() ?: throw IOException("adbd 포트를 찾지 못함 — 무선 디버깅이 켜져 있나요? (수동 입력 가능)")
+    private fun launchOnce() {
+        val port = findPort() ?: throw IOException("adbd 포트를 찾지 못함 — 무선 디버깅이 켜져 있나요? ('포트 수동 입력…' 가능)")
         set(State.CONNECTING, "127.0.0.1:$port")
-        val l = AdbLink(port)
-        link = l
-        try {
+        AdbLink(port).use { l ->
             val id = l.whoAmI()
             log("adb 접속: $id")
             if (!id.contains("uid=2000")) log("경고: shell(2000)이 아닌 uid — 핫스팟 클라이언트가 100.99.9.9에 닿지 못할 수 있음")
-            val cmd = ServerCommand.build(context.applicationInfo.sourceDir, BuildConfig.GIT_SHA, Config.HTTP_PORT)
+            val cmd = ServerCommand.detached(context.applicationInfo.sourceDir, BuildConfig.GIT_SHA, Config.HTTP_PORT)
             set(State.STARTING, cmd)
-            val exited = CountDownLatch(1)
-            var failed: String? = null
-            val p = l.launch(cmd, { line, err ->
-                when (val ev = ServerOutput.parse(line)) {
-                    is ServerOutput.Event.Started -> { set(State.RUNNING, "uid=${ev.uid} build=${ev.build} android=${ev.android}"); log("서버 기동 uid=${ev.uid} build=${ev.build}") }
-                    is ServerOutput.Event.Ready -> log("서버 준비: 포트 ${ev.port}")
-                    is ServerOutput.Event.Failed -> { failed = ev.reason; log("서버 오류: ${ev.reason}") }
-                    is ServerOutput.Event.Line -> if (err || ev.text.isNotBlank()) log("[server] ${ev.text}")
-                }
-            }, { code -> log("서버 프로세스 종료 (exit=${code ?: "?"})"); exited.countDown() })
-            process = p
-            while (active && !exited.await(1, TimeUnit.SECONDS)) { /* keep the stream open */ }
-            if (active && failed != null) throw IOException(failed)
-        } finally {
-            process?.close(); process = null
-            l.close(); if (link === l) link = null
+            val out = l.shell(cmd).trim()
+            log("서버 분리 실행: $out")
         }
+        for (i in 1..20) {
+            if (!active) return
+            if (serverUp()) { log("서버 기동 확인 (${i * 500}ms)"); return }
+            Thread.sleep(500)
+        }
+        val tail = runCatching { AdbLink(port).use { it.shell("tail -n 20 /data/local/tmp/carcast/server.log") } }.getOrNull()?.trim()
+        throw IOException("서버가 10초 안에 응답하지 않음" + (if (!tail.isNullOrEmpty()) "\n$tail" else ""))
+    }
+
+    private fun serverUp(): Boolean = try {
+        val c = URL("http://127.0.0.1:${Config.HTTP_PORT}/api/status").openConnection() as HttpURLConnection
+        c.connectTimeout = 1000; c.readTimeout = 1000
+        c.inputStream.use { String(it.readBytes()) }.contains("\"running\":true")
+    } catch (_: Exception) { false }
+
+    private fun onWifi(): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        return cm.allNetworks.any { n -> cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
     }
 
     /** Manual port wins; otherwise the first `_adb-tls-connect` record for one of our own addresses. */
     private fun findPort(): Int? {
         val manual = AdbPrefs(context).manualConnectPort
         if (manual > 0) { set(State.FINDING_PORT, "수동 포트 $manual"); return manual }
-        set(State.FINDING_PORT, "mDNS $ADB_CONNECT_WAIT_S s")
+        set(State.FINDING_PORT, "mDNS ${ADB_CONNECT_WAIT_S}s")
         val found = CountDownLatch(1)
         var port = 0
         val mdns = AdbMdns(context, AdbMdns.CONNECT) { p -> port = p; found.countDown() }
@@ -121,5 +141,13 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
 
     companion object {
         private const val ADB_CONNECT_WAIT_S = 15L
+
+        /** Kill switch: asks the server (whoever started it) to exit. Loopback only, so only this phone can. */
+        fun stopServer(): String = try {
+            val c = URL("http://127.0.0.1:${Config.HTTP_PORT}/api/stop").openConnection() as HttpURLConnection
+            c.connectTimeout = 1000; c.readTimeout = 2000; c.requestMethod = "POST"; c.doOutput = true
+            c.outputStream.close()
+            c.inputStream.use { String(it.readBytes()) }
+        } catch (e: Exception) { "서버 응답 없음: $e" }
     }
 }

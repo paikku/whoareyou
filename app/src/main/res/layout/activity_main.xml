@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The whole page scrolls (many controls do not fit on one screen); the log is a fixed-height box inside it. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:fillViewport="true">
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="24dp"
     android:gravity="center_horizontal">
@@ -46,11 +51,25 @@
         android:textIsSelectable="true"
         android:layout_marginBottom="8dp" />
 
-    <Button
-        android:id="@+id/toggle"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/start" />
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/toggle"
+            android:layout_width="0dp"
+            android:layout_weight="2"
+            android:layout_height="wrap_content"
+            android:text="@string/start" />
+        <Button
+            android:id="@+id/stop_server"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:text="@string/stop_server" />
+    </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -124,9 +143,10 @@
     <ScrollView
         android:id="@+id/log_scroll"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_height="260dp"
         android:layout_marginTop="4dp"
+        android:background="#11000000"
+        android:nestedScrollingEnabled="true"
         android:scrollbars="vertical">
         <TextView
             android:id="@+id/log"
@@ -137,3 +157,4 @@
             android:textIsSelectable="true" />
     </ScrollView>
 </LinearLayout>
+</ScrollView>
