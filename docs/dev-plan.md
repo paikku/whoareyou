@@ -102,7 +102,12 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
   `ServerCommand`(`CLASSPATH='<sourceDir>' exec app_process / com.carcast.server.Server <sha> port=3333`), `ServerOutput`(서버 stdout 파싱).
   앱: `AdbPairingService`(알림 RemoteInput으로 6자리 코드, `_adb-tls-pairing` 발견, 수동 포트 폴백), `ShellServerLink`(`/api/status`가 죽어 있고 Wi-Fi일 때만
   adb로 **분리 실행** `setsid nohup … daemon=true`, 미페어링이면 대기), 개발자 옵션 무선 디버깅 딥링크(`:settings:fragment_args_key=toggle_adb_wireless`).
-- **이 Wi-Fi 요구를 없애는 계획은 [hotspot-only.md](hotspot-only.md)에 있다 — 미러 모드를 기본으로, 아래 별도 VD 모드를 고급 모드로 내린다.**
+- **M8 TCP 모드(구현됨, 폰 검증 대기):** 무선 디버깅으로 처음 붙은 직후 앱이 `tcpip:<랜덤 고포트>`를 보내 adbd를 TCP 모드로 돌린다
+  (`AdbLink.tcpip`, `ShellServerLink.openLink`/`switchToTcpMode`). 이 포트는 Wi-Fi 게이트가 없어 핫스팟에서도 열려 있으므로
+  이후 접속은 loopback으로 하고, **차 안에서도 서버를 다시 띄울 수 있다.** adbd가 죽지 않으니 아래 cgroup SIGKILL도 일어나지 않는다.
+  전환은 adbd를 재시작시켜 그 라운드의 링크를 잃으므로 서버 기동 **전에만** 하고, 2회 실패하면 포기하고 무선 디버깅을 쓴다.
+  덤으로 `persist.adb.tcp.port`를 설정해 보고(재부팅 지속 실험, [hotspot-only.md](hotspot-only.md) §3) 결과를 로그에 남긴다. 앱에 "TCP 모드 끄기" 버튼.
+- **배경과 남은 계획: [hotspot-only.md](hotspot-only.md)** (테소르도 Shizuku라 같은 제약을 갖는다는 확인, 미러 모드 하위 티어 등).
 - **제약(실측, 2026-09-05): 무선 디버깅은 Wi-Fi 클라이언트 연결 중에만 켜지고 Wi-Fi가 끊기면 자동으로 꺼진다.** 차(모바일 데이터+핫스팟)에서는 adb가 없다.
   따라서 서버는 집 Wi-Fi에서 분리 실행해 재부팅 전까지 유지하고, 킬 스위치는 adb 스트림이 아니라 **loopback 전용 `POST /api/stop`**(앱 "서버 종료")이다.
   서버 로그는 실행마다 새 파일 `/data/local/tmp/carcast/server-<epoch>.log`(이전 로그는 실행 전에 삭제)와 `GET /api/log`. 이전 계획의 "shell 스트림 유지 = 킬 스위치"와 "`adb_wifi_enabled` 토글"은 폐기.

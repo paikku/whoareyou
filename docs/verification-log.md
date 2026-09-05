@@ -28,6 +28,10 @@
 | — | 무선 디버깅을 핫스팟 상태에서 켤 수 있다 | ❌ Wi-Fi 클라이언트 연결 중에만 토글 활성 (사용자 실측 2026-09-05) → 서버는 Wi-Fi에서 분리 실행, 차에서는 adb 불사용 | B | dev-plan M3 |
 | — | 분리 실행(`daemon=true`) 서버가 adb 스트림·Wi-Fi·무선 디버깅 종료·화면 OFF 후에도 유지된다 | ⚠️ **조건부 통과 — USB 디버깅 토글이 켜져 있을 때만.** 꺼져 있으면 Wi-Fi가 끊길 때 adbd가 멈추고 init이 adbd의 cgroup(`/system/uid_0/pid_N`)을 통째로 SIGKILL → 서버 사망 (2026-09-05 `306d41a`). shell은 cgroup을 못 벗어남(`d98be88`에서 전 경로 EACCES). 켜 두면 핫스팟 전환 후 유지 + 노트북에서 `100.99.9.9:3333` 접속 ✅. 하룻밤·재부팅은 ⏳ | B | §3.4, §3.5 |
 
+| — | adbd를 TCP 모드(`tcpip:<포트>`)로 돌리면 Wi-Fi 없이(핫스팟에서도) adb를 쓸 수 있다 | ⏳ **구현됨, 폰 미검증** — 근거는 Shizuku #864(S21, Android 14)의 보고. One UI 8의 adbd가 받아 주는지, 전환 후 무선 디버깅이 꺼지는지, "USB 디버깅 허용" 다이얼로그가 뜨는지 모두 미확인 | B | [hotspot-only.md](hotspot-only.md) §2 |
+| — | `persist.adb.tcp.port`를 shell이 설정할 수 있어 재부팅 후에도 adbd가 포트를 연다 | ⏳ 미실시 (앱이 전환 성공 시 자동 시도하고 결과를 로그에 남김). 최근 삼성에서 막혔다는 보고가 많아 기대치 낮음 | B | [hotspot-only.md](hotspot-only.md) §3 |
+| — | 테소르(Tesor)가 Wi-Fi 없이 동작한다 | ❌ 테소르는 Shizuku 위에서 돈다(설치 안내 2단계). 비루팅 Shizuku는 재부팅 시 종료되고 무선 디버깅 = Wi-Fi로만 다시 시작된다 — 같은 제약 | 문헌 | [hotspot-only.md](hotspot-only.md) §1.4 |
+
 **설계에 반영된 결론:** 가정 1의 조건 때문에 HTTP/WS 서버는 앱이 아니라 shell 프로세스에서 돈다
 ([dev-plan.md 아키텍처 3항](dev-plan.md)). 앱은 tun 주소 유지·페어링·기동·UI만 맡는다.
 
@@ -153,6 +157,9 @@
 | — | 노트북 `/diag` 보고 | `no-Tesla-UA, 1108x632@1.25, mse=O, ws 20/20 35ms, video 61f 0fps lag 3224ms` (진단 페이지 자체 측정; 본 화면은 영상 재생됨) |
 
 ### 3.7 아직 B층에서 안 한 것
+- **M8 TCP 모드(2026-09-05 구현):** 무선 디버깅으로 붙은 직후 `tcpip:<랜덤 고포트>` 전환 → loopback 재접속 → 서버 기동.
+  확인할 것: ① adbd 응답 줄, ② 전환 후 `id`가 uid=2000인지, ③ **Wi-Fi를 끈 채** "서버 종료" 후 앱이 다시 띄우는지,
+  ④ USB 디버깅 토글을 꺼도 서버가 유지되는지, ⑤ `persist.adb.tcp.port` 로그가 "설정됨"인지 "설정 불가"인지, ⑥ 재부팅 후 Wi-Fi 없이 붙는지.
 - M7 📵 재검증 (`fdc2350`의 SurfaceControl 경로), M6 오디오(미구현).
 - "서버 종료" 킬 스위치, 재부팅 후 Wi-Fi에서 "시작" 한 번으로 복구, 하룻밤 방치 후 유지.
 - `BASE_URL=http://100.99.9.9:3333 npx playwright test`를 노트북에서 폰에 대고 실행(자동화된 fps·지연 수치).

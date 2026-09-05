@@ -35,6 +35,38 @@ class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
     fun shell(command: String): String = kadb.shell(command).allOutput
 
     /**
+     * Switches adbd to TCP mode on [port] — the `tcpip:` service, byte for byte what `adb tcpip <port>`
+     * sends. This is adbd's legacy RSA-key path, not the wireless-debugging one Android gates on a Wi-Fi
+     * client connection, so adbd keeps the port open with Wi-Fi off and while the phone is a hotspot.
+     * That is what lets the app reach shell in the car (see docs/hotspot-only.md).
+     *
+     * adbd writes one line and then re-executes itself, so this link dies immediately after — and so does
+     * everything adbd had started, because init kills adbd's whole cgroup. Always call this **before**
+     * launching the server, never after.
+     */
+    @Throws(IOException::class)
+    fun tcpip(port: Int): String = restart(tcpipService(port))
+
+    /** Undoes [tcpip]: adbd goes back to USB/wireless only. Restarts adbd the same way. */
+    @Throws(IOException::class)
+    fun usbOnly(): String = restart("usb:")
+
+    /** adbd answers with a single line ("restarting in TCP mode port: N") and may cut us off mid-line. */
+    private fun restart(service: String): String {
+        val line = StringBuilder()
+        kadb.open(service).use { stream ->
+            runCatching {
+                while (line.length < 200) {
+                    val b = stream.source.readByte().toInt()
+                    if (b == '\n'.code) break
+                    line.append(b.toChar())
+                }
+            }
+        }
+        return line.toString().trim()
+    }
+
+    /**
      * Runs [command] and streams its stdout/stderr lines to [onLine] on a daemon thread until the
      * command exits or [ShellProcess.close] is called. Closing the stream is the kill switch: the
      * server reads stdin and exits on EOF (see core ServerMain).
@@ -88,6 +120,12 @@ class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
 
     companion object {
         private const val TAG = "AdbLink"
+
+        /** Ports below 1024 need root to bind and 5555 is the well-known one every scanner tries. */
+        fun tcpipService(port: Int): String {
+            require(port in 1024..65535) { "TCP 모드 포트 범위를 벗어남: $port" }
+            return "tcpip:$port"
+        }
 
         /**
          * Pairs our key with adbd using the 6-digit code from the "Pair device with pairing code"

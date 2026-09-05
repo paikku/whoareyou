@@ -14,15 +14,23 @@ import java.util.concurrent.TimeUnit
 /**
  * Makes sure the shell-uid server is running while the session is active.
  *
- * Wireless debugging only works while the phone is a Wi-Fi *client* (Android turns it off with
- * Wi-Fi), so in the car — mobile data + hotspot — adb is unavailable. Therefore the server is
- * started **detached** (`setsid nohup … daemon=true`, see [ServerCommand.detached]) whenever adb is
- * reachable (at home on Wi-Fi), and it then outlives the adb stream, wireless debugging and this
- * app until reboot or `POST /api/stop` from loopback ([stopServer], the kill switch).
- * This class polls /api/status and only touches adb when the server is not answering.
+ * Wireless debugging only works while the phone is a Wi-Fi *client* (Android turns it off with Wi-Fi),
+ * so on that path alone there is no adb in the car — mobile data + hotspot — and a server that dies
+ * there cannot be brought back. So the first time the app gets in over wireless debugging it switches
+ * adbd to **TCP mode** ([AdbLink.tcpip]), whose port is not gated on Wi-Fi and stays open while the
+ * phone is a hotspot. From then on [openLink] reaches shell over loopback anywhere, the server can be
+ * relaunched in the car, and adbd staying alive also means init never SIGKILLs its cgroup — which is
+ * what used to require leaving the USB debugging toggle on. See docs/hotspot-only.md.
+ *
+ * The server is still started **detached** (`setsid nohup … daemon=true`, see [ServerCommand.detached])
+ * so it outlives the adb stream and this app until reboot or `POST /api/stop` from loopback
+ * ([stopServer], the kill switch). This class polls /api/status and only touches adb when the server
+ * is not answering.
  */
 class ShellServerLink(private val context: Context, private val log: (String) -> Unit) {
-    enum class State { IDLE, SERVER_UP, FINDING_PORT, CONNECTING, NEEDS_PAIRING, NO_WIFI, ADB_WIFI_OFF, STARTING, RETRYING, STOPPED }
+    enum class State { IDLE, SERVER_UP, FINDING_PORT, CONNECTING, TCP_MODE, NEEDS_PAIRING, NO_WIFI, ADB_WIFI_OFF, STARTING, RETRYING, STOPPED }
+
+    private val prefs = AdbPrefs(context)
 
     @Volatile var state = State.IDLE
         private set
@@ -43,7 +51,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         if (!active) start() else synchronized(wake) { wake.notifyAll() }
     }
 
-    /** Stops watching. Does NOT stop the server: restarting it needs Wi-Fi, so that is a separate, explicit action. */
+    /** Stops watching. Does NOT stop the server — that is a separate, explicit action ([stopServer]). */
     fun stop() {
         active = false
         set(State.STOPPED, "")
@@ -86,25 +94,30 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                 }
             }
             if (wasUp) {
-                // It answered a moment ago and is gone without our /api/stop: with the whole process SIGKILLed nothing
-                // reaches the log, so say what kills it. init kills adbd's entire cgroup when adbd stops, and adbd
-                // stops when wireless debugging goes off (Wi-Fi dropped) while USB debugging is off too.
-                log("서버가 사라짐 — 무선 디버깅이 꺼지며 adbd가 종료되면 adbd가 띄운 프로세스는 cgroup째 SIGKILL됩니다(setsid/nohup으로 못 막음). " +
-                    "이 빌드의 서버는 시작할 때 cgroup 탈출을 시도하고 결과를 'step: cgroup' 줄에 남깁니다. 확실한 방법: 개발자 옵션에서 USB 디버깅을 켜 두면 adbd가 살아 있어 서버가 유지됩니다")
+                // It answered a moment ago and is gone without our /api/stop. init kills adbd's entire cgroup when
+                // adbd stops, and adbd stops when wireless debugging goes off (Wi-Fi dropped) with USB debugging off
+                // too — the whole process is SIGKILLed, so nothing reaches the log. TCP mode keeps adbd alive, which
+                // both prevents that and lets us relaunch right here without Wi-Fi.
+                log(if (tcpModeReachable()) "서버가 사라짐 — TCP 모드로 adbd에 붙어 바로 다시 띄웁니다"
+                    else "서버가 사라짐 — 무선 디버깅이 꺼지며 adbd가 종료되면 adbd가 띄운 프로세스는 cgroup째 SIGKILL됩니다(setsid/nohup으로 못 막음). " +
+                        "TCP 모드가 켜져 있으면 이 일이 없고 차에서도 복구됩니다; 그전까지는 개발자 옵션에서 USB 디버깅을 켜 두세요")
             }
             wasUp = false
-            if (!onWifi()) {
-                set(State.NO_WIFI, "Wi-Fi 미연결: 무선 디버깅 불가")
-                if (delay == 5_000L) log("서버가 없고 Wi-Fi도 아님 — Wi-Fi에 연결된 곳에서 '시작'을 누르면 앱이 서버를 띄웁니다 (또는 PC 명령)")
-                waitFor(delay); delay = (delay * 2).coerceAtMost(60_000L)
-                continue
-            }
-            if (!adbWifiEnabled()) {
-                // Android switches wireless debugging off whenever Wi-Fi drops; the toggle stays off until the user flips it.
-                set(State.ADB_WIFI_OFF, "무선 디버깅 꺼짐 — 개발자 옵션에서 켜세요")
-                if (!adbOffWarned) { adbOffWarned = true; log("무선 디버깅이 꺼져 있음 (Wi-Fi가 끊길 때 자동으로 꺼짐) — '무선 디버깅 설정' 버튼으로 열어 켜면 바로 이어집니다") }
-                waitFor(3_000L); delay = 5_000L
-                continue
+            // Wi-Fi is only needed when TCP mode is not up yet; once it is, adbd answers on loopback anywhere.
+            if (!tcpModeReachable()) {
+                if (!onWifi()) {
+                    set(State.NO_WIFI, "Wi-Fi 미연결: 무선 디버깅 불가")
+                    if (delay == 5_000L) log("서버가 없고 Wi-Fi도 아님 — Wi-Fi에 연결된 곳에서 '시작'을 한 번 누르면 앱이 adbd를 TCP 모드로 바꿔 다음부터는 Wi-Fi 없이 됩니다 (또는 PC 명령)")
+                    waitFor(delay); delay = (delay * 2).coerceAtMost(60_000L)
+                    continue
+                }
+                if (!adbWifiEnabled()) {
+                    // Android switches wireless debugging off whenever Wi-Fi drops; the toggle stays off until the user flips it.
+                    set(State.ADB_WIFI_OFF, "무선 디버깅 꺼짐 — 개발자 옵션에서 켜세요")
+                    if (!adbOffWarned) { adbOffWarned = true; log("무선 디버깅이 꺼져 있음 (Wi-Fi가 끊길 때 자동으로 꺼짐) — '무선 디버깅 설정' 버튼으로 열어 켜면 바로 이어집니다") }
+                    waitFor(3_000L); delay = 5_000L
+                    continue
+                }
             }
             adbOffWarned = false
             val outcome = runCatching { launchOnce(replaceStale) }
@@ -124,16 +137,13 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         }
     }
 
-    /** find port → connect → `id` → detached launch → wait until /api/status answers. */
+    /** connect (TCP mode, else wireless debugging) → detached launch → wait until /api/status answers. */
     @Throws(IOException::class)
     private fun launchOnce(replaceStale: Boolean = false) {
-        val port = findPort() ?: throw IOException("adbd 접속 포트를 찾지 못함 — 무선 디버깅 화면의 'IP 주소 및 포트'의 포트를 '포트 수동…'에 넣으세요")
-        set(State.CONNECTING, "127.0.0.1:$port")
         val logFile = "$SERVER_DIR/server-${System.currentTimeMillis() / 1000}.log"
-        AdbLink(port).use { l ->
-            val id = l.whoAmI()
-            log("adb 접속: $id")
-            if (!id.contains("uid=2000")) log("경고: shell(2000)이 아닌 uid — 핫스팟 클라이언트가 100.99.9.9에 닿지 못할 수 있음")
+        var port = 0
+        openLink().use { l ->
+            port = l.port
             // Only now that adb is confirmed working do we retire an old-build server (kill switch), then relaunch.
             if (replaceStale) {
                 log("이전 빌드 서버 종료 → 이 빌드로 교체")
@@ -160,6 +170,108 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         throw IOException("서버가 10초 안에 응답하지 않음 — 서버 로그 $logFile:\n$detail")
     }
 
+    /**
+     * A connected adb link, shell confirmed. Prefers the TCP-mode port, which needs no Wi-Fi; otherwise goes
+     * in over wireless debugging and, the first couple of times, switches adbd to TCP mode so that the next
+     * time — in the car, on the hotspot — the Wi-Fi path is not needed at all.
+     */
+    @Throws(IOException::class)
+    private fun openLink(): AdbLink {
+        val tcp = prefs.tcpPort
+        // Probe the port before dialling it: when adbd is not in TCP mode (a reboot, or it never took) a full
+        // connect would stall for the connect timeout on every round and log a failure line each time.
+        if (tcp > 0 && tcpModeReachable()) {
+            set(State.CONNECTING, "TCP 모드 127.0.0.1:$tcp")
+            val l = AdbLink(tcp)
+            val id = runCatching { l.whoAmI() }
+            id.getOrNull()?.let { checkShell(it, "TCP 모드, Wi-Fi 불필요"); return l }
+            l.close()
+            val e = id.exceptionOrNull()
+            log("TCP 모드 포트 $tcp 접속 실패 (${e?.message}) — 무선 디버깅으로 되돌립니다" +
+                if (e is AdbLink.NotPairedException) ". 폰에 'USB 디버깅을 허용하시겠습니까?'가 떠 있으면 '항상 허용'으로 수락하세요" else "")
+        }
+        val port = findPort() ?: throw IOException("adbd 접속 포트를 찾지 못함 — 무선 디버깅 화면의 'IP 주소 및 포트'의 포트를 '포트 수동…'에 넣으세요")
+        set(State.CONNECTING, "127.0.0.1:$port")
+        val tls = AdbLink(port)
+        val id = try { tls.whoAmI() } catch (e: Throwable) { tls.close(); throw e }
+        checkShell(id, "무선 디버깅")
+        if (prefs.tcpModeFailures >= TCP_MODE_MAX_TRIES) return tls
+        return switchToTcpMode(tls)
+    }
+
+    private fun checkShell(id: String, how: String) {
+        log("adb 접속($how): $id")
+        if (!id.contains("uid=2000")) log("경고: shell(2000)이 아닌 uid — 핫스팟 클라이언트가 100.99.9.9에 닿지 못할 수 있음")
+    }
+
+    /**
+     * Switches adbd to TCP mode and comes back on the new port. adbd re-executes itself here, so [tls] and
+     * everything adbd had started die — which is why this runs before the server is launched, never after,
+     * and why a failure costs this round's working link. After [TCP_MODE_MAX_TRIES] failures we stop trying
+     * and stay on wireless debugging rather than breaking it every time.
+     */
+    @Throws(IOException::class)
+    private fun switchToTcpMode(tls: AdbLink): AdbLink {
+        val port = prefs.tcpPort.takeIf { it > 0 } ?: newTcpPort().also { prefs.tcpPort = it }
+        set(State.TCP_MODE, "127.0.0.1:$port")
+        log("adbd를 TCP 모드로 전환합니다 (포트 $port) — 성공하면 이후에는 Wi-Fi도 무선 디버깅 토글도 필요 없고, 차에서도 서버를 다시 띄울 수 있습니다")
+        val reply = try { tls.use { it.tcpip(port) } } catch (e: Exception) {
+            prefs.tcpModeFailures++
+            throw IOException("TCP 모드 전환 요청 실패: ${e.message}", e)
+        }
+        log("adbd 응답: " + reply.ifEmpty { "(없음 — 응답 전에 재시작함)" })
+        var last: Throwable? = null
+        for (i in 1..TCP_MODE_WAIT_S) {
+            if (!active) throw IOException("중지됨")
+            Thread.sleep(1000)
+            val l = AdbLink(port)
+            val id = runCatching { l.whoAmI() }
+            id.getOrNull()?.let {
+                prefs.tcpModeFailures = 0
+                checkShell(it, "TCP 모드 ${i}초 만에 전환 완료")
+                persistTcpPort(l, port)
+                return l
+            }
+            last = id.exceptionOrNull()
+            l.close()
+        }
+        prefs.tcpModeFailures++
+        throw IOException(
+            "TCP 모드 포트 ${port}에 붙지 못함 (${last?.message}) — 폰에 'USB 디버깅을 허용하시겠습니까?'가 떴다면 '항상 허용'으로 수락하세요. " +
+                "adbd가 재시작되며 무선 디버깅이 꺼졌을 수 있으니 개발자 옵션에서 다시 켜면 이어집니다 (${prefs.tcpModeFailures}/${TCP_MODE_MAX_TRIES}회 실패)",
+            last,
+        )
+    }
+
+    /**
+     * Experiment from docs/hotspot-only.md §3: if shell may set this property, adbd opens the port by itself
+     * on every boot and Wi-Fi is never needed again, not even after a reboot. Recent One UI is expected to
+     * refuse it; it costs one command, and either way the next boot answers the question — the loop tries
+     * the TCP port before it asks for Wi-Fi.
+     */
+    private fun persistTcpPort(l: AdbLink, port: Int) {
+        val out = runCatching { l.shell("setprop persist.adb.tcp.port $port 2>&1; getprop persist.adb.tcp.port").trim() }
+            .getOrElse { "명령 실패: ${it.message}" }
+        if (out.lines().lastOrNull()?.trim() == port.toString()) {
+            log("persist.adb.tcp.port=$port 설정됨 — 재부팅 후에도 Wi-Fi 없이 붙는지 확인해 주세요 (되면 Wi-Fi 요구가 완전히 사라집니다)")
+        } else {
+            log("persist.adb.tcp.port 설정 불가 ($out) — 재부팅하면 Wi-Fi에서 '시작'을 한 번 눌러야 합니다")
+        }
+    }
+
+    /** adbd binds the TCP port on every interface, so avoid 5555: a random high port is one less thing on the hotspot to find. */
+    private fun newTcpPort(): Int = 30_000 + java.security.SecureRandom().nextInt(15_000)
+
+    /** Cheap gate: is adbd listening on the TCP-mode port? A full handshake is too slow for the poll loop. */
+    private fun tcpModeReachable(): Boolean {
+        val p = prefs.tcpPort
+        if (p <= 0) return false
+        return runCatching {
+            java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", p), 300) }
+            true
+        }.getOrDefault(false)
+    }
+
     /** The /api/status body when a server answers on loopback, else null. */
     private fun serverStatus(): String? = try {
         val c = URL("http://127.0.0.1:${Config.HTTP_PORT}/api/status").openConnection() as HttpURLConnection
@@ -178,7 +290,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         return cm.allNetworks.any { n -> cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
     }
 
-    private fun canTryAdb(): Boolean = onWifi() && adbWifiEnabled()
+    private fun canTryAdb(): Boolean = tcpModeReachable() || (onWifi() && adbWifiEnabled())
 
     /**
      * Manual port wins; otherwise a discovered `_adb-tls-connect` record. Locality is NOT required here
@@ -186,7 +298,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
      * fails the `id` check and we retry.
      */
     private fun findPort(): Int? {
-        val manual = AdbPrefs(context).manualConnectPort
+        val manual = prefs.manualConnectPort
         if (manual > 0) { set(State.FINDING_PORT, "수동 포트 $manual"); return manual }
         set(State.FINDING_PORT, "mDNS ${ADB_CONNECT_WAIT_S}s")
         val found = CountDownLatch(1)
@@ -203,6 +315,8 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
 
     companion object {
         private const val ADB_CONNECT_WAIT_S = 15L
+        private const val TCP_MODE_WAIT_S = 20
+        private const val TCP_MODE_MAX_TRIES = 2
         private const val SERVER_DIR = "/data/local/tmp/carcast"
 
         /** Kill switch: asks the server (whoever started it) to exit. Loopback only, so only this phone can. */
