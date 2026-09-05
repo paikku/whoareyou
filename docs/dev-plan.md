@@ -102,6 +102,7 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
   `ServerCommand`(`CLASSPATH='<sourceDir>' exec app_process / com.carcast.server.Server <sha> port=3333`), `ServerOutput`(서버 stdout 파싱).
   앱: `AdbPairingService`(알림 RemoteInput으로 6자리 코드, `_adb-tls-pairing` 발견, 수동 포트 폴백), `ShellServerLink`(`/api/status`가 죽어 있고 Wi-Fi일 때만
   adb로 **분리 실행** `setsid nohup … daemon=true`, 미페어링이면 대기), 개발자 옵션 무선 디버깅 딥링크(`:settings:fragment_args_key=toggle_adb_wireless`).
+- **이 Wi-Fi 요구를 없애는 계획은 [hotspot-only.md](hotspot-only.md)에 있다 — 미러 모드를 기본으로, 아래 별도 VD 모드를 고급 모드로 내린다.**
 - **제약(실측, 2026-09-05): 무선 디버깅은 Wi-Fi 클라이언트 연결 중에만 켜지고 Wi-Fi가 끊기면 자동으로 꺼진다.** 차(모바일 데이터+핫스팟)에서는 adb가 없다.
   따라서 서버는 집 Wi-Fi에서 분리 실행해 재부팅 전까지 유지하고, 킬 스위치는 adb 스트림이 아니라 **loopback 전용 `POST /api/stop`**(앱 "서버 종료")이다.
   서버 로그는 실행마다 새 파일 `/data/local/tmp/carcast/server-<epoch>.log`(이전 로그는 실행 전에 삭제)와 `GET /api/log`. 이전 계획의 "shell 스트림 유지 = 킬 스위치"와 "`adb_wifi_enabled` 토글"은 폐기.
