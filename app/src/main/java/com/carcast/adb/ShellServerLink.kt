@@ -122,6 +122,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private fun launchOnce(replaceStale: Boolean = false) {
         val port = findPort() ?: throw IOException("adbd 접속 포트를 찾지 못함 — 무선 디버깅 화면의 'IP 주소 및 포트'의 포트를 '포트 수동…'에 넣으세요")
         set(State.CONNECTING, "127.0.0.1:$port")
+        val logFile = "$SERVER_DIR/server-${System.currentTimeMillis() / 1000}.log"
         AdbLink(port).use { l ->
             val id = l.whoAmI()
             log("adb 접속: $id")
@@ -132,21 +133,24 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                 stopServer()
                 for (i in 1..12) { if (!serverUp()) break; Thread.sleep(300) }
             }
-            val cmd = ServerCommand.detached(context.applicationInfo.sourceDir, BuildConfig.GIT_SHA, Config.HTTP_PORT)
+            // One log file per launch, named by this attempt, so what we read back can only be this attempt's output.
+            val cmd = ServerCommand.detached(context.applicationInfo.sourceDir, BuildConfig.GIT_SHA, Config.HTTP_PORT, logFile)
             set(State.STARTING, cmd)
             val out = l.shell(cmd).trim()
-            log("서버 분리 실행: $out")
+            log("서버 분리 실행: " + out.ifEmpty { "(출력 없음 — 실행 명령이 돌지 않음)" })
         }
         for (i in 1..20) {
             if (!active) return
             if (serverUp()) { log("서버 기동 확인 (${i * 500}ms)"); return }
             Thread.sleep(500)
         }
-        var tail = runCatching { AdbLink(port).use { it.shell("tail -n 40 /data/local/tmp/carcast/server.log") } }.getOrNull()?.trim()
-        if (tail != null && tail.contains("build=") && !tail.contains("build=${BuildConfig.GIT_SHA}")) {
-            tail = "(주의: 이 앱 빌드 ${BuildConfig.GIT_SHA}의 서버가 아닌 오래된 로그 — 새 서버가 아예 실행되지 못함)\n$tail"
+        val tail = runCatching { AdbLink(port).use { it.shell("tail -n 60 $logFile 2>&1") } }.getOrNull()?.trim().orEmpty()
+        val detail = when {
+            tail.isEmpty() || tail.contains("No such file") -> "(이번 실행의 로그 파일이 없음 — 서버 프로세스가 시작조차 안 됨)"
+            !tail.contains("build=${BuildConfig.GIT_SHA}") -> "(이번 빌드 ${BuildConfig.GIT_SHA}의 시작 줄이 없음)\n$tail"
+            else -> tail
         }
-        throw IOException("서버가 10초 안에 응답하지 않음 — 서버 로그:\n" + (tail ?: "(로그 없음)"))
+        throw IOException("서버가 10초 안에 응답하지 않음 — 서버 로그 $logFile:\n$detail")
     }
 
     /** The /api/status body when a server answers on loopback, else null. */
@@ -192,6 +196,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
 
     companion object {
         private const val ADB_CONNECT_WAIT_S = 15L
+        private const val SERVER_DIR = "/data/local/tmp/carcast"
 
         /** Kill switch: asks the server (whoever started it) to exit. Loopback only, so only this phone can. */
         fun stopServer(): String = try {

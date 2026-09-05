@@ -70,7 +70,7 @@ object ServerMain {
         session.onStopRequest = { stopped.countDown() }
         try {
             session.start()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             println("carcast-server: could not start on port ${opts.port}: $e")
             e.printStackTrace()
             System.out.flush()

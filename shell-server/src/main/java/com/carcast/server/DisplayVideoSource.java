@@ -53,7 +53,7 @@ public final class DisplayVideoSource implements VideoSource {
             Surface surface = encoder.open();
             display.start(surface);
             encoder.start();
-        } catch (Exception e) {
+        } catch (Throwable e) {
             stop();
             throw new RuntimeException("display/encoder start failed: " + e, e);
         }

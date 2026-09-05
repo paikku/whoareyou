@@ -20,17 +20,22 @@ class ServerCommandTest {
 
     @Test
     fun detachedFormRunsInItsOwnSessionWithDaemonFlag() {
-        val cmd = ServerCommand.detached("/a/base.apk", "abc1234", 3333)
+        val cmd = ServerCommand.detached("/a/base.apk", "abc1234", 3333, "/data/local/tmp/carcast/server-42.log")
         assertEquals(
-            "pkill -f '[c]om.carcast.server.Server' 2>/dev/null; sleep 1; mkdir -p /data/local/tmp/carcast; rm -f /data/local/tmp/carcast/server.log; " +
-                "CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true >/data/local/tmp/carcast/server.log 2>&1 </dev/null & " +
-                "echo \$! >/data/local/tmp/carcast/server.pid; sleep 2; echo launched pid=\$(cat /data/local/tmp/carcast/server.pid); head -c 4000 /data/local/tmp/carcast/server.log",
+            "mkdir -p /data/local/tmp/carcast; [ -f /data/local/tmp/carcast/server.pid ] && grep -q com.carcast.server.Server /proc/\$(cat /data/local/tmp/carcast/server.pid)/cmdline 2>/dev/null && kill \$(cat /data/local/tmp/carcast/server.pid) 2>/dev/null; " +
+                "pkill -f '^app_process / com\\.carcast\\.server\\.Server' 2>/dev/null; " +
+                "sleep 1; rm -f /data/local/tmp/carcast/server-*.log /data/local/tmp/carcast/server-42.log; " +
+                "CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true >/data/local/tmp/carcast/server-42.log 2>&1 </dev/null & " +
+                "echo \$! >/data/local/tmp/carcast/server.pid; sleep 2; echo launched pid=\$(cat /data/local/tmp/carcast/server.pid); head -c 4000 /data/local/tmp/carcast/server-42.log",
             cmd,
         )
-        // The kill pattern must match a running server's command line but never the launching shell's own.
-        val pattern = Regex("[c]om.carcast.server.Server")
+        // The kill pattern must match a running server's command line but never the `sh -c` shell that runs
+        // this very command (whose command line also contains the class name), nor a $(...) subshell of it.
+        val pattern = Regex("^app_process / com\\.carcast\\.server\\.Server")
         assertTrue(pattern.containsMatchIn("app_process / com.carcast.server.Server abc1234 port=3333 daemon=true"))
-        assertTrue(!pattern.containsMatchIn("sh -c pkill -f '[c]om.carcast.server.Server' 2>/dev/null"))
+        assertTrue(!pattern.containsMatchIn("sh -c $cmd"))
+        assertTrue(!pattern.containsMatchIn("/system/bin/sh -c $cmd"))
+        assertTrue(runCatching { ServerCommand.detached("/a/base.apk", "abc1234", 3333, "/x/server-*.log") }.exceptionOrNull() is IllegalArgumentException)
     }
 
     @Test

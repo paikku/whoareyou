@@ -84,7 +84,9 @@ class StreamSession(
                 live.start(videoHub)
                 liveSourceRunning = true
                 event("라이브 소스 시작: ${live.info()}")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable, not Exception: a NoClassDefFoundError/AssertionError from the scrcpy reflection
+                // layer must also degrade to the clip instead of taking the HTTP server down with it.
                 Log.e(TAG, "live source failed, falling back to the clip", e)
                 event("라이브 소스 실패 (${e.message ?: e}) — 테스트 클립으로 대체")
                 startClip()
