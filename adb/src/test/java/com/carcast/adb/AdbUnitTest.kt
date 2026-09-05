@@ -7,13 +7,16 @@ import org.junit.Test
 import java.net.InetAddress
 
 class AdbServiceTest {
+    // Deliberately exercises AdbServices, not AdbLink: loading AdbLink pulls in Kadb, whose class
+    // files are newer than the JDK 17 the CI test runtime uses (UnsupportedClassVersionError).
     @Test
     fun tcpipServiceIsWhatAdbTcpipSends() {
         // `adb tcpip 34567` opens exactly this service on the daemon; anything else and adbd just closes the stream.
-        assertEquals("tcpip:34567", AdbLink.tcpipService(34567))
+        assertEquals("tcpip:34567", AdbServices.tcpip(34567))
+        assertEquals("usb:", AdbServices.USB)
         // Below 1024 adbd would need root to bind, and 0/65536 are not ports at all.
         for (bad in listOf(0, 80, 1023, 65536, -1)) {
-            assertTrue("$bad should be rejected", runCatching { AdbLink.tcpipService(bad) }.exceptionOrNull() is IllegalArgumentException)
+            assertTrue("$bad should be rejected", runCatching { AdbServices.tcpip(bad) }.exceptionOrNull() is IllegalArgumentException)
         }
     }
 }

@@ -45,11 +45,11 @@ class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
      * launching the server, never after.
      */
     @Throws(IOException::class)
-    fun tcpip(port: Int): String = restart(tcpipService(port))
+    fun tcpip(port: Int): String = restart(AdbServices.tcpip(port))
 
     /** Undoes [tcpip]: adbd goes back to USB/wireless only. Restarts adbd the same way. */
     @Throws(IOException::class)
-    fun usbOnly(): String = restart("usb:")
+    fun usbOnly(): String = restart(AdbServices.USB)
 
     /** adbd answers with a single line ("restarting in TCP mode port: N") and may cut us off mid-line. */
     private fun restart(service: String): String {
@@ -120,12 +120,6 @@ class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
 
     companion object {
         private const val TAG = "AdbLink"
-
-        /** Ports below 1024 need root to bind and 5555 is the well-known one every scanner tries. */
-        fun tcpipService(port: Int): String {
-            require(port in 1024..65535) { "TCP 모드 포트 범위를 벗어남: $port" }
-            return "tcpip:$port"
-        }
 
         /**
          * Pairs our key with adbd using the 6-digit code from the "Pair device with pairing code"
