@@ -12,6 +12,8 @@
 
 ---
 
+지금까지 실제로 돌린 결과와 가정별 상태는 [verification-log.md](verification-log.md)에 있다. 이 문서는 절차만.
+
 ## 1. 테스트 사다리 (가벼운 것부터)
 
 ```
