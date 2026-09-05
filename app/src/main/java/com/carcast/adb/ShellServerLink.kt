@@ -56,13 +56,32 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private fun loop() {
         var delay = 5_000L
         var wasUp = false
+        var staleWarned = false
         while (active) {
-            if (serverUp()) {
-                if (!wasUp) log("shell 서버 응답 중 — adb는 쓰지 않음")
-                wasUp = true
-                set(State.SERVER_UP, "")
-                waitFor(5_000L); delay = 5_000L
-                continue
+            val status = serverStatus()
+            if (status != null) {
+                val build = Regex("\"build\":\"([^\"]*)\"").find(status)?.groupValues?.get(1)
+                if (build != null && build != BuildConfig.GIT_SHA) {
+                    // The APK was updated but the detached server still runs the old dex. Replace it when we can.
+                    if (onWifi()) {
+                        log("이전 빌드($build)의 서버가 실행 중 — 종료하고 이 빌드(${BuildConfig.GIT_SHA})로 다시 띄웁니다")
+                        stopServer()
+                        Thread.sleep(2000)
+                        wasUp = false
+                        // fall through to the launch path below
+                    } else {
+                        if (!staleWarned) { staleWarned = true; log("이전 빌드($build)의 서버가 실행 중 — Wi-Fi에 연결되면 새 빌드로 교체합니다 (지금은 그대로 사용)") }
+                        set(State.SERVER_UP, "이전 빌드 $build")
+                        waitFor(5_000L); delay = 5_000L
+                        continue
+                    }
+                } else {
+                    if (!wasUp) log("shell 서버 응답 중 — adb는 쓰지 않음")
+                    wasUp = true
+                    set(State.SERVER_UP, "")
+                    waitFor(5_000L); delay = 5_000L
+                    continue
+                }
             }
             wasUp = false
             if (!onWifi()) {
@@ -111,11 +130,14 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         throw IOException("서버가 10초 안에 응답하지 않음" + (if (!tail.isNullOrEmpty()) "\n$tail" else ""))
     }
 
-    private fun serverUp(): Boolean = try {
+    /** The /api/status body when a server answers on loopback, else null. */
+    private fun serverStatus(): String? = try {
         val c = URL("http://127.0.0.1:${Config.HTTP_PORT}/api/status").openConnection() as HttpURLConnection
         c.connectTimeout = 1000; c.readTimeout = 1000
-        c.inputStream.use { String(it.readBytes()) }.contains("\"running\":true")
-    } catch (_: Exception) { false }
+        c.inputStream.use { String(it.readBytes()) }.takeIf { it.contains("\"running\":true") }
+    } catch (_: Exception) { null }
+
+    private fun serverUp(): Boolean = serverStatus() != null
 
     private fun onWifi(): Boolean {
         val cm = context.getSystemService(ConnectivityManager::class.java)
