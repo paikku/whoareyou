@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
  * This class polls /api/status and only touches adb when the server is not answering.
  */
 class ShellServerLink(private val context: Context, private val log: (String) -> Unit) {
-    enum class State { IDLE, SERVER_UP, FINDING_PORT, CONNECTING, NEEDS_PAIRING, NO_WIFI, STARTING, RETRYING, STOPPED }
+    enum class State { IDLE, SERVER_UP, FINDING_PORT, CONNECTING, NEEDS_PAIRING, NO_WIFI, ADB_WIFI_OFF, STARTING, RETRYING, STOPPED }
 
     @Volatile var state = State.IDLE
         private set
@@ -57,6 +57,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         var delay = 5_000L
         var wasUp = false
         var staleWarned = false
+        var adbOffWarned = false
         while (active) {
             val status = serverStatus()
             if (status != null) {
@@ -90,6 +91,14 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                 waitFor(delay); delay = (delay * 2).coerceAtMost(60_000L)
                 continue
             }
+            if (!adbWifiEnabled()) {
+                // Android switches wireless debugging off whenever Wi-Fi drops; the toggle stays off until the user flips it.
+                set(State.ADB_WIFI_OFF, "무선 디버깅 꺼짐 — 개발자 옵션에서 켜세요")
+                if (!adbOffWarned) { adbOffWarned = true; log("무선 디버깅이 꺼져 있음 (Wi-Fi가 끊길 때 자동으로 꺼짐) — '무선 디버깅 설정' 버튼으로 열어 켜면 바로 이어집니다") }
+                waitFor(3_000L); delay = 5_000L
+                continue
+            }
+            adbOffWarned = false
             val outcome = runCatching { launchOnce() }
             if (!active) break
             val reason = outcome.exceptionOrNull()
@@ -138,6 +147,10 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     } catch (_: Exception) { null }
 
     private fun serverUp(): Boolean = serverStatus() != null
+
+    /** Settings.Global.adb_wifi_enabled is world-readable; 0 means the Wireless debugging toggle is off. */
+    private fun adbWifiEnabled(): Boolean =
+        runCatching { android.provider.Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", 0) == 1 }.getOrDefault(true)
 
     private fun onWifi(): Boolean {
         val cm = context.getSystemService(ConnectivityManager::class.java)

@@ -65,6 +65,10 @@ class MainActivity : AppCompatActivity() {
         pair.setOnClickListener { startPairing() }
         manual = findViewById(R.id.manual)
         manual.setOnClickListener { manualDialog() }
+        findViewById<Button>(R.id.adb_settings).setOnClickListener {
+            runCatching { startActivity(AdbPrefs.wirelessDebuggingIntent()) }
+                .onFailure { StreamService.log("개발자 옵션을 열지 못함: $it") }
+        }
         findViewById<Button>(R.id.stop_server).setOnClickListener {
             androidx.appcompat.app.AlertDialog.Builder(this)
                 .setMessage(R.string.stop_server_confirm)
