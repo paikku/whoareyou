@@ -1,5 +1,6 @@
 package com.carcast.core
 
+import com.carcast.core.media.VideoSource
 import java.io.File
 
 /**
@@ -50,8 +51,15 @@ object ServerMain {
      * Runs a session until stdin closes (or [stopOnStdinEof] is false), or until loopback posts
      * `/api/stop` — the app's kill switch for a detached (`daemon=true`) server.
      */
-    fun run(opts: Options, extraStatus: () -> Map<String, Any?> = { emptyMap() }, stopOnStdinEof: Boolean = !opts.daemon) {
-        val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir)
+    fun run(
+        opts: Options,
+        extraStatus: () -> Map<String, Any?> = { emptyMap() },
+        stopOnStdinEof: Boolean = !opts.daemon,
+        videoSource: VideoSource? = null,
+        startApp: ((String) -> String)? = null,
+    ) {
+        val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource)
+        session.onStartApp = startApp
         val stopped = java.util.concurrent.CountDownLatch(1)
         session.onStopRequest = { stopped.countDown() }
         session.start()

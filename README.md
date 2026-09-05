@@ -8,12 +8,13 @@
 - **검증 기록(무엇을 어떤 테스트로 확인했나, 가정별 상태): [docs/verification-log.md](docs/verification-log.md)**
 - 실차/실기기 원본 표: [docs/car-tests/](docs/car-tests/)
 
-## 현재 상태 (M1 + M2 완료, M3 코드 완료·폰 검증 전)
+## 현재 상태 (M1~M3 완료, M4 코드 완료·폰 검증 전)
 
 앱은 VpnService로 `100.99.9.9`를 폰에 붙인다. `http://100.99.9.9:3333`의 웹 클라이언트와 스트림은
 **shell uid 프로세스**(`com.carcast.server.Server`, `app_process`로 기동)가 서빙한다. Android 14+는 VPN 주소로
-오는 패킷을 앱 uid 소켓에는 전달하지 않기 때문이다(실측: docs/dev-plan.md). 가상 디스플레이 대신 아직은
-**번들된 테스트 클립**(720p30 H.264)을 fMP4/WebSocket으로 송출한다. 차에서 `/diag`를 열면 브라우저 환경·API
+오는 패킷을 앱 uid 소켓에는 전달하지 않기 때문이다(실측: docs/dev-plan.md). 서버는 scrcpy에서 가져온 방식으로
+**가상 디스플레이**(1280x720)를 만들어 H.264로 인코딩해 fMP4/WebSocket으로 송출하고(`POST /api/app`으로 그 화면에 앱 실행),
+VD를 못 만들면 번들된 테스트 클립으로 대체한다. 차에서 `/diag`를 열면 브라우저 환경·API
 지원·WS 성공률·디코드 fps·사설 주소 차단 여부를 측정해 폰 서버에 저장한다(`/api/reports`, 앱의 공유 버튼). M3부터 앱이 폰 자신의 무선 디버깅에 페어링(Kadb, 알림에 코드 입력)해 이 서버를 **분리 실행**한다. 무선 디버깅은
 Wi-Fi 연결 중에만 켜지므로 집 Wi-Fi에서 띄우고, 서버는 재부팅 전까지(차에서도) 유지된다. 끄기는 앱의 "서버 종료". PC 폴백:
 

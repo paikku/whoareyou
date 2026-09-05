@@ -89,6 +89,17 @@ kbd.addEventListener('keydown', (e) => {
   }
 });
 
+// Launch an app on the phone's virtual display (M4). A prompt is enough until the launcher page (M9).
+$('btn-app').addEventListener('click', async () => {
+  const name = window.prompt('실행할 앱 패키지명', localStorage.getItem('carcast.app') || 'com.google.android.youtube');
+  if (!name) return;
+  try {
+    const r = await (await fetch(`/api/app?name=${encodeURIComponent(name.trim())}`, { method: 'POST' })).json();
+    if (r.ok) localStorage.setItem('carcast.app', name.trim());
+    else window.alert(`앱 실행 실패: ${r.error}`);
+  } catch (e) { window.alert(`앱 실행 요청 실패: ${String(e)}`); }
+});
+
 $('btn-fullscreen').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   else document.documentElement.requestFullscreen().catch(() => {});

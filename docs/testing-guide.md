@@ -130,6 +130,12 @@ APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 
    (앱의 "중지"는 서버를 남긴다. 다시 띄우려면 Wi-Fi에서 "시작".)
 9. 결과를 `docs/car-tests/` 에 기록.
 
+**M4 확인 (진짜 화면):** 서버가 뜨면 기본으로 가상 디스플레이를 만든다. 노트북 Chrome에서 `http://100.99.9.9:3333/`을 열고
+하단 바의 **▶** 버튼에 `com.google.android.youtube`를 넣으면 폰의 가상 화면에 유튜브가 뜨고 노트북에 보여야 한다
+(또는 `curl -X POST "http://100.99.9.9:3333/api/app?name=com.google.android.youtube"`). `/api/status`의 `source`가 `display`면 라이브,
+`clip`이면 VD 생성에 실패해 클립으로 대체된 것 — 앱 로그의 `라이브 소스 실패 …` 줄과 `/api/log`(또는 `/data/local/tmp/carcast/server.log`)를 보고 알려 준다.
+터치는 M5 전까지 전달되지 않는다.
+
 **M3 폰 검증 체크리스트** (verification-log §3.4에 결과 기록):
 - 페어링 성공 / mDNS 페어링 포트 발견 여부 / 수동 포트로도 되는지
 - 시작 → `SERVER_UP` 까지 걸린 시간, 접속 포트 mDNS 발견 여부

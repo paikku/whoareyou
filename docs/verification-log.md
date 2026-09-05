@@ -49,6 +49,7 @@
 | `mux` | `Fmp4WriterTest` | init 세그먼트(ftyp/moov, duration 0, mehd 없음)와 프래그먼트(moof+mdat, tfhd default-base-is-moof, tfdt v1, trun data_offset) 박스 구조 |
 | `core` | `JsonTest` | `/api/status` JSON 직렬화(이스케이프, 중첩) |
 | `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합, `POST /api/report` 저장·비JSON 거부·256KB 초과 413·`GET /api/reports`·status의 `lastReport` |
+| `core` | `EncodedH264SinkTest` | 인코더 출력(config 버퍼 + Annex-B AU, 원본 .h264에서 추출) → init 세그먼트 1개 + 프레임당 moof/mdat 1개, 첫 패킷 TYPE_KEY, pts 유지, SPS/PPS 인라인 키프레임만으로도 부트스트랩 |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
@@ -129,6 +130,9 @@
 | 4 | Wi-Fi off + 핫스팟 on 후 서버 유지 | ✅ 전환 후 유지. 핫스팟 노트북에서 `/diag` → `저장됨 #1` (앱이 띄운 서버로 가정 1 재확인 + 보고서 저장 경로 확인) |
 | 5 | 화면 OFF 후 시간 경과 → 서버 유지 | ✅ 화면 끄고 시간이 지난 뒤 다시 열어도 `응답 중` (정확한 시간 미기록; 하룻밤은 ⏳) |
 | 6 | "서버 종료" 킬 스위치, 재부팅 후 복구 | ⏳ |
+
+### 3.6 M4: 가상 디스플레이 라이브 송출 — ⏳ (코드 완료, 폰 미검증)
+확인할 것: `/api/status.source == "display"`, 노트북 브라우저에 폰 가상 화면, ▶로 유튜브 실행, fps·lag(Playwright `BASE_URL`), 세로 고정 앱에서의 회전 동작.
 
 ### 3.4 아직 B층에서 안 한 것
 - **M3 앱 내장 ADB(커밋 이후 첫 폰 테스트):** 페어링(mDNS/수동), 시작 → `RUNNING uid=2000`, 접속 포트 발견, 킬 스위치, 재부팅 후 복구, 도즈 30분 — 체크리스트는 testing-guide B절.

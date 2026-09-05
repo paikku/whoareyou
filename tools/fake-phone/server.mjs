@@ -100,6 +100,13 @@ const server = createServer((req, res) => {
     });
     return;
   }
+  if (url.pathname === '/api/app' && req.method === 'POST') {
+    state.apps = state.apps ?? [];
+    state.apps.push(url.searchParams.get('name'));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, result: `fake: started ${url.searchParams.get('name')}` }));
+    return;
+  }
   if (url.pathname === '/api/reports') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify([...reports].reverse()));

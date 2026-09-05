@@ -110,6 +110,12 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - 검증: [폰] 페어링 → `uid=2000(shell)` → "VD created id=N" 표시. shell 스트림 끊으면 서버 종료. 무선 디버깅 off/on, 재부팅 후 포트 재발견. 유닉스 소켓 vs TCP 폴백 판정.
 
 ### M4. scrcpy 포크: VD 영상을 앱으로 → 브라우저로 [세션 → 폰 → 차]
+- **구현됨(폰 검증 전, 2026-09-05):** `shell-server`에 scrcpy v4.1의 `Workarounds, FakeContext, AndroidVersions, wrappers/*(ServiceManager, DisplayManager, WindowManager, ActivityManager, InputManager …), util/{Ln,Command,IO,Settings}, model/Size, display/DisplayInfo, video/VideoConstraints`와
+  aidl `IDisplayWindowListener`, `IOnPrimaryClipChangedListener`, 스텁 `android.content.IContentProvider`를 **원본 패키지 그대로** 복사(Apache-2.0, `docs/LICENSES/scrcpy-LICENSE.txt`).
+  자체 코드: `DisplayCapture`(NewDisplayCapture의 플래그 그대로 TRUSTED VD 생성, IME 로컬), `H264Encoder`(SurfaceEncoder 설정: LATENCY 1, REPEAT 100ms, GOP 2s, 프로파일 미지정),
+  `DisplayVideoSource`(core `VideoSource` 구현, `am start --display N`으로 앱 실행), core `EncodedH264Sink`(Annex-B → `Fmp4Writer` → `MediaHub`, 클립으로 단위 테스트).
+  서버 옵션 `display=1280x720/160 bitrate=4000000 fps=30 decorations=false app=<pkg> source=clip`. `POST /api/app?name=`으로 실행 중 앱 전환, 웹 하단 바 ▶ 버튼.
+  VD 생성 실패 시 자동으로 테스트 클립으로 대체(로그 `라이브 소스 실패`). 회전·크롭·리사이즈(OpenGL 경로)는 미이식 — 가로 고정 VD 전제.
 - 이식(`raw.githubusercontent.com`에서 v4.1 태그 파일별로): `Server, Options(축소), AndroidVersions, CleanUp, Workarounds, video/{SurfaceCapture,NewDisplayCapture,SurfaceEncoder,DisplaySizeMonitor,VideoCodec,…}, device/{Device,Streamer,…}, wrappers/*, util/*, model/NewDisplay, control/*`, **aidl 전부**. 패키지 → `com.carcast.server`. 버전 문자열 검사 → build-id. `DesktopConnection` → 앱 소켓+토큰 접속.
 - 앱: `ServerLink`가 scrcpy 스트림(코덱 메타 12B, 패킷 헤더 12B: pts+config/keyframe 플래그+size, Annex-B) 파싱. `Fmp4Writer.kt`(순수 JVM): `ftyp+moov`(mvhd duration 0, `mehd` 없음, `avcC`), 프레임당 `moof(tfhd default-base-is-moof, tfdt, trun 1 sample)+mdat(AVCC)`. 단위 테스트: 박스 파서 + CI의 ffprobe로 검증, 산출물을 M2 Playwright에 공급. `VideoPump`: 클라이언트별 큐, N프레임 초과 시 다음 IDR까지 드롭, 신규 접속 시 moov+마지막 GOP 재전송.
 - 설정 연결: `new_display=1280x720/160, vd_system_decorations=<M0 결과>, vd_destroy_content=true, max_fps, video_bit_rate, video_codec=h264, display_ime_policy=local`, 앱 실행은 scrcpy 컨트롤 메시지 `TYPE_START_APP`.

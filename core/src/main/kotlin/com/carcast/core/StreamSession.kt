@@ -2,6 +2,7 @@ package com.carcast.core
 
 import com.carcast.core.media.ClipSource
 import com.carcast.core.media.MediaHub
+import com.carcast.core.media.VideoSource
 import com.carcast.core.net.HttpServer
 import com.carcast.core.net.WebSocketConnection
 import java.io.File
@@ -24,12 +25,15 @@ class StreamSession(
     private val extraStatus: () -> Map<String, Any?> = { emptyMap() },
     /** Where diagnostic reports from the car are kept across restarts; null keeps them in memory only. */
     reportDir: File? = null,
+    /** Live video (the virtual display in the shell process); null falls back to the bundled test clip. */
+    private val videoSource: VideoSource? = null,
 ) {
     val reports = ReportStore(reportDir)
     private var http: HttpServer? = null
     private val videoHub = MediaHub()
     private val audioHub = MediaHub()
     private var clip: ClipSource? = null
+    @Volatile private var liveSourceRunning = false
     private val controlClients = CopyOnWriteArrayList<WebSocketConnection>()
 
     @Volatile var running = false
@@ -49,6 +53,9 @@ class StreamSession(
      */
     var onStopRequest: () -> Unit = {}
 
+    /** `POST /api/app?name=<package or package/.Activity>`: start an app on the streamed display. Returns a message. */
+    var onStartApp: ((String) -> String)? = null
+
     private fun event(s: String) { Log.i(TAG, s); onEvent(s) }
 
     @Throws(IOException::class)
@@ -63,6 +70,22 @@ class StreamSession(
         http = server
         running = true
         event("HTTP 서버 시작 ($process): 0.0.0.0:$port" + if (reports.size > 0) ", 저장된 진단 ${reports.size}건" else "")
+        val live = videoSource
+        if (live != null) {
+            try {
+                videoHub.onClientAttached = { live.requestKeyframe() }
+                live.start(videoHub)
+                liveSourceRunning = true
+                event("라이브 소스 시작: ${live.info()}")
+            } catch (e: Exception) {
+                Log.e(TAG, "live source failed, falling back to the clip", e)
+                event("라이브 소스 실패 (${e.message ?: e}) — 테스트 클립으로 대체")
+                startClip()
+            }
+        } else startClip()
+    }
+
+    private fun startClip() {
         if (assets.exists("clips/$TEST_CLIP")) {
             clip = ClipSource(assets, "clips/$TEST_CLIP", videoHub).also { it.start() }
             event("테스트 클립 송출: $TEST_CLIP")
@@ -73,6 +96,7 @@ class StreamSession(
 
     fun stop() {
         if (!running) return
+        if (liveSourceRunning) { runCatching { videoSource?.stop() }; liveSourceRunning = false }
         clip?.stop(); clip = null
         videoHub.closeAll()
         audioHub.closeAll()
@@ -104,6 +128,18 @@ class StreamSession(
     private fun onApi(method: String, path: String, query: Map<String, String>, body: ByteArray, remote: String): String? = when {
         path == "/api/status" -> statusJson()
         path == "/api/reports" && method == "GET" -> reports.listJson(query["limit"]?.toIntOrNull() ?: ReportStore.MAX)
+        path == "/api/app" && method == "POST" -> {
+            val name = query["name"].orEmpty()
+            val handler = onStartApp
+            when {
+                handler == null -> Json.obj(mapOf("ok" to false, "error" to "no display source"))
+                !Regex("[A-Za-z0-9._/$]+").matches(name) -> Json.obj(mapOf("ok" to false, "error" to "bad app name"))
+                else -> runCatching { handler(name) }.fold(
+                    { Json.obj(mapOf("ok" to true, "result" to it)) },
+                    { Json.obj(mapOf("ok" to false, "error" to (it.message ?: it.toString()))) },
+                )
+            }
+        }
         path == "/api/log" && method == "GET" -> Json.array(Log.recentLines().takeLast(query["limit"]?.toIntOrNull() ?: Log.RECENT_MAX))
         path == "/api/stop" && method == "POST" -> {
             if (!remote.startsWith("127.")) Json.obj(mapOf("ok" to false, "error" to "loopback only"))
@@ -137,13 +173,14 @@ class StreamSession(
             "videoClients" to videoHub.clientCount,
             "controlClients" to controlClients.size,
             "controlPackets" to controlPackets,
-            "source" to if (clip != null) "clip" else "none",
+            "source" to if (clip != null) "clip" else if (liveSourceRunning) "display" else "none",
             "width" to 1280,
             "height" to 720,
             "addresses" to localAddresses(),
             "reports" to reports.size,
             "lastReport" to reports.last?.let { mapOf("id" to it.id, "receivedAt" to it.receivedAt, "remote" to it.remote, "summary" to it.summary) },
         )
+        if (liveSourceRunning) videoSource?.let { fields.putAll(it.info()) }
         fields.putAll(extraStatus())
         return Json.obj(fields)
     }

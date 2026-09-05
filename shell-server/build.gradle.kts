@@ -3,8 +3,9 @@ plugins {
 }
 
 // Runs under app_process as the shell user. No Context, no resources, public SDK stubs + reflection only.
-// The streaming logic lives in :core (pure JVM); this module adds the Android-only parts
-// (later: the scrcpy-derived capture/encoder/injector) and the app_process entry point.
+// The streaming logic lives in :core (pure JVM); this module adds the Android-only parts:
+// the virtual display + H.264 encoder (M4) built on classes ported from scrcpy v4.1
+// (com.genymobile.scrcpy.*, Apache-2.0, see docs/LICENSES/scrcpy-LICENSE.txt) and the app_process entry point.
 val gitSha = rootProject.extra["gitSha"] as String
 
 android {
