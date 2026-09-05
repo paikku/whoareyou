@@ -20,11 +20,17 @@ class ServerCommandTest {
 
     @Test
     fun detachedFormRunsInItsOwnSessionWithDaemonFlag() {
+        val cmd = ServerCommand.detached("/a/base.apk", "abc1234", 3333)
         assertEquals(
-            "pkill -f com.carcast.server.Server 2>/dev/null; sleep 1; mkdir -p /data/local/tmp/carcast; " +
-                "CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true >/data/local/tmp/carcast/server.log 2>&1 </dev/null & echo launched pid=$!",
-            ServerCommand.detached("/a/base.apk", "abc1234", 3333),
+            "pkill -f '[c]om.carcast.server.Server' 2>/dev/null; sleep 1; mkdir -p /data/local/tmp/carcast; rm -f /data/local/tmp/carcast/server.log; " +
+                "CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true >/data/local/tmp/carcast/server.log 2>&1 </dev/null & " +
+                "echo \$! >/data/local/tmp/carcast/server.pid; sleep 2; echo launched pid=\$(cat /data/local/tmp/carcast/server.pid); head -c 4000 /data/local/tmp/carcast/server.log",
+            cmd,
         )
+        // The kill pattern must match a running server's command line but never the launching shell's own.
+        val pattern = Regex("[c]om.carcast.server.Server")
+        assertTrue(pattern.containsMatchIn("app_process / com.carcast.server.Server abc1234 port=3333 daemon=true"))
+        assertTrue(!pattern.containsMatchIn("sh -c pkill -f '[c]om.carcast.server.Server' 2>/dev/null"))
     }
 
     @Test

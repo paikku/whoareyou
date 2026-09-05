@@ -28,10 +28,17 @@ object ServerCommand {
      */
     fun detached(apkPath: String, buildId: String, port: Int, logFile: String = "/data/local/tmp/carcast/server.log"): String {
         require(!logFile.contains(Regex("[\\s'\"]"))) { "bad log path" }
+        val dir = logFile.substringBeforeLast('/')
         val inner = build(apkPath, buildId, port, mapOf("daemon" to "true")).removePrefix("CLASSPATH='$apkPath' exec ")
         // Kill any previous carcast server first: a hung one (bound but not answering) would block the port.
-        return "pkill -f $MAIN_CLASS 2>/dev/null; sleep 1; mkdir -p ${logFile.substringBeforeLast('/')}; " +
-            "CLASSPATH='$apkPath' setsid nohup $inner >$logFile 2>&1 </dev/null & echo launched pid=$!"
+        // The pattern is written as a regex with a bracketed first letter so that `pkill -f` cannot match this
+        // very shell (whose command line contains the pattern text) and kill itself before launching.
+        // The old log is removed so a failed launch can never be mistaken for an earlier build's crash.
+        // Wait two seconds and echo the log head, so the caller sees the startup markers at once.
+        val pattern = "[" + MAIN_CLASS.first() + "]" + MAIN_CLASS.drop(1)
+        return "pkill -f '$pattern' 2>/dev/null; sleep 1; mkdir -p $dir; rm -f $logFile; " +
+            "CLASSPATH='$apkPath' setsid nohup $inner >$logFile 2>&1 </dev/null & " +
+            "echo \$! >$dir/server.pid; sleep 2; echo launched pid=\$(cat $dir/server.pid); head -c 4000 $logFile"
     }
 
     /** What the user types from a PC when the app cannot do it itself; shown on screen. */

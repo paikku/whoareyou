@@ -142,7 +142,10 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
             if (serverUp()) { log("서버 기동 확인 (${i * 500}ms)"); return }
             Thread.sleep(500)
         }
-        val tail = runCatching { AdbLink(port).use { it.shell("tail -n 40 /data/local/tmp/carcast/server.log") } }.getOrNull()?.trim()
+        var tail = runCatching { AdbLink(port).use { it.shell("tail -n 40 /data/local/tmp/carcast/server.log") } }.getOrNull()?.trim()
+        if (tail != null && tail.contains("build=") && !tail.contains("build=${BuildConfig.GIT_SHA}")) {
+            tail = "(주의: 이 앱 빌드 ${BuildConfig.GIT_SHA}의 서버가 아닌 오래된 로그 — 새 서버가 아예 실행되지 못함)\n$tail"
+        }
         throw IOException("서버가 10초 안에 응답하지 않음 — 서버 로그:\n" + (tail ?: "(로그 없음)"))
     }
 
