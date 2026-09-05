@@ -1,4 +1,4 @@
-# 검증 기록 (2026-09-04 기준)
+# 검증 기록 (2026-09-05 기준)
 
 이 프로젝트가 의존하는 가정들을 **어디서, 어떤 테스트로, 무엇을 확인했는지** 한곳에 모은 문서.
 계획은 [dev-plan.md](dev-plan.md), 절차는 [testing-guide.md](testing-guide.md), 이 문서는 **결과**만 다룬다.
@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | 1 | 라우트 없는 VpnService tun 주소(100.99.9.9)로 핫스팟 클라이언트가 폰 서버에 접속된다 | ⚠️ **조건부 통과** — 서버 소켓이 **shell uid(2000)** 일 때만. 앱 uid 소켓은 ❌ | B (S26U + 노트북) | §3.2, §3.3 |
 | 2 | 테슬라 2026.26 브라우저가 `http://100.99.9.9`를 열고 MSE H.264를 디코딩한다 | ⏳ 실차 미실시. PC의 Chrome 148(테슬라 프로필)에서는 ✅ | C | §2.3 |
-| 3 | shell 권한으로 띄운 scrcpy 서버 포크가 갤럭시에서 VD 생성 + 타 앱 실행 + 터치 주입이 된다 | ✅ M0 (stock scrcpy 4.1, 2026-09-05, 8/8 항목): VD 생성·앱 실행·터치·IME 로컬·UHID 한글·`--turn-screen-off --stay-awake`로 폰 화면만 끄기·서버 단독 기동 모두 됨. 전원 버튼 화면 OFF는 전체 정지. 단 "앱 자신의 APK를 `app_process`로 shell uid에서 실행"은 ✅, **앱이 내장 ADB로 직접 띄우는 것도 ✅** | B | §3.3, §3.5 |
+| 3 | shell 권한으로 띄운 scrcpy 서버 포크가 갤럭시에서 VD 생성 + 타 앱 실행 + 터치 주입이 된다 | ✅ M0 (stock scrcpy 4.1, 2026-09-05, 8/8 항목): VD 생성·앱 실행·터치·IME 로컬·UHID 한글·`--turn-screen-off --stay-awake`로 폰 화면만 끄기·서버 단독 기동 모두 됨. 전원 버튼 화면 OFF는 전체 정지. 단 "앱 자신의 APK를 `app_process`로 shell uid에서 실행"은 ✅, **앱이 내장 ADB로 직접 띄우는 것도 ✅** | B | §3.3, §3.4 |
 | 4 | 오디오 캡처(`output`/`playback`)가 One UI 8에서 된다 | ✅ `output`: 원격 재생 + 폰 무음. `playback --audio-dup`: 양쪽 재생 (M0 2026-09-05) | B | car-tests/s26u |
 | — | 폰 화면만 끄고 VD를 유지할 수 있다 (`--turn-screen-off --stay-awake`) | ✅ M0 4번 (충전 중). 앱 구현: `requestDisplayPower` 경로는 ❌ "전환 실패"(d98be88) → scrcpy와 같은 SurfaceControl 경로로 교체, 폰 ⏳ | B | car-tests/s26u, §3.6 |
 | 5 | WS 간헐 실패가 재시도로 해결된다 | PC ✅ (거부 34%·절단 5초마다 → 15초 내 복구) / 실차 ⏳ | A → C | §2.3 |
@@ -24,9 +24,9 @@
 | — | 앱 하나(APK)에 shell 서버 dex를 넣고 `CLASSPATH=<base.apk> app_process`로 실행할 수 있다 | ✅ uid=2000, build id 검증 동작 | B | §3.3 |
 | — | Kadb(순수 JVM ADB 페어링)로 NDK 없이 갈 수 있다 | ✅ POM 확인(okio, spake2-java, hiddenapibypass, BouncyCastle). 코드는 M3에서 | A | dev-plan |
 | — | 매 CI 빌드의 APK를 덮어 설치할 수 있다 | ✅ 고정 debug keystore 커밋 후 | B | §3.1 |
-| — | Kadb 페어링 + NsdManager `_adb-tls-pairing` 발견이 One UI 8(Android 16)에서 된다 | ✅ 2026-09-05 빌드 `15ea085`: 포트 39727 발견 → 페어링 성공 (수동 입력 불필요) | B | §3.5 |
+| — | Kadb 페어링 + NsdManager `_adb-tls-pairing` 발견이 One UI 8(Android 16)에서 된다 | ✅ 2026-09-05 빌드 `15ea085`: 포트 39727 발견 → 페어링 성공 (수동 입력 불필요) | B | §3.4 |
 | — | 무선 디버깅을 핫스팟 상태에서 켤 수 있다 | ❌ Wi-Fi 클라이언트 연결 중에만 토글 활성 (사용자 실측 2026-09-05) → 서버는 Wi-Fi에서 분리 실행, 차에서는 adb 불사용 | B | dev-plan M3 |
-| — | 분리 실행(`daemon=true`) 서버가 adb 스트림·Wi-Fi·무선 디버깅 종료·화면 OFF 후에도 유지된다 | ⚠️ **조건부 통과 — USB 디버깅 토글이 켜져 있을 때만.** 꺼져 있으면 Wi-Fi가 끊길 때 adbd가 멈추고 init이 adbd의 cgroup(`/system/uid_0/pid_N`)을 통째로 SIGKILL → 서버 사망 (2026-09-05 `306d41a`). shell은 cgroup을 못 벗어남(`d98be88`에서 전 경로 EACCES). 켜 두면 핫스팟 전환 후 유지 + 노트북에서 `100.99.9.9:3333` 접속 ✅. 하룻밤·재부팅은 ⏳ | B | §3.5, §3.7 |
+| — | 분리 실행(`daemon=true`) 서버가 adb 스트림·Wi-Fi·무선 디버깅 종료·화면 OFF 후에도 유지된다 | ⚠️ **조건부 통과 — USB 디버깅 토글이 켜져 있을 때만.** 꺼져 있으면 Wi-Fi가 끊길 때 adbd가 멈추고 init이 adbd의 cgroup(`/system/uid_0/pid_N`)을 통째로 SIGKILL → 서버 사망 (2026-09-05 `306d41a`). shell은 cgroup을 못 벗어남(`d98be88`에서 전 경로 EACCES). 켜 두면 핫스팟 전환 후 유지 + 노트북에서 `100.99.9.9:3333` 접속 ✅. 하룻밤·재부팅은 ⏳ | B | §3.4, §3.5 |
 
 **설계에 반영된 결론:** 가정 1의 조건 때문에 HTTP/WS 서버는 앱이 아니라 shell 프로세스에서 돈다
 ([dev-plan.md 아키텍처 3항](dev-plan.md)). 앱은 tun 주소 유지·페어링·기동·UI만 맡는다.
@@ -76,7 +76,7 @@
 
 ## 3. B층: Galaxy S26 Ultra (SM-S948N, Android 16 / One UI 8) + 노트북
 
-날짜 2026-09-04. 폰 핫스팟(swlan0 `10.136.114.168/24`, 상위망 rmnet_data2), 노트북 Windows(Wi-Fi `10.136.114.7`), 앱 tun0 `100.99.9.9/32`.
+날짜 2026-09-04 ~ 09-05. 폰 핫스팟(swlan0 `10.136.114.168/24`, 상위망 rmnet_data2), 노트북 Windows(Wi-Fi `10.136.114.7`), 앱 tun0 `100.99.9.9/32`.
 원본 표: [car-tests/s26u-one-ui-8.md](car-tests/s26u-one-ui-8.md).
 
 ### 3.1 설치·기동
@@ -123,17 +123,18 @@
 
 **결론:** 가정 1은 "서버 소켓이 shell uid"라는 조건 아래 실기기에서 통과. 앱이 자기 APK를 `app_process`로 shell에서 띄우는 방식(가정 3의 전제)도 함께 확인됨.
 
-### 3.5 M3: 앱 내장 ADB (빌드 `15ea085`, 2026-09-05)
+### 3.4 M3: 앱 내장 ADB (빌드 `15ea085`, 2026-09-05)
 | # | 확인 | 결과 |
 |---|---|---|
 | 1 | 집 Wi-Fi 연결 → 무선 디버깅 토글 활성 | ✅ (핫스팟만으로는 ❌ 비활성) |
 | 2 | 앱 "무선 디버깅 페어링" → 알림 RemoteInput에 코드 입력 | ✅ `페어링 포트 발견: 39727` → `페어링 성공` (알림 띄운 뒤 약 10초) |
 | 3 | 시작 → adb 접속 → 분리 실행 → `SERVER_UP` | ✅ 12:36:00 `adb 접속: uid=2000(shell) … context=u:r:shell:s0` → `launched pid=15372` → 1초 뒤 `/api/status` 응답 (`process=shell uid=2000 build=15ea085`). PC 없이 기동 확인 |
-| 4 | Wi-Fi off + 핫스팟 on 후 서버 유지 | ✅ 전환 후 유지. 핫스팟 노트북에서 `/diag` → `저장됨 #1` (앱이 띄운 서버로 가정 1 재확인 + 보고서 저장 경로 확인) |
+| 4 | Wi-Fi off + 핫스팟 on 후 서버 유지 | ✅ 전환 후 유지(이때는 USB 디버깅이 켜져 있었던 것으로 보임 — 조건은 §3.5). 핫스팟 노트북에서 `/diag` → `저장됨 #1` (앱이 띄운 서버로 가정 1 재확인 + 보고서 저장 경로 확인) |
 | 5 | 화면 OFF 후 시간 경과 → 서버 유지 | ✅ 화면 끄고 시간이 지난 뒤 다시 열어도 `응답 중` (정확한 시간 미기록; 하룻밤은 ⏳) |
 | 6 | "서버 종료" 킬 스위치, 재부팅 후 복구 | ⏳ |
+| 7 | 재페어링 없이 새 빌드 덮어 설치 후 접속 | ✅ (삭제 후 재설치하면 앱 키가 지워져 재페어링 필요). 17:32에 같은 지문인데 adbd가 키를 거부한 사례 1회 — 재페어링으로 해결, 재발 시 추적 |
 
-### 3.7 분리 실행 서버의 수명 (빌드 `306d41a`·`d98be88`, 2026-09-05)
+### 3.5 분리 실행 서버의 수명 (빌드 `306d41a`·`d98be88`, 2026-09-05)
 | # | 확인 | 결과 |
 |---|---|---|
 | 1 | 앱의 분리 실행 명령이 실제로 도는가 | ❌ `c602d65`~`8af473a`: `pkill -f com.carcast.server.Server`가 그 명령을 실행하는 `sh -c` 자신(명령줄에 클래스명 포함)을 죽여 아무것도 실행되지 않음. 앱은 옛 `server.log`를 새 것처럼 읽음. ✅ `306d41a`: pid 파일 + `^app_process / …` 앵커 패턴으로 종료, 실행마다 `server-<epoch>.log` 새로 작성·이전 로그 삭제 → `launched pid=23227`, 모든 step 통과, 500ms 안에 응답 |
@@ -150,14 +151,12 @@
 | M6 | 소리 | ⏳ 미구현 — 소리는 폰에서 남 (오디오 캡처는 M6에서) |
 | M7 | 📵 폰 화면만 OFF | ❌ "폰 화면 전환 실패": `requestDisplayPower(0,false)`가 실패. scrcpy 4.1은 이 API를 `USE_ANDROID_15_DISPLAY_POWER=false`로 꺼 두고(#5530) `SurfaceControl.setDisplayPowerMode`를 쓴다 — M0에서 된 것은 그 경로. 같은 경로로 교체(다음 빌드), 폰 ⏳ |
 | — | 노트북 `/diag` 보고 | `no-Tesla-UA, 1108x632@1.25, mse=O, ws 20/20 35ms, video 61f 0fps lag 3224ms` (진단 페이지 자체 측정; 본 화면은 영상 재생됨) |
-아직: fps·lag(Playwright `BASE_URL`), 세로 고정 앱에서의 회전 동작, 5GHz 720p30 10분 연속.
 
-### 3.4 아직 B층에서 안 한 것
-- **M3 앱 내장 ADB(커밋 이후 첫 폰 테스트):** 페어링(mDNS/수동), 시작 → `RUNNING uid=2000`, 접속 포트 발견, 킬 스위치, 재부팅 후 복구, 도즈 30분 — 체크리스트는 testing-guide B절.
+### 3.7 아직 B층에서 안 한 것
+- M7 📵 재검증 (`fdc2350`의 SurfaceControl 경로), M6 오디오(미구현).
+- "서버 종료" 킬 스위치, 재부팅 후 Wi-Fi에서 "시작" 한 번으로 복구, 하룻밤 방치 후 유지.
 - `BASE_URL=http://100.99.9.9:3333 npx playwright test`를 노트북에서 폰에 대고 실행(자동화된 fps·지연 수치).
-- 5GHz 핫스팟에서 720p30 10분 연속(대역폭).
-- M0 scrcpy 4.1 체크리스트(VD 생성, 앱 실행, 터치, IME, 오디오, 화면 OFF, DeX 노출) — [car-tests/s26u-one-ui-8.md](car-tests/s26u-one-ui-8.md) 표.
-- `daemon=true`로 띄운 서버가 USB 분리·화면 OFF 후에도 유지되는지.
+- 5GHz 핫스팟에서 720p30 10분 연속(대역폭), 세로 고정 앱에서의 회전 동작.
 
 ---
 
@@ -168,15 +167,16 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 (`POST /api/report` → `/data/local/tmp/carcast/`, 조회 `GET /api/reports` 또는 앱의 공유 버튼). 첫 터치 후 재생·전체화면은 손으로.
 결과는 `car-tests/<펌웨어>.md`와 이 문서 §1의 가정 2·5·6에 반영.
 
-선행 조건(B층): 분리 실행 서버가 핫스팟·화면 OFF 후 유지 ✅ (§3.5) — **실차 갈 준비 완료.**
+선행 조건(B층): 분리 실행 서버가 핫스팟·화면 OFF 후 유지 ✅ (§3.5, **USB 디버깅 토글 ON 필수**), 핫스팟 너머에서 라이브 영상·터치 ✅ (§3.6) — **실차 갈 준비 완료.** 소리는 아직 폰에서 난다(M6).
 
 ---
 
 ## 5. 열린 질문 (다음 검증 대상)
 1. 차 브라우저에서 `100.64/10` 대역이 실제로 열리는지, MSE H.264 디코드 fps (가정 2).
 2. ~~M0: One UI 8에서 shell의 VD 생성·`--start-app`·`display_ime_policy=local`·오디오 소스 선택 (가정 3·4).~~ 완료 → car-tests/s26u-one-ui-8.md
-3. M3: Kadb 2.1.1 `pair`/`connect`가 One UI 8 무선 디버깅과 호환되는지(코드는 들어감, 폰 미검증), NsdManager가 `_adb-tls-pairing`/`_adb-tls-connect`를 Android 16에서 잡는지(Shizuku #1125류), 재부팅 후 포트 재발견, `adb_wifi_enabled` 토글로 킬 스위치.
-4. shell 서버의 수명: 화면 OFF/도즈 30분, 앱이 죽었을 때 정리.
+3. ~~M3: Kadb 2.1.1 `pair`/`connect`, NsdManager `_adb-tls-pairing`/`_adb-tls-connect`, 데몬화한 서버의 수명(Shizuku #1125류).~~ 완료 → §3.4, §3.5. 남은 것: 재부팅 후 포트 재발견, "서버 종료" 킬 스위치.
+4. shell 서버의 수명: 하룻밤 방치, 앱이 죽었을 때 정리. (adbd 종료 시 죽는 문제는 USB 디버깅 토글로 해결, §3.5)
+6. M7 📵: SurfaceControl 경로(`fdc2350`)가 S26U에서 되는지. M6: `output` 캡처를 서버에 넣고 차 스피커로.
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
 ---
@@ -192,3 +192,4 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 | `05571fc` | `daemon=true`, 실기기 결과 기록 |
 | `306d41a` | 분리 실행 셸의 자기 종료 버그 수정(pid 파일·앵커 패턴), 실행별 로그 파일 |
 | `d98be88` | cgroup 탈출 시도(실패 확인용 `step: cgroup` 줄), USB 디버깅 필수 안내 |
+| `fdc2350` | 📵를 scrcpy와 같은 SurfaceControl 경로로 (requestDisplayPower 실패) |

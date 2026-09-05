@@ -32,15 +32,17 @@
 ## 아키텍처 (제안서 대비 변경점)
 
 1. **Shizuku 단계 삭제.** 앱이 직접 adbd에 페어링·접속 → `CLASSPATH=<own base.apk> app_process / com.carcast.server.Server <build-id> key=value…` 실행. 서버 dex는 `app` 모듈에 `implementation(project(":shell-server"))`로 포함.
-2. **adb `shell:` 스트림을 세션 내내 열어둔다** (scrcpy 방식). 스트림이 닫히면 서버가 죽음 = 킬 스위치. Shizuku #1125류(데몬화한 자식이 죽는 문제) 회피.
+2. **서버는 adb 스트림과 분리해(`setsid nohup … daemon=true`) 띄우고 재부팅 전까지 둔다.** 무선 디버깅이 Wi-Fi 전용이라
+   차에서는 adb가 없기 때문(처음 계획했던 "스트림 유지 = 킬 스위치"는 폐기). 단 adbd 자체가 멈추면 init이 adbd의 cgroup을
+   통째로 SIGKILL하므로(실측, shell은 탈출 불가) **USB 디버깅 토글을 켜 둬 adbd를 살려 두는 것이 운용 조건**이다.
 3. **HTTP/WebSocket 서버는 shell 프로세스 안에 있다 (M1 실측으로 확정).** 차는 shell uid 소켓에만 닿는다(위 "검증된 사실").
    따라서 캡처·인코딩·fMP4·WS 송출·입력 주입이 모두 `com.carcast.server.Server` 한 프로세스에서 돈다. 앱은
    tun 주소 유지(VpnService), 페어링/기동/킬 스위치, UI만 맡고 `127.0.0.1:3333/api/status`를 폴링해 상태를 보여준다.
    앱↔서버 IPC는 상태 조회와 설정 전달 정도로 줄어들고(HTTP/WS 자체를 쓰면 됨), 예전 3항의 유닉스 소켓 설계는 불필요.
    순수 JVM 모듈 `core`(HTTP/WS, MediaHub, ClipSource, StreamSession, ServerMain)를 앱과 shell 서버가 공유하고,
    PC에서 `./gradlew :core:run`으로 같은 코드를 띄워 Playwright를 돌릴 수 있다.
-4. **무선 디버깅 킬 스위치**: 세션 종료 시 마지막 명령으로 `settings put global adb_wifi_enabled 0`. 시작 시 `_adb-tls-connect._tcp`가 없으면 "무선 디버깅 켜기" 안내 타일(사용자 조작 필요).
-5. adbd가 향후 localhost 바인딩을 막을 가능성(CVE-2026-0073 후속 논의) 대비: mDNS로 얻은 **wlan0 주소**로 접속, 127.0.0.1은 폴백.
+4. **킬 스위치는 loopback 전용 `POST /api/stop`**(앱 "서버 종료"). 무선 디버깅이 꺼져 있으면 앱이 개발자 옵션 딥링크로 안내한다.
+5. adb 접속은 항상 `127.0.0.1:<포트>`(adbd는 loopback에도 리슨). mDNS `_adb-tls-connect`는 포트를 얻는 데만 쓰고, 못 찾으면 수동 포트 입력.
 
 ---
 
@@ -95,14 +97,17 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - **M1 후속으로 이미 된 것:** `com.carcast.server.Server`가 `core`의 서버(HTTP/WS + 테스트 클립)를 shell uid로 띄운다.
   당장은 PC에서 `adb shell 'CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server <git-sha> port=3333'`
   로 기동(앱 화면에 명령 표시). M3의 목표는 이 명령을 앱이 내장 ADB로 직접 실행하는 것.
-- **구현됨(폰 검증 전):** `adb/`는 Kadb **2.1.1**(`com.flyfishxu:kadb-android`; 2.1.2+는 compileSdk 37 요구, SPAKE2 의존성은 JitPack)로
+- **구현됨, 폰 검증 완료(2026-09-05):** `adb/`는 Kadb **2.1.1**(`com.flyfishxu:kadb-android`; 2.1.2+는 compileSdk 37 요구, SPAKE2 의존성은 JitPack)로
   `AdbIdentity`(앱 키 `files/adb/adbkey.pem`), `AdbMdns`(NsdManager, 자기 주소로 resolve되는 레코드만), `AdbLink`(127.0.0.1:포트 접속·`id`·shell v2 스트림),
   `ServerCommand`(`CLASSPATH='<sourceDir>' exec app_process / com.carcast.server.Server <sha> port=3333`), `ServerOutput`(서버 stdout 파싱).
   앱: `AdbPairingService`(알림 RemoteInput으로 6자리 코드, `_adb-tls-pairing` 발견, 수동 포트 폴백), `ShellServerLink`(`/api/status`가 죽어 있고 Wi-Fi일 때만
   adb로 **분리 실행** `setsid nohup … daemon=true`, 미페어링이면 대기), 개발자 옵션 무선 디버깅 딥링크(`:settings:fragment_args_key=toggle_adb_wireless`).
 - **제약(실측, 2026-09-05): 무선 디버깅은 Wi-Fi 클라이언트 연결 중에만 켜지고 Wi-Fi가 끊기면 자동으로 꺼진다.** 차(모바일 데이터+핫스팟)에서는 adb가 없다.
   따라서 서버는 집 Wi-Fi에서 분리 실행해 재부팅 전까지 유지하고, 킬 스위치는 adb 스트림이 아니라 **loopback 전용 `POST /api/stop`**(앱 "서버 종료")이다.
-  서버 로그는 `/data/local/tmp/carcast/server.log`와 `GET /api/log`. 이전 계획의 "shell 스트림 유지 = 킬 스위치"와 "`adb_wifi_enabled` 토글"은 폐기.
+  서버 로그는 실행마다 새 파일 `/data/local/tmp/carcast/server-<epoch>.log`(이전 로그는 실행 전에 삭제)와 `GET /api/log`. 이전 계획의 "shell 스트림 유지 = 킬 스위치"와 "`adb_wifi_enabled` 토글"은 폐기.
+- **수명(실측, 2026-09-05):** ① 실행 명령 안의 `pkill -f <클래스명>`은 그 명령을 도는 `sh -c` 자신을 죽인다(명령줄에 클래스명이 있음) — 이전 서버는 pid 파일과
+  `^app_process / …` 앵커 패턴으로만 끝낸다. ② 무선 디버깅이 꺼질 때 USB 디버깅도 꺼져 있으면 adbd가 멈추고 init이 adbd의 cgroup(`/system/uid_0/pid_N`)을
+  SIGKILL한다. shell은 cgroup을 못 벗어나므로(`step: cgroup` 줄, 전 경로 EACCES) **USB 디버깅 토글 ON이 운용 조건**. 켜 두면 핫스팟 전환 후 유지·노트북 접속 ✅.
 - `adb/` 결정 순서: ① Maven의 Kadb로 `pair`/`connect`/`shell` 시도 (NDK 불필요). ② 안 되면 Shizuku `adb/` 포트: `AdbKey, AdbKeyStore, AdbProtocol, AdbMessage, AdbClient, AdbMdns, AdbPairingClient, AdbException` + `jni/{adb_pairing.cpp,misc.cpp,CMakeLists.txt}`(BoringSSL prefab), 숨은 API `com.android.org.conscrypt`는 `org.conscrypt:conscrypt-android`의 공개 `exportKeyingMaterial`로 교체, 인증서는 BouncyCastle 유지.
 - 앱 UI: 페어링 = 포그라운드 서비스 알림의 `RemoteInput`으로 6자리 코드 입력(Shizuku `AdbPairingService` 패턴) + 무선 디버깅 설정 딥링크, `_adb-tls-pairing` mDNS로 포트 발견. 접속 = `_adb-tls-connect` → `shellCommand("id")`.
 - `shell-server` 최소 `Server.main`: uid 출력, `/dev/uhid` 열기, TRUSTED VD 생성/파괴 (`wrappers/{ServiceManager,DisplayManager}`, `FakeContext`, `Workarounds` 이식). 실행: `CLASSPATH=<sourceDir> app_process / com.carcast.server.Server <build-id>`.
@@ -110,7 +115,7 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - 검증: [폰] 페어링 → `uid=2000(shell)` → "VD created id=N" 표시. shell 스트림 끊으면 서버 종료. 무선 디버깅 off/on, 재부팅 후 포트 재발견. 유닉스 소켓 vs TCP 폴백 판정.
 
 ### M4. scrcpy 포크: VD 영상을 앱으로 → 브라우저로 [세션 → 폰 → 차]
-- **구현됨(폰 검증 전, 2026-09-05):** `shell-server`에 scrcpy v4.1의 `Workarounds, FakeContext, AndroidVersions, wrappers/*(ServiceManager, DisplayManager, WindowManager, ActivityManager, InputManager …), util/{Ln,Command,IO,Settings}, model/Size, display/DisplayInfo, video/VideoConstraints`와
+- **구현됨, 폰 검증 완료(2026-09-05, 핫스팟 노트북에서 라이브 영상·유튜브 실행):** `shell-server`에 scrcpy v4.1의 `Workarounds, FakeContext, AndroidVersions, wrappers/*(ServiceManager, DisplayManager, WindowManager, ActivityManager, InputManager …), util/{Ln,Command,IO,Settings}, model/Size, display/DisplayInfo, video/VideoConstraints`와
   aidl `IDisplayWindowListener`, `IOnPrimaryClipChangedListener`, 스텁 `android.content.IContentProvider`를 **원본 패키지 그대로** 복사(Apache-2.0, `docs/LICENSES/scrcpy-LICENSE.txt`).
   자체 코드: `DisplayCapture`(NewDisplayCapture의 플래그 그대로 TRUSTED VD 생성, IME 로컬), `H264Encoder`(SurfaceEncoder 설정: LATENCY 1, REPEAT 100ms, GOP 2s, 프로파일 미지정),
   `DisplayVideoSource`(core `VideoSource` 구현, `am start --display N`으로 앱 실행), core `EncodedH264Sink`(Annex-B → `Fmp4Writer` → `MediaHub`, 클립으로 단위 테스트).
@@ -122,7 +127,7 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - 검증: [폰] 핫스팟 노트북에서 `BASE_URL=http://100.99.9.9:3333`로 Playwright 실행. [차] `/diag` fps·지연.
 
 ### M5. 입력 [세션 → 폰]
-- **구현됨(폰 검증 전, 2026-09-05):** 웹 컨트롤 패킷(터치/키/텍스트) → core `ControlMessage` 파서(단위 테스트) → shell `InputInjector`:
+- **구현됨, 폰 검증 완료(2026-09-05, `injected=72 injectFailed=0`):** 웹 컨트롤 패킷(터치/키/텍스트) → core `ControlMessage` 파서(단위 테스트) → shell `InputInjector`:
   멀티터치 MotionEvent(finger, SOURCE_TOUCHSCREEN, `setDisplayId`), KeyEvent, 텍스트는 VIRTUAL_KEYBOARD `getEvents`로 되는 문자만 키 이벤트, 나머지(한글)는 클립보드 + `KEYCODE_PASTE`.
   scrcpy `ControlMessage` 와이어 포맷은 쓰지 않고(우리 웹 포맷이 이미 있음) 주입 로직만 Controller에서 옮김. `/api/status.injected/injectFailed`. UHID 키보드는 미이식.
 - `ControlBridge`: WS 컨트롤 프레임 → scrcpy `ControlMessage` 와이어 포맷 그대로 (이식한 `ControlMessageReader` 무수정). 멀티터치, 백/홈/최근앱 키, UHID 키보드(`UhidManager`, API 35+ VD 연결).
@@ -135,7 +140,7 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 ### M7. 라이프사이클/화면 끄기/재연결/킬스위치 [세션 → 폰]
 - **일부 구현(2026-09-05):** `ScreenPower` — scrcpy `Device.setDisplayPower` 그대로: 물리 디스플레이 전부 `SurfaceControl.setDisplayPowerMode`(Android 14+는 `DisplayControl` 토큰). Android 15의 `requestDisplayPower`는 scrcpy도 꺼 둔 경로(#5530)이고 S26U에서 실패 확인(d98be88). `stay_on_while_plugged_in=7`(서버 종료 시 복원, 강제로 끈 화면도 복원).
   서버 옵션 `stay_awake=true`(기본) `screen_off=true`, `GET/POST /api/screen?on=0|1`, 웹 📵 버튼. 킬 스위치는 M3의 `POST /api/stop`. 전원 버튼은 전체 정지이므로 쓰지 않는다.
-- `Device.setDisplayPower`(API 35 `requestDisplayPower`), `screen_off_timeout`, 재연결 시 I-frame 재송신, 재부팅 후 포트 재발견, 종료 순서 `am force-stop`/태스크 제거 → VD 파괴 → 스트림 닫기 → `adb_wifi_enabled 0`.
+- 남은 것: 📵 폰 검증(SurfaceControl 경로, `fdc2350`), `screen_off_timeout`, 재연결 시 I-frame 재송신, 재부팅 후 포트 재발견, 종료 순서 `am force-stop`/태스크 제거 → VD 파괴 → 스트림 닫기.
 - 검증: [폰] 화면 OFF 30분 연속(발열/배터리 `/diag` 로그), 통화 수신, 재부팅 후 한 번 탭으로 재시작.
 
 ### M8. 에뮬레이터 CI (선택) [세션]
@@ -146,17 +151,20 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 
 ---
 
-## 이 세션에서 바로 착수할 범위
-M1(스캐폴드·VPN/HTTP·CI·이 컨테이너에서 APK 빌드 통과) + M2(웹 클라이언트·가짜 폰·Playwright) + M3/M4의 코드 이식 준비(scrcpy v4.1 파일 목록 확보). M0은 사용자가 폰으로 수행하고 결과를 `docs/car-tests/`에 기록해 주면 M4 설정값을 확정한다.
+## 진행 상황과 다음 착수 (2026-09-05)
+- 완료·폰 검증: M0, M1, M2, M3, M4, M5. 실차(C층) 전제 조건(핫스팟에서 shell 서버 접속)도 통과.
+- 다음: **M6 오디오**(`output` 캡처 → AAC → fMP4 오디오 트랙 → 웹 SourceBuffer; M0에서 One UI 8 캡처 동작 확인됨),
+  **M7** 📵 재검증(`fdc2350`), 하룻밤·재부팅 후 복구, "서버 종료" 킬 스위치 확인, 핫스팟 Playwright(`BASE_URL`) 수치.
+- 차가 오면 C층 `/diag` 체크리스트.
 
 ## 라이선스
 `docs/LICENSES/`에 scrcpy(Genymobile)·Shizuku(RikkaApps)·Kadb Apache-2.0 NOTICE, BoringSSL/BouncyCastle/Conscrypt 고지.
 
-## M0/M3에서 판정할 미확인 항목
-1. Shizuku #1125(Android 16 QPR1) 근본 원인 — shell 스트림 유지로 우회.
-2. shell → untrusted_app 추상 유닉스 소켓 SELinux 허용 여부 — TCP 폴백.
-3. One UI 8의 `REMOTE_SUBMIX` vs `playback` 동작.
-4. VD 안 DeX 런처 노출과 `vd_system_decorations=false` 효과.
+## M0/M3에서 판정한 항목 (결과)
+1. Shizuku #1125류(데몬화한 자식이 죽는 문제) — 원인은 adbd 종료 시 init의 cgroup SIGKILL. USB 디버깅 토글로 adbd를 살려 두면 해결(위 M3 "수명").
+2. shell → 앱 유닉스 소켓 IPC — 서버가 shell로 옮겨가며 불필요. 앱↔서버는 loopback HTTP/WS.
+3. One UI 8 오디오: `output`은 원격 재생 + 폰 무음, `playback --audio-dup`은 양쪽 재생 (M0). M6에서 `output` 기본.
+4. `vd_system_decorations=false`면 VD에 아무것도 안 뜨고(앱만), 켜면 DeX식 바탕화면·작업표시줄 노출 (M0 7번).
 
 ## 검증 요약
 - 세션/CI: `./gradlew assembleDebug test` 통과, Playwright(Chrome 148 프로필) 녹색, `Fmp4Writer` 산출물 ffprobe 검증.
