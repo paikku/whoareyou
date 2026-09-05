@@ -54,7 +54,14 @@ public final class Workarounds {
         // not instantiable
     }
 
-    public static void apply() {
+    private static boolean applied;
+
+    /** Idempotent: CarCast applies this once at startup and again defensively before the display starts. */
+    public static synchronized void apply() {
+        if (applied) {
+            return;
+        }
+        applied = true;
         if (Build.VERSION.SDK_INT >= AndroidVersions.API_31_ANDROID_12) {
             // On some Samsung devices, DisplayManagerGlobal.getDisplayInfoLocked() calls ActivityThread.currentActivityThread().getConfiguration(),
             // which requires a non-null ConfigurationController.

@@ -38,6 +38,11 @@ public final class Server {
         }
     }
 
+    /** Progress marker in the log: with only server.log to go on, the last marker says where a startup crash happened. */
+    private static void step(String what) {
+        System.out.println("carcast-server step: " + what);
+    }
+
     public static void main(String... args) {
         // Detached (daemon) runs redirect stdout/stderr to a log file; make lines flush and be UTF-8,
         // and make sure any uncaught crash lands in that log instead of vanishing.
@@ -69,7 +74,18 @@ public final class Server {
             System.exit(2);
             return;
         }
+        step("options " + opts.getRaw());
         Map<String, String> raw = opts.getRaw();
+        if (!"clip".equals(raw.get("source"))) {
+            // Like scrcpy: fake an app context before touching framework classes (KeyCharacterMap, DisplayManager,
+            // MediaCodec) from a bare app_process; a failure here is logged, never fatal.
+            try {
+                com.genymobile.scrcpy.Workarounds.apply();
+                step("workarounds applied");
+            } catch (Throwable t) {
+                System.out.println("carcast-server: workarounds failed (continuing): " + t);
+            }
+        }
         DisplayVideoSource display = null;
         if (!"clip".equals(raw.get("source"))) {
             try {
@@ -85,6 +101,7 @@ public final class Server {
             }
         }
         final DisplayVideoSource source = display;
+        step(source == null ? "source clip" : "source display " + source.width() + "x" + source.height());
         final String initialApp = raw.get("app");
         final ScreenPower screen = new ScreenPower();
         InputInjector injectorTmp = null;
@@ -96,6 +113,7 @@ public final class Server {
             }
         }
         final InputInjector injector = injectorTmp;
+        step(injector == null ? "no input injector" : "input injector ready");
         try {
             if (!"false".equals(raw.get("stay_awake"))) {
                 screen.stayAwake();
@@ -106,6 +124,7 @@ public final class Server {
         } catch (Throwable t) {
             System.out.println("carcast-server: screen setup skipped: " + t);
         }
+        step("screen setup done");
         if (source != null && initialApp != null) {
             // Give the display a moment to exist, then launch the requested app on it.
             Thread t = new Thread(() -> {
@@ -119,6 +138,7 @@ public final class Server {
             t.setDaemon(true);
             t.start();
         }
+        step("starting http on port " + opts.getPort());
         ServerMain.INSTANCE.run(opts, () -> {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("uid", uid);
