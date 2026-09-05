@@ -17,7 +17,7 @@
     <string name="pair_channel">CarCast 페어링</string>
     <string name="pair_title">CarCast 페어링</string>
     <string name="wifi_hint">무선 디버깅은 Wi-Fi에 연결된 동안만 켜집니다 (핫스팟은 해당 없음). 집 Wi-Fi에서 페어링·시작을 하면 서버는 재부팅 전까지 유지됩니다.</string>
-    <string name="pair_prompt">무선 디버깅 화면에서 \'페어링 코드로 기기 페어링\'을 누르고, 여기에 6자리 코드를 입력하세요</string>
+    <string name="pair_prompt">무선 디버깅 화면에서 \'페어링 코드로 기기 페어링\'을 누르고, 그 창을 띄운 채 여기에 6자리 코드를 입력하세요 (앱으로 돌아가면 창이 닫혀 무효)</string>
     <string name="pair_working">페어링 중…</string>
     <string name="pair_done">페어링 완료. 앱이 서버를 직접 시작합니다.</string>
     <string name="pair_failed">페어링 실패: %1$s — 대화상자를 다시 열고 새 코드를 입력하세요</string>

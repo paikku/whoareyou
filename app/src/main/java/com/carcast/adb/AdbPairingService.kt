@@ -80,8 +80,14 @@ class AdbPairingService : Service() {
             if (StreamService.running) startService(Intent(this, StreamService::class.java).setAction(StreamService.ACTION_CONNECT))
             android.os.Handler(mainLooper).postDelayed({ stopSelf() }, 3000)
         }.onFailure { e ->
-            StreamService.log("페어링 실패: ${e.message ?: e}")
-            notify(notification(getString(R.string.pair_failed, e.message ?: e.toString()), input = true))
+            val why = when {
+                (e.message ?: "").contains("ECONNREFUSED") -> "페어링 창이 닫혀 있음 — 창을 다시 열고, 창을 띄운 채 알림창으로만 코드를 입력하세요"
+                e is IllegalArgumentException -> e.message ?: "잘못된 코드"
+                (e.message ?: "").contains("PairAuth") || (e.message ?: "").contains("Pairing") -> "코드가 틀렸거나 만료됨 — 창을 다시 열어 새 코드로"
+                else -> e.message ?: e.toString()
+            }
+            StreamService.log("페어링 실패: $why")
+            notify(notification(getString(R.string.pair_failed, why), input = true))
         }
     }
 
