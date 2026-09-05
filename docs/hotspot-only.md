@@ -60,6 +60,9 @@ tun fd로 떨어진다. 커널 소켓을 안 쓰므로 검사할 소켓이 없�
 
 ### 1.4 테소르는 어떻게 하나 (추론 아니라 확인)
 
+> 다른 앱 3종까지 포함한 전체 조사는 [prior-art.md](prior-art.md)에 있다. 요약: **재부팅 후 Wi-Fi 1회는 업계 공통 제약이고,
+> 가상 IP 경로는 2024-06 Google Play 시스템 업데이트 이후 앱 uid에서 죽었으며 아무도 복구하지 못했다.**
+
 - 테소르 설치 안내의 2단계가 **"Shizuku 설치 후 권한 부여"** 다. 즉 테소르는 Shizuku가 띄워 준 shell uid 프로세스로 동작한다.
 - 그래서 "미러링이 아니라 폰 화면과 독립"(제작사 설명: *"Unlike typical mirroring app, your phone's screen remains independent"*)이고,
   **화면 분할**도 가능하다 — 이건 MediaProjection으로는 절대 안 되는 것으로, shell 권한 + freeform(`enable_freeform_support`,

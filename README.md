@@ -5,6 +5,7 @@
 - 설계 제안: [docs/implementation-proposal.md](docs/implementation-proposal.md)
 - 개발 계획(마일스톤 M0~M9): [docs/dev-plan.md](docs/dev-plan.md)
 - **핫스팟 전용으로 가는 길(Wi-Fi 요구 제거 계획): [docs/hotspot-only.md](docs/hotspot-only.md)**
+- **남들은 어떻게 하나(Tesor·TeslaMirror·TeslaDisplay·Castla 조사): [docs/prior-art.md](docs/prior-art.md)**
 - **테스트 가이드(어디서 무엇을): [docs/testing-guide.md](docs/testing-guide.md)**
 - **검증 기록(무엇을 어떤 테스트로 확인했나, 가정별 상태): [docs/verification-log.md](docs/verification-log.md)**
 - 실차/실기기 원본 표: [docs/car-tests/](docs/car-tests/)
