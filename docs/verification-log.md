@@ -29,7 +29,7 @@
 | — | 분리 실행(`daemon=true`) 서버가 adb 스트림·Wi-Fi·무선 디버깅 종료·화면 OFF 후에도 유지된다 | ⚠️ **조건부 통과 — USB 디버깅 토글이 켜져 있을 때만.** 꺼져 있으면 Wi-Fi가 끊길 때 adbd가 멈추고 init이 adbd의 cgroup(`/system/uid_0/pid_N`)을 통째로 SIGKILL → 서버 사망 (2026-09-05 `306d41a`). shell은 cgroup을 못 벗어남(`d98be88`에서 전 경로 EACCES). 켜 두면 핫스팟 전환 후 유지 + 노트북에서 `100.99.9.9:3333` 접속 ✅. 하룻밤·재부팅은 ⏳ | B | §3.4, §3.5 |
 
 | — | **One UI 8(Android 16)의 adbd가 `tcpip:<포트>`를 받아 준다** | ✅ **확인됨 (2026-09-05, 빌드 `add8b48`)**: `restarting in TCP mode port: N` → 1초 만에 `uid=2000(shell)` 재접속. 되돌리기(`usb:`)도 동작. 2회 재현(36788, 44161) | B | [hotspot-only.md](hotspot-only.md) §2 |
-| — | **TCP 모드 포트가 무선 디버깅 없이도 살아 있고, 그것만으로 서버를 재기동할 수 있다** | ✅ **확인됨 (2026-09-05 10:12)**: `서버 종료` 후 `TCP 모드 포트 44161: 열려 있음` → `mDNS _adb-tls-connect 레코드 없음`(= 무선 디버깅 꺼짐) → `adb 접속(TCP 모드): uid=2000(shell)` → `서버 기동 확인 (500ms)`. **무선 디버깅 없이 shell을 얻어 서버를 다시 띄운 첫 사례** | B | §3.8 | — 근거는 Shizuku #864(S21, Android 14)의 보고. One UI 8의 adbd가 받아 주는지, 전환 후 무선 디버깅이 꺼지는지, "USB 디버깅 허용" 다이얼로그가 뜨는지 모두 미확인 | B | [hotspot-only.md](hotspot-only.md) §2 |
+| — | **TCP 모드 포트가 Wi-Fi·무선 디버깅 없이도 살아 있고, 그것만으로 서버를 재기동할 수 있다** | ✅ **확인됨 (2026-09-05 10:12, Wi-Fi OFF)**: `서버 종료` 후 `TCP 모드 포트 44161: 열려 있음` → `mDNS _adb-tls-connect 레코드 없음`(= 무선 디버깅 꺼짐) → `adb 접속(TCP 모드): uid=2000(shell)` → `서버 기동 확인 (500ms)`. **무선 디버깅 없이 shell을 얻어 서버를 다시 띄운 첫 사례** | B | §3.8 | — 근거는 Shizuku #864(S21, Android 14)의 보고. One UI 8의 adbd가 받아 주는지, 전환 후 무선 디버깅이 꺼지는지, "USB 디버깅 허용" 다이얼로그가 뜨는지 모두 미확인 | B | [hotspot-only.md](hotspot-only.md) §2 |
 | — | `persist.adb.tcp.port`를 shell이 설정할 수 있어 재부팅 후에도 adbd가 포트를 연다 | ❌ **막힘 (2026-09-05 실측)**: `Failed to set property 'persist.adb.tcp.port' to '36788'. See dmesg for error reason.` — 2회 모두 동일. **콜드 부팅 후 Wi-Fi 1회는 남는다**(Tesor·Castla와 동일) | B | [hotspot-only.md](hotspot-only.md) §3 |
 | — | 테소르(Tesor)가 Wi-Fi 없이 동작한다 | ❌ 테소르는 Shizuku 위에서 돈다(설치 안내 2단계). 비루팅 Shizuku는 재부팅 시 종료되고 무선 디버깅 = Wi-Fi로만 다시 시작된다 — 같은 제약 | 문헌 | [hotspot-only.md](hotspot-only.md) §1.4 |
 
@@ -160,6 +160,8 @@
 ### 3.7 아직 B층에서 안 한 것
 ### 3.8 TCP 모드: 무선 디버깅 없이 서버 재기동 (2026-09-05 10:12, 빌드 `add8b48`)
 
+**Wi-Fi를 끈 상태**(그래서 무선 디버깅도 자동으로 꺼진 상태, 사용자 확인 2026-09-05)에서:
+
 ```
 10:12:07 서버 종료 요청: {"ok":true}                      ← 서버를 일부러 종료
 10:12:23 TCP 모드 포트 44161: 열려 있음                    ← 포트 유지됨
@@ -168,10 +170,10 @@
 10:12:41 서버 기동 확인 (500ms)                            ← 재기동 성공
 ```
 
-의미: **무선 디버깅(따라서 Wi-Fi)이 없는 상태에서 shell을 얻어 서버를 다시 띄울 수 있다.** 차 안에서 서버가 죽어도 복구된다는 뜻이고,
+의미: **Wi-Fi도 무선 디버깅도 없는 상태에서 shell을 얻어 서버를 다시 띄울 수 있다.** 차 안에서 서버가 죽어도 복구된다는 뜻이고,
 adbd가 계속 살아 있으므로 §3.5의 cgroup SIGKILL(=USB 디버깅 토글 필수 조건)도 성립하지 않는다 — **USB 디버깅 토글 요구는 재확인 후 삭제 예정**.
 남은 제약은 콜드 부팅 1회뿐(`persist.adb.tcp.port` 거부).
-아직 확인 안 된 것: 이 시점에 Wi-Fi 자체가 꺼져 있었는지(무선 디버깅이 꺼진 것은 로그로 확정), 장시간·화면 OFF 후 포트 유지.
+아직 확인 안 된 것: 장시간·화면 OFF 후 포트 유지, USB 디버깅 토글을 꺼도 유지되는지(§3.5의 조건 삭제 근거), 핫스팟 클라이언트에서의 실사용.
 
 - **2026-09-05 TCP 모드 전환 성공(빌드 `add8b48`, 09:56 및 10:02 두 차례):** 무선 디버깅으로 접속 → `tcpip:` → `restarting in TCP mode port: N` →
   1초 뒤 그 포트로 `uid=2000(shell)` 재접속 → 서버 분리 실행까지 정상(`New display: 1280x720/160`). "TCP 모드 끄기"의 `usb:`도 `restarting in USB mode`로 동작.
