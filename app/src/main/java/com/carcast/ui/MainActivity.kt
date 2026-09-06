@@ -212,7 +212,7 @@ class MainActivity : AppCompatActivity() {
     private fun confirmTcpModeOn() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setMessage(R.string.tcp_mode_on_confirm)
-            .setPositiveButton(R.string.tcp_mode_on) { _, _ ->
+            .setPositiveButton(R.string.tcp_mode_on_action) { _, _ ->
                 AdbPrefs(this).apply { tcpModeOptIn = true; tcpModeFailures = 0 }
                 StreamService.log("TCP 모드 시도를 켰습니다 — 다음 adb 접속에서 전환합니다")
                 startSession()
@@ -223,7 +223,7 @@ class MainActivity : AppCompatActivity() {
     private fun confirmTcpModeOff() {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setMessage(R.string.tcp_mode_off_confirm)
-            .setPositiveButton(R.string.tcp_mode_off) { _, _ ->
+            .setPositiveButton(R.string.tcp_mode_off_action) { _, _ ->
                 val prefs = AdbPrefs(this)
                 val port = prefs.tcpPort
                 Thread {
