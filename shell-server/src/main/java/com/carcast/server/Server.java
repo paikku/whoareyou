@@ -216,8 +216,10 @@ public final class Server {
      */
     private static final class PhoneWatch {
         private static final long RELEASE_GRACE_MS = 15_000;
-        /** Between recovery attempts, so a device that will not wake is not hammered. */
-        private static final long RECOVER_RETRY_MS = 5_000;
+        /** After a recovery that left the device asleep, wait this long before trying again (do not hammer). */
+        private static final long RECOVER_RETRY_MS = 2_000;
+        /** Poll period while a car is attached: the faster the sleep is seen, the less of it the virtual display suffers. */
+        private static final long WATCH_TICK_MS = 50;
         private static final String TAG = "PhoneWatch";
         private final ScreenPower screen;
         private final DisplayVideoSource source;
@@ -227,6 +229,9 @@ public final class Server {
         private volatile long lastRecoverAt;
         private volatile boolean stopped;
         private volatile boolean wasAsleep;
+        private volatile boolean lastRecoveryFailed;
+        /** Panel the driver asked for with the press that started the last recovery, kept for a retry. */
+        private volatile boolean lastIntentPanelOn;
         volatile int recoveries;
         /** The last recovery's log line, in /api/status so a session report from the car carries it. */
         volatile String lastRecovery = "";
@@ -264,9 +269,9 @@ public final class Server {
             long t0 = System.currentTimeMillis();
             lastRecoverAt = t0;
             recoveries++;
-            screen.slept();
             StringBuilder did = new StringBuilder(why).append(" [before: ").append(screen.describe())
                     .append(", VD state ").append(source != null ? source.displayState() : -1).append("]: ");
+            screen.slept(); // whoever wakes the device from here, the display controller owns the panel again
             if (panelOn) {
                 // Lighting the panel needs the display controller's own off→on pass (see ScreenPower.cycleSleepWake);
                 // a NORMAL request underneath it leaves the panel dark.
@@ -297,6 +302,10 @@ public final class Server {
                     }
                 }
             }
+            if (source != null) {
+                source.requestKeyframe(); // the car gets a clean picture right away, not whatever the blank display encoded
+            }
+            lastRecoveryFailed = asleep();
             did.append(" [after: ").append(screen.describe()).append(", VD state ").append(source != null ? source.displayState() : -1).append("]");
             did.append(" (").append(System.currentTimeMillis() - t0).append(" ms)");
             Log.INSTANCE.i(TAG, did.toString());
@@ -309,7 +318,7 @@ public final class Server {
             while (!stopped) {
                 try {
                     // Fast while a car is connected: the sleep→wake round trip is what the driver waits for.
-                    Thread.sleep(clients > 0 ? 200 : 1000);
+                    Thread.sleep(clients > 0 ? WATCH_TICK_MS : 1000);
                 } catch (InterruptedException e) {
                     return;
                 }
@@ -319,27 +328,33 @@ public final class Server {
                         lastPoke = now;
                         screen.userActivity();
                     }
-                    // Edge-triggered: one recovery per awake→asleep transition. If our reading still says "asleep"
-                    // after a recovery (a state we misjudge), log it once and wait for a real change rather than
-                    // recreating the display every few seconds — that read as flicker in the car and a phone
-                    // that would not stay on.
+                    // Edge-triggered: one recovery per awake→asleep transition, and EVERY transition counts — a press
+                    // that follows the previous one within seconds is the driver turning the phone back on, and
+                    // dropping it (an earlier build did, with a 5 s guard) left the phone asleep, the car frozen,
+                    // and our panel bookkeeping inverted for the next press. Only a recovery that itself failed to
+                    // wake the device is rate-limited.
                     boolean asleep = asleep();
                     if (asleep && !wasAsleep) {
                         wasAsleep = true;
-                        if (now - lastRecoverAt >= RECOVER_RETRY_MS) {
+                        if (!lastRecoveryFailed || now - lastRecoverAt >= RECOVER_RETRY_MS) {
                             // The panel we were holding dark means this press was "give me my phone"; a lit panel means "darken it".
                             boolean wantPanelOn = screen.isForcedOff();
+                            lastIntentPanelOn = wantPanelOn;
                             Log.INSTANCE.i(TAG, "폰이 잠듦 (전원 버튼/시간 초과) — 차가 연결돼 있어 깨웁니다; 패널은 "
                                     + (wantPanelOn ? "꺼져 있었으니 켭니다 (폰을 쓰려는 것)" : "켜져 있었으니 끕니다 (화면만 끄려는 것)"));
                             recover("자동 복구", wantPanelOn);
                             wasAsleep = asleep();
                             if (wasAsleep) {
                                 Log.INSTANCE.w(TAG, "복구 뒤에도 잠듦으로 읽힘 (interactive=" + !screen.isAsleep() + ", VD asleep="
-                                        + (source != null && source.displayAsleep()) + ") — 상태가 바뀔 때까지 다시 시도하지 않음", null);
+                                        + (source != null && source.displayAsleep()) + ") — " + RECOVER_RETRY_MS + " ms 뒤 다시", null);
                             }
                         }
                     } else if (!asleep) {
                         wasAsleep = false;
+                    } else if (lastRecoveryFailed && now - lastRecoverAt >= RECOVER_RETRY_MS) {
+                        // Still asleep after a failed recovery: try again, keeping the intent of the original press.
+                        recover("재시도", lastIntentPanelOn);
+                        wasAsleep = asleep();
                     }
                 } else if (now - lastClientGoneAt >= RELEASE_GRACE_MS) {
                     if (screen.isKeptAwake()) {
