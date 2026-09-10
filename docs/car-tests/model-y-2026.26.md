@@ -1,9 +1,12 @@
 # 실차 기록: Model Y / 펌웨어 2026.26
 
-날짜:
-폰 빌드(앱 화면의 `빌드 xxxxxxx`):
-서버 기동 방식: `daemon=true`로 PC 없이 / PC adb 창
-핫스팟 대역: 2.4GHz / 5GHz
+날짜: **2026-09-10 (1차 방문)**
+폰 빌드(앱 화면의 `빌드 xxxxxxx`): `add8b48`
+서버 기동 방식: 앱이 분리 실행 (PC 없음)
+핫스팟 대역: 미기록
+
+> 1차 방문 결과 요약: 페이지는 열리고 `100.99.9.9`·MSE·WS까지 확인됐지만 **영상 프로브에서 `/diag`가 멈춰 저장까지 못 갔다**
+> (아래 §2는 화면 사진에서 옮겨 적은 값). 원인·수정은 §4 참고. 다음 방문에 같은 표를 저장된 report로 다시 채운다.
 
 주차 상태에서 5분. 절차는 [testing-guide.md §3.C](../testing-guide.md). 차에서는 **사진을 찍지 않아도 된다** —
 `/diag`가 끝나면 결과를 폰 서버에 저장하고, 집에서 노트북(`curl http://100.99.9.9:3333/api/reports`)이나
@@ -13,10 +16,10 @@
 
 | # | 확인 | 결과 (O/X + 메모) |
 |---|---|---|
-| 1 | 차가 폰 핫스팟에 연결됨 | |
-| 2 | `http://100.99.9.9:3333/diag` 열림 | |
-| 3 | 페이지 상단에 `저장됨 #n` 표시 | |
-| 4 | 앱 화면 "차에서 보낸 진단:" 줄에 같은 번호가 보임 | |
+| 1 | 차가 폰 핫스팟에 연결됨 | O |
+| 2 | `http://100.99.9.9:3333/diag` 열림 | O — `100.64/10` 대역이 차 브라우저에서 열린다 (가정 2 전반 확인) |
+| 3 | 페이지 상단에 `저장됨 #n` 표시 | **X** — `측정 중…`에서 멈춤. WS 카운터는 20/20까지 갔고 로그는 더 안 붙음 |
+| 4 | 앱 화면 "차에서 보낸 진단:" 줄에 같은 번호가 보임 | X (저장 안 됨) |
 
 2번이 X면 여기서 멈춘다. 차에서 디버깅하지 않는다. 앱 화면의 "서버:" 줄이 `응답 중 shell uid=2000`인지만 확인해 두고 온다.
 
@@ -24,15 +27,15 @@
 
 | 항목 | 값 | report 필드 |
 |---|---|---|
-| UA | | `env.UA` |
-| viewport / screen / DPR | | `env.viewport`, `env.dpr` |
-| secure context | | `env["secure context"]` (http이므로 false여야 정상) |
-| MSE avc1.42E01E | | `api["MSE video/mp4; codecs=\"avc1.42E01E\""]` |
-| MSE High(avc1.640028) / H.265 / AAC | | `api[...]` |
-| WebCodecs / AudioContext / RTCPeerConnection | | `api[...]` |
-| WS 20회 성공 / 평균 ms | | `ws.ok`, `ws.avg` |
-| 디코드 프레임 / fps / lag ms / 에러 | | `video.frames`, `video.fps`, `video.latencyMs`, `video.error` |
-| 사설 주소 대조군 (핫스팟 주소 → 차단되어야 정상) | | `addresses` |
+| UA | `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36` — **`Tesla/` 토큰 없음**, `Chromium/` 토큰도 없음 | `env.UA` |
+| viewport / screen / DPR | `804x638` / `1306x816` / `1.9600000381469727` (브라우저를 화면 절반 폭으로 열었을 때) | `env.viewport`, `env.dpr` |
+| secure context | X (정상) | `env["secure context"]` (http이므로 false여야 정상) |
+| MSE avc1.42E01E | O | `api["MSE video/mp4; codecs=\"avc1.42E01E\""]` |
+| MSE High(avc1.640028) / H.265 / AAC | O / O / O | `api[...]` |
+| WebCodecs / AudioContext / RTCPeerConnection | X / 사진 밖 / 사진 밖 | `api[...]` |
+| WS 20회 성공 / 평균 ms | 카운터 20/20 도달 (성공 수·평균은 사진 밖) | `ws.ok`, `ws.avg` |
+| 디코드 프레임 / fps / lag ms / 에러 | **측정 안 됨 — 여기서 멈춤** | `video.frames`, `video.fps`, `video.latencyMs`, `video.error` |
+| 사설 주소 대조군 (핫스팟 주소 → 차단되어야 정상) | 측정 안 됨 (영상 단계 뒤라 실행 못 함) | `addresses` |
 
 ## 3. 재생 (`http://100.99.9.9:3333/`)
 
@@ -46,7 +49,15 @@
 
 ## 4. 판정 → verification-log.md §1에 반영
 
-- 가정 2 (브라우저가 100.99.9.9를 열고 MSE H.264 디코드):
-- 가정 5 (WS 실패율이 재시도로 감당되는 수준):
-- 가정 6 (지연 < 300ms):
+- 가정 2 (브라우저가 100.99.9.9를 열고 MSE H.264 디코드): **전반 O** (페이지 열림, `isTypeSupported` O). **후반 미확정** — 실제 디코드는 측정 못 함.
+- 가정 5 (WS 실패율이 재시도로 감당되는 수준): 카운터는 20/20 도달. 성공 수는 미기록.
+- 가정 6 (지연 < 300ms): 측정 못 함.
 - 새 quirk / 다음 펌웨어에서 다시 볼 것:
+  - **UA에 `Tesla/<펌웨어>`가 없다.** `X11; Linux x86_64` + `Chrome/148.0.0.0`뿐. 코드가 `Tesla/` 토큰으로 펌웨어를 뽑던 것을
+    UA 요약 라벨(`X11 Linux x86_64 Chrome/148 (no Tesla/ token)`)로 바꿨다. 펌웨어는 사람이 적는다.
+  - **영상 프로브에서 `/diag`가 멈췄다.** 원인 후보: `video.play()`의 Promise는 첫 프레임이 실제로 표시돼야 resolve되는데,
+    폰이 프레임을 안 보냈거나(인코더 idle) 차가 fMP4를 못 붙였거나 둘 중 하나. 어느 쪽이든 그 `await`에 타임아웃이 없어
+    뒤의 주소 프로브·저장이 전부 막혔다. 수정: `/ws/video` 열림 5초·`play()` 3초 상한, 프레임 0이면 `video.error`에 사유와
+    `<video>` 상태(`paused/readyState/currentTime/buffered`)를 남기고, 120초 워치독이 어떤 경우든 저장까지 밀어 넣는다.
+    다음 방문에는 `video.error`·`video.state`가 어느 쪽인지 답해 준다.
+  - DPR 1.96 — 지금까지 가정한 1 / 1.5와 다르다. e2e 프로젝트에 1.96 프로필 추가 검토.

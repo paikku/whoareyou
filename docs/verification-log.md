@@ -200,7 +200,13 @@ adbd가 계속 살아 있으므로 §3.5의 cgroup SIGKILL(=USB 디버깅 토글
 
 ---
 
-## 4. C층: 실차 (Model Y, 2026.26) — ⏳ 미실시
+## 4. C층: 실차 (Model Y, 2026.26) — 🟡 1차 방문 2026-09-10, 부분 확인
+
+1차 방문(빌드 `add8b48`): 차 브라우저가 `http://100.99.9.9:3333/diag`를 열었고(**100.64/10 대역 열림 확인**), MSE H.264 Baseline·High·H.265·AAC 전부 O,
+WebCodecs X, secure context X, viewport 804x638 / screen 1306x816 / **DPR 1.96**, UA에 **`Tesla/` 토큰 없음**(`X11; Linux x86_64 … Chrome/148.0.0.0`).
+WS 카운터는 20/20 도달. 그러나 **영상 프로브에서 페이지가 멈춰 report가 저장되지 않았다** — `video.play()` 대기에 타임아웃이 없었던 `/diag` 결함.
+타임아웃·워치독·`video.state`를 넣어 고쳤고(`tests/e2e/tests/diag-stall.spec.ts`), 실제 디코드·지연·사설 주소 차단은 2차 방문에서 잰다.
+상세: [car-tests/model-y-2026.26.md](car-tests/model-y-2026.26.md).
 
 기록 틀: [car-tests/model-y-2026.26.md](car-tests/model-y-2026.26.md). `/diag`가 UA·viewport·DPR, MSE 코덱 지원,
 WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168` 등) 차단 여부를 측정해 폰 서버에 저장한다

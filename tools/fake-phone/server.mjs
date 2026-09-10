@@ -5,6 +5,8 @@
 //                   [--ws-reject 0.5]   reject this fraction of WS handshakes (Tesla flakiness)
 //                   [--ws-drop-every 5] close every media/control socket every N seconds (tests reconnect)
 //                   [--delay-ms 200]    add latency to every media frame
+//                   [--video-silent]    accept /ws/video and send the init segment, then never a frame
+//                                       (what Model Y 2026.26 looked like from the diag page: play() never settles)
 //                   [--web ../../app/src/main/assets/web]
 //                   [--addresses 192.168.43.1,10.136.114.168]  "phone" addresses reported in /api/status;
 //                                       the diag page probes them as the private-IP control group
@@ -29,6 +31,7 @@ const CLIP = resolve(here, args.clip ?? '../clips/assets/clips/test-720p30.cmp4'
 const WS_REJECT = Number(args['ws-reject'] ?? 0);
 const WS_DROP_EVERY = Number(args['ws-drop-every'] ?? 0);
 const DELAY_MS = Number(args['delay-ms'] ?? 0);
+const VIDEO_SILENT = args['video-silent'] === 'true';
 const ADDRESSES = (args.addresses ?? 'swlan0=192.168.43.1').split(',').filter(Boolean);
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json' };
@@ -192,6 +195,7 @@ function tick() {
     const pkt = packet(f.type, pts, f.payload);
     const send = () => {
       for (const ws of videoClients) {
+        if (VIDEO_SILENT) continue;
         if (ws.readyState !== ws.OPEN) continue;
         if (ws.waitingForKey && !key) continue;
         if (ws.bufferedAmount > 2_000_000) { ws.waitingForKey = true; continue; }
