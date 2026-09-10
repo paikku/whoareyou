@@ -81,14 +81,20 @@ final class ScreenPower {
      * The lock screen comes up on the phone; the virtual display is ALWAYS_UNLOCKED, so the car needs nothing.
      */
     boolean wake() {
+        long t0 = System.currentTimeMillis();
         try {
-            Command.exec("input", "keyevent", "KEYCODE_WAKEUP");
-            for (int i = 0; i < 20; i++) {
+            // In-process key injection first (tens of ms); the `input` command is the fallback (about a second).
+            java.util.function.BooleanSupplier fast = wakeKey;
+            boolean sent = fast != null && fast.getAsBoolean();
+            if (!sent) {
+                Command.exec("input", "keyevent", "KEYCODE_WAKEUP");
+            }
+            for (int i = 0; i < 40; i++) {
                 if (interactive()) {
-                    Ln.i("device woken up");
+                    Ln.i("device woken up in " + (System.currentTimeMillis() - t0) + " ms" + (sent ? "" : " (input command)"));
                     return true;
                 }
-                Thread.sleep(100);
+                Thread.sleep(50);
             }
             Ln.w("device did not wake up");
             return false;
@@ -97,6 +103,9 @@ final class ScreenPower {
             return false;
         }
     }
+
+    /** Fast wake path (in-process KEYCODE_WAKEUP injection), set by the server when an input injector exists. */
+    volatile java.util.function.BooleanSupplier wakeKey;
 
     /**
      * While a car is connected the phone must not time out and sleep (which stops the virtual display too):

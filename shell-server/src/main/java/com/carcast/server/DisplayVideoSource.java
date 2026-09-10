@@ -114,6 +114,33 @@ public final class DisplayVideoSource implements VideoSource {
     }
 
     /**
+     * Cheaper than recreating: ask DisplayManager to power this display on (Android 15+ requestDisplayPower —
+     * the API scrcpy keeps disabled for the *phone* panel, but for a sleeping virtual display it is the one
+     * that may switch the display's own power group back on without destroying the app). Returns whether the
+     * display is ON afterwards; false lets the caller fall back to {@link #recoverDisplay()}.
+     */
+    public boolean tryDisplayPowerOn() {
+        int id = display.displayId();
+        if (id < 0 || android.os.Build.VERSION.SDK_INT < 35) {
+            return false;
+        }
+        try {
+            boolean ok = com.genymobile.scrcpy.wrappers.ServiceManager.getDisplayManager().requestDisplayPower(id, true);
+            for (int i = 0; ok && i < 10; i++) {
+                if (!display.isAsleep()) {
+                    Log.INSTANCE.i(TAG, "requestDisplayPower(" + id + ", on): 가상 디스플레이 켜짐 (" + (i * 100) + " ms)");
+                    return true;
+                }
+                Thread.sleep(100);
+            }
+            Log.INSTANCE.i(TAG, "requestDisplayPower(" + id + ", on) = " + ok + ", state " + display.state() + " — 재생성으로 넘어감");
+        } catch (Throwable t) {
+            Log.INSTANCE.w(TAG, "requestDisplayPower failed: " + t, null);
+        }
+        return false;
+    }
+
+    /**
      * Recovery after the phone slept: a fresh virtual display on the same encoder surface, then the last app
      * started on it again (its previous instance died with the old display). Returns a log line.
      */

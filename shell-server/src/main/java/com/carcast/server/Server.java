@@ -118,6 +118,9 @@ public final class Server {
         }
         final InputInjector injector = injectorTmp;
         step(injector == null ? "no input injector" : "input injector ready");
+        if (injector != null) {
+            screen.wakeKey = injector::wakeUp;
+        }
         try {
             if (!"false".equals(raw.get("stay_awake"))) {
                 screen.stayAwake();
@@ -252,31 +255,35 @@ public final class Server {
 
         /** Wake, get a rendering virtual display back, leave the panel as asked. Serialized; returns what was done. */
         synchronized String recover(String why, boolean panelOn) {
-            lastRecoverAt = System.currentTimeMillis();
+            long t0 = System.currentTimeMillis();
+            lastRecoverAt = t0;
             recoveries++;
             screen.slept();
             StringBuilder did = new StringBuilder(why).append(": ");
             did.append(screen.wake() ? "폰 깨움" : "폰이 안 깨어남");
             if (source != null) {
                 // Give the display group a moment to follow the device before deciding it did not.
-                for (int i = 0; i < 10 && source.displayAsleep(); i++) {
+                for (int i = 0; i < 5 && source.displayAsleep(); i++) {
                     try {
-                        Thread.sleep(200);
+                        Thread.sleep(100);
                     } catch (InterruptedException e) {
                         break;
                     }
                 }
-                if (source.displayAsleep()) {
+                if (!source.displayAsleep()) {
+                    did.append(", VD 켜짐");
+                } else if (source.tryDisplayPowerOn()) {
+                    did.append(", VD를 requestDisplayPower로 켬 (앱 유지)");
+                } else {
                     try {
                         did.append(", VD는 그대로 꺼져 있음 → ").append(source.recoverDisplay());
                     } catch (Exception e) {
                         did.append(", VD 재생성 실패: ").append(e);
                     }
-                } else {
-                    did.append(", VD 켜짐");
                 }
             }
             did.append(panelOn ? ", 패널 켜기: " : ", 패널 끄기: ").append(screen.setMainScreen(panelOn));
+            did.append(" (").append(System.currentTimeMillis() - t0).append(" ms)");
             Log.INSTANCE.i(TAG, did.toString());
             return did.toString();
         }
@@ -285,7 +292,8 @@ public final class Server {
             long lastPoke = 0;
             while (!stopped) {
                 try {
-                    Thread.sleep(1000);
+                    // Fast while a car is connected: the sleep→wake round trip is what the driver waits for.
+                    Thread.sleep(clients > 0 ? 200 : 1000);
                 } catch (InterruptedException e) {
                     return;
                 }

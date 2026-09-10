@@ -173,6 +173,20 @@ final class InputInjector {
         return key(KeyEvent.ACTION_DOWN, keycode) && key(KeyEvent.ACTION_UP, keycode);
     }
 
+    /**
+     * KEYCODE_WAKEUP on the default display, in-process: what `input keyevent KEYCODE_WAKEUP` does minus the
+     * ~1 s of spawning a JVM for it. Used by the power-button recovery, where every 100 ms shows.
+     */
+    boolean wakeUp() {
+        long now = SystemClock.uptimeMillis();
+        boolean ok = true;
+        for (int action : new int[] {KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP}) {
+            KeyEvent e = new KeyEvent(now, now, action, KeyEvent.KEYCODE_WAKEUP, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
+            ok &= ServiceManager.getInputManager().injectInputEvent(e, InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
+        }
+        return ok;
+    }
+
     private boolean text(String text) {
         if (text.isEmpty()) {
             return true;
