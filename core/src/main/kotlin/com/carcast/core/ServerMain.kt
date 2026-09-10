@@ -57,7 +57,7 @@ object ServerMain {
         extraStatus: () -> Map<String, Any?> = { emptyMap() },
         stopOnStdinEof: Boolean = !opts.daemon,
         videoSource: VideoSource? = null,
-        startApp: ((String) -> String)? = null,
+        startApp: ((String, String) -> Map<String, Any?>)? = null,
         control: ((ControlMessage) -> Unit)? = null,
         extraApi: ((String, String, Map<String, String>) -> String?)? = null,
         onStopped: () -> Unit = {},

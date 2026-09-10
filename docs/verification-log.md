@@ -156,6 +156,7 @@
 | M6 | 소리 | ⏳ 미구현 — 소리는 폰에서 남 (오디오 캡처는 M6에서) |
 | M7 | 📵 폰 화면만 OFF | ❌ "폰 화면 전환 실패": `requestDisplayPower(0,false)`가 실패. scrcpy 4.1은 이 API를 `USE_ANDROID_15_DISPLAY_POWER=false`로 꺼 두고(#5530) `SurfaceControl.setDisplayPowerMode`를 쓴다 — M0에서 된 것은 그 경로. 같은 경로로 교체(다음 빌드), 폰 ⏳ |
 | — | 노트북 `/diag` 보고 | `no-Tesla-UA, 1108x632@1.25, mse=O, ws 20/20 35ms, video 61f 0fps lag 3224ms` (진단 페이지 자체 측정; 본 화면은 영상 재생됨) |
+| M4-b | 폰에서 쓰는 앱을 차에서 띄울 때 / 차에서 도는 앱을 폰에서 열 때 | ⏳ 사용자 보고(2026-09-10): 폰에서 앱을 쓰는 중이면 차 쪽이 "충돌", 폰에서 닫으면 정상. 코드 분석 결과 원인은 안드로이드의 task 재사용 — `am start --display N`이 폰의 task를 차로 **옮기고**, 폰 런처가 다시 폰으로 옮긴다(핑퐁). 대응: `/api/app`가 `am stack list`로 위치를 보고 다른 디스플레이면 `am start -S`로 재실행(기본 `restart=auto`), 워처가 `appDisplay`/`appOnPhone`을 상태에 실어 차 화면이 "폰이 가져감"을 표시. 폰 검증 절차: testing-guide.md §B "M4-b". 폰 ⏳ (특히 One UI 8의 `am stack list` 출력이 파서와 맞는지) |
 
 ### 3.7 아직 B층에서 안 한 것
 ### 3.8 TCP 모드: 무선 디버깅 없이 서버 재기동 (2026-09-05 10:12, 빌드 `add8b48`)
@@ -233,6 +234,8 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 3. ~~M3: Kadb 2.1.1 `pair`/`connect`, NsdManager `_adb-tls-pairing`/`_adb-tls-connect`, 데몬화한 서버의 수명(Shizuku #1125류).~~ 완료 → §3.4, §3.5. 남은 것: 재부팅 후 포트 재발견, "서버 종료" 킬 스위치.
 4. shell 서버의 수명: 하룻밤 방치, 앱이 죽었을 때 정리. (adbd 종료 시 죽는 문제는 USB 디버깅 토글로 해결, §3.5)
 6. M7 📵: SurfaceControl 경로(`fdc2350`)가 S26U에서 되는지. M6: `output` 캡처를 서버에 넣고 차 스피커로.
+7. M4-b 같은 앱을 폰과 차에서: `restart=auto`가 폰 쪽 인스턴스를 종료하고 차에 새로 띄우는지, 폰 런처가 앱을 가져갈 때 `appOnPhone`이 5초 안에 true가 되는지,
+   그리고 One UI 8의 `am stack list` 출력이 `TaskList` 파서와 맞는지(안 맞으면 `appDisplay`가 항상 null). 절차: testing-guide §B "M4-b".
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
 ---

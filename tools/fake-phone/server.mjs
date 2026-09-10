@@ -113,10 +113,16 @@ const server = createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/app' && req.method === 'POST') {
+    // Same reply shape as the shell server: action says whether a task was started/restarted/moved/brought to front.
+    const name = url.searchParams.get('name');
+    const restart = url.searchParams.get('restart') ?? 'auto';
     state.apps = state.apps ?? [];
-    state.apps.push(url.searchParams.get('name'));
+    state.apps.push(name);
+    const from = state.appOnPhone ? 0 : null;
+    const action = from === null ? 'started' : restart === 'never' ? 'moved' : 'restarted';
+    state.appOnPhone = false;
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, result: `fake: started ${url.searchParams.get('name')}` }));
+    res.end(JSON.stringify({ ok: true, result: `fake: ${action} ${name}`, action, package: name, fromDisplay: from, display: 7 }));
     return;
   }
   if (url.pathname === '/api/screen') {
@@ -128,6 +134,16 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/reports') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify([...reports].reverse()));
+    return;
+  }
+  if (url.pathname === '/api/fake/app-on-phone') {
+    // Test hook: pretend the phone's launcher pulled the launched app's task back to display 0
+    // (the shell server's watcher sets these from `am stack list`).
+    state.appOnPhone = url.searchParams.get('on') !== '0';
+    state.appDisplay = state.appOnPhone ? 0 : 7;
+    state.app = state.apps?.[state.apps.length - 1] ?? 'com.example.app';
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, appOnPhone: state.appOnPhone }));
     return;
   }
   if (url.pathname === '/api/reset') {

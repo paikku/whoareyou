@@ -133,7 +133,7 @@ public final class Server {
             Thread t = new Thread(() -> {
                 try {
                     Thread.sleep(1500);
-                    System.out.println("carcast-server app: " + source.startApp(initialApp));
+                    System.out.println("carcast-server app: " + source.startApp(initialApp, "auto"));
                 } catch (Exception e) {
                     System.err.println("carcast-server: could not start " + initialApp + ": " + e);
                 }
@@ -152,9 +152,9 @@ public final class Server {
                 extra.put("injectFailed", injector.failed());
             }
             return extra;
-        }, !opts.getDaemon(), source, source == null ? null : name -> {
+        }, !opts.getDaemon(), source, source == null ? null : (name, restart) -> {
             try {
-                return source.startApp(name);
+                return source.startApp(name, restart);
             } catch (Exception e) {
                 throw new RuntimeException(e.getMessage(), e);
             }

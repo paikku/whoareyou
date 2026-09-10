@@ -10,6 +10,7 @@ export interface ClientStats {
   packets: number;
   idleMs: number;
   recoveries: number;
+  appOnPhone: boolean;
   videoWs: { connects: number; failures: number; open: boolean };
   controlWs: { connects: number; failures: number; open: boolean };
   started: boolean;
