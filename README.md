@@ -16,7 +16,9 @@
 **shell uid 프로세스**(`com.carcast.server.Server`, `app_process`로 기동)가 서빙한다. Android 14+는 VPN 주소로
 오는 패킷을 앱 uid 소켓에는 전달하지 않기 때문이다(실측: docs/dev-plan.md). 서버는 scrcpy에서 가져온 방식으로
 **가상 디스플레이**(1280x720)를 만들어 H.264로 인코딩해 fMP4/WebSocket으로 송출하고(`POST /api/app`으로 그 화면에 앱 실행),
-VD를 못 만들면 번들된 테스트 클립으로 대체한다. 브라우저 터치·키·텍스트는 그 VD에 주입되고(`/ws/control`),
+VD를 못 만들면 번들된 테스트 클립으로 대체한다. 안드로이드는 앱마다 task가 하나라 폰에서 쓰던 앱을 차에서 띄우면 **옮겨지지 복사되지 않으므로**,
+`/api/app`은 그 앱의 task가 다른 디스플레이에 있으면 기본으로 강제 종료 후 새로 띄우고(`restart=auto|always|never`), 폰이 앱을 도로 가져가면
+`/api/status`의 `appOnPhone`과 차 화면 상태줄에 표시한다(docs/testing-guide.md "M4-b"). 브라우저 터치·키·텍스트는 그 VD에 주입되고(`/ws/control`),
 📵 버튼은 폰 화면만 끈다(`/api/screen`). 차에서 `/diag`를 열면 브라우저 환경·API
 지원·WS 성공률·디코드 fps·사설 주소 차단 여부를 측정해 폰 서버에 저장한다(`/api/reports`, 앱의 공유 버튼). M3부터 앱이 폰 자신의 무선 디버깅에 페어링(Kadb, 알림에 코드 입력)해 이 서버를 **분리 실행**한다. 무선 디버깅은
 Wi-Fi 연결 중에만 켜지므로 집 Wi-Fi에서 띄우고, 서버는 재부팅 전까지(차에서도) 유지된다. 끄기는 앱의 "서버 종료".

@@ -54,8 +54,14 @@ class StreamSession(
      */
     var onStopRequest: () -> Unit = {}
 
-    /** `POST /api/app?name=<package or package/.Activity>`: start an app on the streamed display. Returns a message. */
-    var onStartApp: ((String) -> String)? = null
+    /**
+     * `POST /api/app?name=<package or package/.Activity>[&restart=auto|always|never]`: start an app on the streamed
+     * display. `restart` says what to do when the app already has a task somewhere: `auto` (default) force-stops it
+     * only when that task is on another display (the phone's screen — otherwise Android would *move* it to the car
+     * and the phone loses it), `always` restarts it regardless, `never` keeps today's move-or-bring-to-front behaviour.
+     * Returns the fields merged into the JSON reply (`result`, `action`, `fromDisplay`, `display`, …).
+     */
+    var onStartApp: ((name: String, restart: String) -> Map<String, Any?>)? = null
 
     /** Receives parsed car → phone control messages (touch/key/text); the shell process injects them. */
     var controlHandler: ((ControlMessage) -> Unit)? = null
@@ -145,12 +151,13 @@ class StreamSession(
         path == "/api/reports" && method == "GET" -> reports.listJson(query["limit"]?.toIntOrNull() ?: ReportStore.MAX)
         path == "/api/app" && method == "POST" -> {
             val name = query["name"].orEmpty()
+            val restart = query["restart"]?.takeIf { it in RESTART_MODES } ?: "auto"
             val handler = onStartApp
             when {
                 handler == null -> Json.obj(mapOf("ok" to false, "error" to "no display source"))
                 !Regex("[A-Za-z0-9._/$]+").matches(name) -> Json.obj(mapOf("ok" to false, "error" to "bad app name"))
-                else -> runCatching { handler(name) }.fold(
-                    { Json.obj(mapOf("ok" to true, "result" to it)) },
+                else -> runCatching { handler(name, restart) }.fold(
+                    { Json.obj(linkedMapOf<String, Any?>("ok" to true).apply { putAll(it) }) },
                     { Json.obj(mapOf("ok" to false, "error" to (it.message ?: it.toString()))) },
                 )
             }
@@ -224,6 +231,8 @@ class StreamSession(
     companion object {
         private const val TAG = "StreamSession"
         const val TEST_CLIP = "test-720p30.cmp4"
+        /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to `auto`. */
+        val RESTART_MODES = setOf("auto", "always", "never")
     }
 }
 
