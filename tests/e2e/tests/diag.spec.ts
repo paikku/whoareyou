@@ -2,7 +2,9 @@ import { expect, test } from '@playwright/test';
 
 test('diag page reports environment, API support, WS success and decode', async ({ page }) => {
   await page.goto('/diag');
-  await expect(page.locator('#env')).toContainText('Tesla/');
+  const ua = await page.evaluate(() => navigator.userAgent);
+  const teslaToken = ua.includes('Tesla/'); // the 2026.26 car sends none; the older-style profile does
+  await expect(page.locator('#env')).toContainText(teslaToken ? 'Tesla/' : 'X11; Linux x86_64');
   // The origin is plain http, so the page must not be a secure context (like in the car).
   // Loopback origins are always "potentially trustworthy", so skip this when pointed at 127.0.0.1.
   const secure = await page.evaluate(() => isSecureContext);
@@ -28,11 +30,11 @@ test('diag page reports environment, API support, WS success and decode', async 
   // The page pushed everything it measured to the phone, and the phone lists it back.
   expect(diag.report.ok, JSON.stringify(diag.report)).toBe(true);
   await expect(page.locator('#report-result')).toContainText('저장됨');
-  await expect(page.locator('#summary')).toContainText('Tesla 2026.26');
+  await expect(page.locator('#summary')).toContainText(teslaToken ? 'Tesla 2026.26' : 'X11 Linux x86_64 Chrome/148 (no Tesla/ token)');
   const reports = await page.evaluate(async () => (await fetch('/api/reports')).json());
   const mine = reports.find((r: any) => r.id === diag.report.id);
   expect(mine).toBeTruthy();
-  expect(mine.report.env.UA).toContain('Tesla/');
+  expect(mine.report.env.UA).toBe(ua);
   expect(mine.report.ws.ok).toBe(diag.ws.ok);
   expect(mine.summary).toContain('ws ');
   const status = await page.evaluate(async () => (await fetch('/api/status')).json());
