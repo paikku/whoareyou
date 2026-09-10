@@ -169,6 +169,7 @@ $('btn-app').addEventListener('click', async () => {
 let appOnPhone = false;
 let phoneAsleep = false;
 let lastRecovery = '';
+let serverBuild = '';
 let appEpoch = 0;
 setInterval(async () => {
   if (document.hidden) return;
@@ -176,6 +177,7 @@ setInterval(async () => {
     const epoch = appEpoch;
     const st = await (await fetch('/api/status')).json();
     if (epoch !== appEpoch) return;
+    if (typeof st.build === 'string' && st.build !== serverBuild) { serverBuild = st.build; note(`phone server build ${st.build}`); }
     const now = st.appOnPhone === true;
     if (now !== appOnPhone) {
       appOnPhone = now;
@@ -224,6 +226,7 @@ const stats = () => ({
   recoveries,
   appOnPhone,
   phoneAsleep,
+  serverBuild,
   videoWs: { ...videoWs.stats, open: videoWs.open },
   controlWs: { ...control.stats, open: control.open },
   started,
@@ -249,7 +252,7 @@ setInterval(() => {
 // 💾: push this session's numbers and event log to the phone (/api/reports, like the diag page).
 $('btn-save').addEventListener('click', async () => {
   const s = stats();
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}`;
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}${s.serverBuild ? ` build=${s.serverBuild}` : ''}`;
   const body = { version: 1, page: location.href, kind: 'session', clientTime: new Date().toISOString(), env: { UA: navigator.userAgent, viewport: `${innerWidth}x${innerHeight}`, dpr: devicePixelRatio }, stats: s, events, summary };
   const prev = statsEl.textContent;
   try {

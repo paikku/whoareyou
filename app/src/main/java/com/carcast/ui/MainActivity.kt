@@ -265,6 +265,13 @@ class MainActivity : AppCompatActivity() {
                             " clients=" + (Regex("\"videoClients\":(\\d+)").find(st)?.groupValues?.get(1) ?: "?")
                     }
                 ).append('\n')
+                // A detached server outlives APK updates: say loudly when it is not this build, or a fix that was
+                // installed is not the one running (session reports #21/#22 were made against an old server).
+                val serverBuild = st?.let { Regex("\"build\":\"([^\"]*)\"").find(it)?.groupValues?.get(1) }
+                if (running && serverBuild != null && serverBuild != BuildConfig.GIT_SHA) {
+                    append("⚠ 서버는 이전 빌드 ").append(serverBuild).append(" — 이 APK(").append(BuildConfig.GIT_SHA)
+                        .append(")의 수정이 아직 적용되지 않음. '서버 종료' 후 Wi-Fi+무선 디버깅(또는 TCP 모드)에서 '시작'\n")
+                }
                 val prefs = AdbPrefs(this@MainActivity)
                 append("adb: ").append(StreamService.linkState ?: if (prefs.paired) "페어링됨, 세션 없음" else "미페어링").append('\n')
                 append("TCP 모드: ").append(

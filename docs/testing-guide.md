@@ -184,6 +184,10 @@ VD가 안 깨어난 경우 Android 15+ `requestDisplayPower(vdId, on)`를 먼저
 `am stack list` 출력 형식이 이 폰에서 다르면(`appDisplay`가 늘 null이고 로그에 `am stack list failed`) 파서(`core/…/TaskList.kt`)에 그 출력을 추가한다 —
 그 경우 서버는 예전처럼 그냥 `am start`만 한다. 결과는 verification-log §3.6에 적는다.
 
+**새 APK를 깔았는데 동작이 그대로라면 서버가 옛 빌드다.** 분리 실행 서버는 APK 업데이트를 넘겨 살아남고, 앱은 adb(TCP 모드 또는 Wi-Fi+무선 디버깅)가 될 때만
+새 빌드로 바꾼다. 앱 화면 "서버:" 줄 아래 `⚠ 서버는 이전 빌드 …` 경고가 그 상태이고, 세션 리포트 summary 끝의 `build=`도 서버 빌드다
+(리포트 #21·#22는 옛 서버에서 찍힌 것이었다). 해결: '서버 종료' → Wi-Fi+무선 디버깅(또는 TCP 모드)에서 '시작'.
+
 **M3 폰 검증 체크리스트** (verification-log §3.4에 결과 기록):
 - 페어링 성공 / mDNS 페어링 포트 발견 여부 / 수동 포트로도 되는지
 - 시작 → `SERVER_UP` 까지 걸린 시간, 접속 포트 mDNS 발견 여부
