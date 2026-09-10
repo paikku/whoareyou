@@ -187,7 +187,7 @@ setInterval(async () => {
     if (asleep !== phoneAsleep) {
       phoneAsleep = asleep;
       note(asleep ? 'phone asleep (power button / timeout)' : 'phone awake');
-      if (asleep) notice('폰이 잠들어 화면이 멈췄습니다 — 📵를 누르면 폰을 깨우고 화면만 끕니다', 8000);
+      if (asleep) notice('폰이 잠들었습니다 — 자동으로 깨워 화면만 끕니다 (안 돌아오면 📵)', 8000);
     }
   } catch { /* the phone is away; the video socket's own reconnect covers it */ }
 }, 5000);

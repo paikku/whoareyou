@@ -108,6 +108,35 @@ public final class DisplayVideoSource implements VideoSource {
         return display.displayId();
     }
 
+    /** The virtual display is not rendering (its power group slept): the car is frozen on its last frame. */
+    public boolean displayAsleep() {
+        return display.isAsleep();
+    }
+
+    /**
+     * Recovery after the phone slept: a fresh virtual display on the same encoder surface, then the last app
+     * started on it again (its previous instance died with the old display). Returns a log line.
+     */
+    public synchronized String recoverDisplay() throws Exception {
+        int old = display.displayId();
+        display.recreate();
+        int id = display.displayId();
+        appDisplay = null;
+        String msg = "가상 디스플레이 재생성: id " + old + " → " + id;
+        String app = lastApp;
+        if (!app.isEmpty()) {
+            try {
+                Map<String, Object> r = startApp(app, "auto");
+                msg += ", 앱 " + app + " 다시 실행 (" + r.get("action") + ")";
+            } catch (Exception e) {
+                msg += ", 앱 " + app + " 재실행 실패: " + e.getMessage();
+            }
+        }
+        requestKeyframe();
+        Log.INSTANCE.i(TAG, msg);
+        return msg;
+    }
+
     public int width() {
         return display.width;
     }
@@ -264,6 +293,8 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("height", display.height);
         m.put("dpi", display.dpi);
         m.put("displayId", display.displayId());
+        m.put("displayState", display.state()); // android.view.Display: 2 = ON, 1 = OFF; the VD sleeps with the phone
+        m.put("displayAsleep", display.isAsleep());
         m.put("encoder", encoder != null ? encoder.name() : null);
         m.put("frames", sink != null ? sink.getFrames() : 0);
         m.put("keyframes", sink != null ? sink.getKeyframes() : 0);

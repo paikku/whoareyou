@@ -37,6 +37,7 @@ final class DisplayCapture {
     final int dpi;
     private final boolean systemDecorations;
     private VirtualDisplay virtualDisplay;
+    private Surface surface;
     private int displayId = -1;
 
     DisplayCapture(int width, int height, int dpi, boolean systemDecorations) {
@@ -50,7 +51,45 @@ final class DisplayCapture {
         return displayId;
     }
 
+    /**
+     * android.view.Display state of the virtual display: STATE_ON while it renders, STATE_OFF once its power
+     * group went to sleep (the power button sleeps every group; on Android 13+ this display has its own,
+     * which KEYCODE_WAKEUP alone does not bring back). -1 when there is no display.
+     */
+    int state() {
+        VirtualDisplay vd = virtualDisplay;
+        if (vd == null) {
+            return -1;
+        }
+        try {
+            return vd.getDisplay().getState();
+        } catch (Throwable t) {
+            Ln.w("display state unavailable: " + t);
+            return -1;
+        }
+    }
+
+    boolean isAsleep() {
+        int s = state();
+        return s != -1 && s != android.view.Display.STATE_ON;
+    }
+
+    /**
+     * Tear the display down and create a fresh one on the same encoder surface — the only sure way to get a
+     * rendering display back after its power group slept. The app on it is destroyed with it
+     * (DESTROY_CONTENT_ON_REMOVAL); the caller relaunches it. The display id changes.
+     */
+    void recreate() throws Exception {
+        Surface s = surface;
+        if (s == null) {
+            throw new IllegalStateException("no surface to recreate the display on");
+        }
+        release();
+        start(s);
+    }
+
     void start(Surface surface) throws Exception {
+        this.surface = surface;
         int flags = VIRTUAL_DISPLAY_FLAG_PUBLIC
                 | VIRTUAL_DISPLAY_FLAG_PRESENTATION
                 | VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY

@@ -60,7 +60,15 @@ final class ScreenPower {
      * encoder gets nothing — the car freezes on its last frame. Only the phone waking up brings it back.
      */
     boolean isAsleep() {
-        return !forcedOff && !interactive();
+        // Not gated on forcedOff: PowerManager reports non-interactive after a real sleep whether or not the
+        // panel was already dark through SurfaceControl — and after that sleep our forced-off state is stale
+        // anyway (DisplayManager owns the panel again on wake), see slept().
+        return !interactive();
+    }
+
+    /** The device slept underneath us: DisplayManager will drive the panel on wake, our override is gone. */
+    void slept() {
+        forcedOff = false;
     }
 
     /**

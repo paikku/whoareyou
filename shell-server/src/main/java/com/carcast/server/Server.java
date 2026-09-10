@@ -1,5 +1,6 @@
 package com.carcast.server;
 
+import com.carcast.core.Log;
 import com.carcast.core.ServerMain;
 
 import java.util.LinkedHashMap;
@@ -142,16 +143,17 @@ public final class Server {
             t.start();
         }
         step("starting http on port " + opts.getPort());
-        final KeepAwake keepAwake = new KeepAwake(screen);
+        final PhoneWatch watch = new PhoneWatch(screen, source);
         ServerMain.INSTANCE.run(opts, () -> {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("uid", uid);
             extra.put("build", BuildConfig.SERVER_BUILD_ID);
             extra.put("screenOn", screen.isMainScreenOn());
             // asleep: the phone went to sleep (power button / timeout) and the virtual display with it — the car
-            // is frozen until the phone wakes; 📵 (/api/screen?on=0) wakes it and darkens only the panel.
-            extra.put("asleep", screen.isAsleep());
+            // is frozen until PhoneWatch recovers it (or 📵 / /api/screen?on=0 does).
+            extra.put("asleep", watch.asleep());
             extra.put("keptAwake", screen.isKeptAwake());
+            extra.put("recoveries", watch.recoveries);
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());
@@ -172,40 +174,63 @@ public final class Server {
             }
             if ("POST".equals(method)) {
                 boolean on = !"0".equals(query.get("on")) && !"false".equals(query.get("on"));
+                // 📵 on a sleeping phone: bring the stream back first (wake + fresh display), then the panel as asked.
+                String recovered = watch.asleep() ? watch.recover("📵") : null;
                 boolean ok = screen.setMainScreen(on);
-                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + ",\"asleep\":" + screen.isAsleep() + "}";
+                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + ",\"asleep\":" + watch.asleep()
+                        + (recovered != null ? ",\"recovered\":" + com.carcast.core.Json.INSTANCE.str(recovered) : "") + "}";
             }
-            return "{\"screenOn\":" + screen.isMainScreenOn() + ",\"asleep\":" + screen.isAsleep() + "}";
+            return "{\"screenOn\":" + screen.isMainScreenOn() + ",\"asleep\":" + watch.asleep() + "}";
         }, () -> {
-            keepAwake.stop();
+            watch.stop();
             screen.restore();
             return kotlin.Unit.INSTANCE;
         }, n -> {
-            keepAwake.clients(n);
+            watch.clients(n);
             return kotlin.Unit.INSTANCE;
         });
     }
 
     /**
-     * Keeps the phone from sleeping while a car is streaming: the screen timeout goes out when the first video
-     * client attaches and comes back {@link #RELEASE_GRACE_MS} after the last one leaves (the car reconnects
-     * often; do not flap the setting), and PowerManager is poked every {@link ScreenPower#USER_ACTIVITY_INTERVAL_MS}
-     * meanwhile. A phone that sleeps takes the virtual display with it, which is what "차가 멈춤" was when the
-     * screen timed out or the power button was pressed instead of 📵.
+     * Watches the phone's power state on behalf of the car.
+     * <ul>
+     * <li>Keeps the phone from timing out while a car is streaming: the screen timeout goes out when the first
+     * video client attaches and comes back {@link #RELEASE_GRACE_MS} after the last one leaves (the car
+     * reconnects often; do not flap the setting); PowerManager is poked every
+     * {@link ScreenPower#USER_ACTIVITY_INTERVAL_MS} meanwhile.</li>
+     * <li>Recovers from the power button: a phone that sleeps takes the virtual display with it ("차가 멈춤").
+     * While a car is connected the first sleep is undone within a second or two — wake the device, and since
+     * the virtual display's own power group does not wake with it, recreate the display and relaunch the app —
+     * and the panel is turned off through SurfaceControl, which is what the driver meant by pressing power.
+     * A second sleep within {@link #RECOVER_BACKOFF_MS} is taken as "I want my phone" and left alone
+     * (the car shows 😴 and 📵 recovers on request).</li>
+     * </ul>
      */
-    private static final class KeepAwake {
+    private static final class PhoneWatch {
         private static final long RELEASE_GRACE_MS = 15_000;
+        private static final long RECOVER_BACKOFF_MS = 60_000;
+        private static final String TAG = "PhoneWatch";
         private final ScreenPower screen;
+        private final DisplayVideoSource source;
         private final Thread thread;
         private volatile int clients;
         private volatile long lastClientGoneAt;
+        private volatile long lastRecoverAt;
         private volatile boolean stopped;
+        private volatile boolean asleepLogged;
+        volatile int recoveries;
 
-        KeepAwake(ScreenPower screen) {
+        PhoneWatch(ScreenPower screen, DisplayVideoSource source) {
             this.screen = screen;
-            thread = new Thread(this::loop, "keep-awake");
+            this.source = source;
+            thread = new Thread(this::loop, "phone-watch");
             thread.setDaemon(true);
             thread.start();
+        }
+
+        /** Asleep by either signal: PowerManager says non-interactive, or the virtual display itself is not ON. */
+        boolean asleep() {
+            return screen.isAsleep() || (source != null && source.displayAsleep());
         }
 
         void clients(int n) {
@@ -223,6 +248,37 @@ public final class Server {
             thread.interrupt();
         }
 
+        /** Wake, get a rendering virtual display back, darken the panel. Serialized; returns what was done. */
+        synchronized String recover(String why) {
+            lastRecoverAt = System.currentTimeMillis();
+            recoveries++;
+            screen.slept();
+            StringBuilder did = new StringBuilder(why).append(": ");
+            did.append(screen.wake() ? "폰 깨움" : "폰이 안 깨어남");
+            if (source != null) {
+                // Give the display group a moment to follow the device before deciding it did not.
+                for (int i = 0; i < 10 && source.displayAsleep(); i++) {
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+                if (source.displayAsleep()) {
+                    try {
+                        did.append(", VD는 그대로 꺼져 있음 → ").append(source.recoverDisplay());
+                    } catch (Exception e) {
+                        did.append(", VD 재생성 실패: ").append(e);
+                    }
+                } else {
+                    did.append(", VD 켜짐");
+                }
+            }
+            did.append(", 패널 끄기: ").append(screen.setMainScreen(false));
+            Log.INSTANCE.i(TAG, did.toString());
+            return did.toString();
+        }
+
         private void loop() {
             long lastPoke = 0;
             while (!stopped) {
@@ -236,6 +292,17 @@ public final class Server {
                     if (now - lastPoke >= ScreenPower.USER_ACTIVITY_INTERVAL_MS) {
                         lastPoke = now;
                         screen.userActivity();
+                    }
+                    boolean asleep = asleep();
+                    if (asleep && now - lastRecoverAt >= RECOVER_BACKOFF_MS) {
+                        asleepLogged = false;
+                        Log.INSTANCE.i(TAG, "폰이 잠듦 (전원 버튼/시간 초과) — 차가 연결돼 있어 깨우고 패널만 끕니다. 폰을 쓰려면 1분 안에 한 번 더 끄세요");
+                        recover("자동 복구");
+                    } else if (asleep && !asleepLogged) {
+                        asleepLogged = true;
+                        Log.INSTANCE.i(TAG, "폰이 1분 안에 다시 잠듦 — 폰을 쓰려는 것으로 보고 그대로 둡니다 (차에서 📵로 복구)");
+                    } else if (!asleep) {
+                        asleepLogged = false;
                     }
                 } else if (screen.isKeptAwake() && now - lastClientGoneAt >= RELEASE_GRACE_MS) {
                     screen.keepAwake(false);
