@@ -27,8 +27,22 @@ export class ReconnectingWs {
   stop(): void {
     this.stopped = true;
     window.clearTimeout(this.timer);
-    this.ws?.close();
+    this.detach(this.ws);
     this.ws = null;
+  }
+
+  /** Close the current socket and open a fresh one now (the phone resends init + keyframe on attach). */
+  restart(): void {
+    this.stop();
+    this.start();
+  }
+
+  // A socket we are done with must neither deliver messages nor schedule a retry: in the car a
+  // restart() per stall left the old socket's onclose re-connecting, one extra stream per recovery.
+  private detach(ws: WebSocket | null): void {
+    if (!ws) return;
+    ws.onopen = null; ws.onmessage = null; ws.onerror = null; ws.onclose = null;
+    try { ws.close(); } catch { /* already closed */ }
   }
 
   get open(): boolean {
@@ -61,9 +75,10 @@ export class ReconnectingWs {
     ws.onmessage = (ev) => this.opts.onMessage(ev.data);
     ws.onerror = () => { /* onclose follows */ };
     ws.onclose = (ev) => {
+      if (this.ws !== ws) return; // superseded by a restart(); nothing to retry
       if (!opened) this.stats.failures++;
       this.opts.onClose?.(ev);
-      if (this.ws === ws) this.ws = null;
+      this.ws = null;
       this.scheduleRetry();
     };
     this.ws = ws;

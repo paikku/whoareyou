@@ -5,6 +5,9 @@
 //                   [--ws-reject 0.5]   reject this fraction of WS handshakes (Tesla flakiness)
 //                   [--ws-drop-every 5] close every media/control socket every N seconds (tests reconnect)
 //                   [--delay-ms 200]    add latency to every media frame
+//                   [--pts-stretch 4]   space frames N× further apart (pts and pacing) while each fragment
+//                                       keeps its 33 ms duration: the gappy timeline a static phone screen
+//                                       produces, which stalled MSE in the car
 //                   [--video-silent]    accept /ws/video and send the init segment, then never a frame
 //                   [--video-freeze]    init segment + the cached last keyframe (stamped 50 h into the stream,
 //                                       like a phone whose encoder went idle), then never a frame — Model Y
@@ -34,6 +37,7 @@ const WS_REJECT = Number(args['ws-reject'] ?? 0);
 const WS_DROP_EVERY = Number(args['ws-drop-every'] ?? 0);
 const DELAY_MS = Number(args['delay-ms'] ?? 0);
 const VIDEO_SILENT = args['video-silent'] === 'true';
+const PTS_STRETCH = Number(args['pts-stretch'] ?? 1);
 const VIDEO_FREEZE = args['video-freeze'] === 'true';
 const FREEZE_PTS_US = 180_214_950_000; // what the car saw: buffered=180214.95-180214.98
 const ADDRESSES = (args.addresses ?? 'swlan0=192.168.43.1').split(',').filter(Boolean);
@@ -57,6 +61,7 @@ function loadClip(path) {
 const clip = loadClip(CLIP);
 const init = clip.find((r) => r.type === 0);
 const frames = clip.filter((r) => r.type !== 0);
+if (PTS_STRETCH !== 1) for (const f of frames) f.pts = Math.round(f.pts * PTS_STRETCH);
 const clipDurationUs = frames.length ? frames[frames.length - 1].pts + 33_333 : 0;
 console.log(`clip ${CLIP}: ${frames.length} frames, ${(clipDurationUs / 1e6).toFixed(1)} s`);
 

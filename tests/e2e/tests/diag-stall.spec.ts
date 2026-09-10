@@ -54,7 +54,7 @@ test('a lone cached keyframe from an idle phone is displayed and reported as a s
   expect(diag.video.packets).toBe(2);
   expect(diag.video.frames).toBeGreaterThanOrEqual(1);
   expect(diag.video.error).toContain('stalled');
-  expect(diag.video.state).toContain('t=18021'); // sought to the cached frame, not left at 0
+  expect(diag.video.state).toContain('t=1802'); // sought to the cached frame (then ran on into its tail), not left at 0
   expect(diag.video.packetTimes).toMatch(/^\d+,\d+ms$/);
   expect(diag.report.ok, JSON.stringify(diag.report)).toBe(true);
 });

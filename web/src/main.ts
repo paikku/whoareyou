@@ -84,8 +84,7 @@ setInterval(() => {
     wdStalledTicks = 0;
     recoveries++;
     note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → video ws 재접속`);
-    videoWs.stop();
-    videoWs.start();
+    videoWs.restart();
   }
 }, 500);
 
@@ -164,7 +163,7 @@ const stats = () => ({
   controlWs: { ...control.stats, open: control.open },
   started,
 });
-(window as any).__carcast = { stats, start, events };
+(window as any).__carcast = { stats, start, events, restartVideo: () => videoWs.restart() };
 // fps · lag · socket · then only what is abnormal: reconnects, stall recoveries, dropped frames, idle encoder.
 setInterval(() => {
   const s = stats();
