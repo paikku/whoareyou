@@ -231,7 +231,7 @@ const stats = () => ({
   controlWs: { ...control.stats, open: control.open },
   started,
 });
-(window as any).__carcast = { stats, start, events, restartVideo: () => videoWs.restart() };
+(window as any).__carcast = { stats, start, events, restartVideo: () => videoWs.restart(), debug: () => renderer.debug?.() ?? '' };
 // fps · lag · socket · then only what is abnormal: reconnects, stall recoveries, dropped frames, idle encoder.
 setInterval(() => {
   const s = stats();

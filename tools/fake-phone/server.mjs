@@ -39,6 +39,10 @@ const DELAY_MS = Number(args['delay-ms'] ?? 0);
 const VIDEO_SILENT = args['video-silent'] === 'true';
 const PTS_STRETCH = Number(args['pts-stretch'] ?? 1);
 const VIDEO_FREEZE = args['video-freeze'] === 'true';
+// A static phone screen: every PAUSE_EVERY seconds, send nothing for PAUSE_MS while pts keep advancing, then
+// resume mid-GOP with whatever frame is due (a P-frame, as the real encoder does).
+const PAUSE_EVERY_S = Number(args['pause-every'] ?? 0);
+const PAUSE_MS = Number(args['pause-ms'] ?? 0);
 const FREEZE_PTS_US = 180_214_950_000; // what the car saw: buffered=180214.95-180214.98
 const ADDRESSES = (args.addresses ?? 'swlan0=192.168.43.1').split(',').filter(Boolean);
 
@@ -217,11 +221,12 @@ function tick() {
     return;
   }
   const key = f.type === 2;
+  const paused = PAUSE_EVERY_S > 0 && (Number(nowNs / 1_000_000n) % (PAUSE_EVERY_S * 1000)) >= PAUSE_EVERY_S * 1000 - PAUSE_MS;
   {
     const pkt = packet(f.type, pts, f.payload);
     const send = () => {
       for (const ws of videoClients) {
-        if (VIDEO_SILENT || VIDEO_FREEZE) continue;
+        if (VIDEO_SILENT || VIDEO_FREEZE || paused) continue;
         if (ws.readyState !== ws.OPEN) continue;
         if (ws.waitingForKey && !key) continue;
         if (ws.bufferedAmount > 2_000_000) { ws.waitingForKey = true; continue; }

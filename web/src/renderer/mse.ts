@@ -59,6 +59,7 @@ export class MseRenderer implements Renderer {
   private trimTimer = 0;
   private tickTimer = 0;
   private lastPtsS = -1;        // pts of the newest frame pushed, in media-timeline seconds
+  private lastKeyPtsS = -1;     // pts of the newest keyframe: the trim floor, everything after it depends on it
   private lastFrameAtMs = 0;    // performance.now() when it arrived
 
   constructor(video: HTMLVideoElement, private readonly mime: string = H264_MIME) {
@@ -119,6 +120,7 @@ export class MseRenderer implements Renderer {
     this.haveInit = false;
     this.waitingForKey = true;
     this.lastPtsS = -1;
+    this.lastKeyPtsS = -1;
   }
 
   push(p: MediaPacket): void {
@@ -136,6 +138,7 @@ export class MseRenderer implements Renderer {
       }
       patchSampleDuration(p.payload, FRAME_TAIL_US);
       this.lastPtsS = p.ptsUs / 1e6;
+      if (p.type === MediaType.Key) this.lastKeyPtsS = this.lastPtsS;
       this.lastFrameAtMs = performance.now();
       this.queue.push(p.payload);
     }
@@ -188,7 +191,11 @@ export class MseRenderer implements Renderer {
     const v = this.video;
     if (!sb || sb.updating || v.buffered.length === 0) return;
     const start = v.buffered.start(0);
-    const cut = v.currentTime - TRIM_KEEP_S;
+    // Never past the newest keyframe: on a static screen the playhead runs on through the padded tail, and
+    // a cut behind it once removed the whole last GOP — buffer empty, every frame that followed a P-frame
+    // with no reference (dropped by MSE), no keyframe for many seconds on a static screen (the encoder
+    // counts frames, not time), so the watchdog reconnected: "decode stall … buf=[]" in the laptop reports.
+    const cut = Math.min(v.currentTime - TRIM_KEEP_S, (this.lastKeyPtsS >= 0 ? this.lastKeyPtsS : this.lastPtsS) - 0.1);
     if (force || cut > start + 1) {
       try { sb.remove(0, Math.max(start, cut)); } catch { /* ignore */ }
     }
