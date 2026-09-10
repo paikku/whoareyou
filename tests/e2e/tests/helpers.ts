@@ -7,6 +7,9 @@ export interface ClientStats {
   latencyMs: number;
   droppedFrames: number;
   lastError: string;
+  packets: number;
+  idleMs: number;
+  recoveries: number;
   videoWs: { connects: number; failures: number; open: boolean };
   controlWs: { connects: number; failures: number; open: boolean };
   started: boolean;

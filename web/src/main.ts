@@ -40,15 +40,53 @@ control.start();
 
 const touch = new TouchInput(stage, control);
 
+// Session log: what happened and when, kept for the 💾 button (no devtools in the car).
+const t0 = Date.now();
+const events: string[] = [];
+const note = (s: string) => {
+  events.push(`${((Date.now() - t0) / 1000).toFixed(1)}s ${s}`);
+  if (events.length > 60) events.shift();
+};
+
+let packets = 0;
+let lastPacketAt = 0;
+let recoveries = 0;
 const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ? '?codec=mjpeg' : ''}`), {
-  onOpen: () => renderer.reset(),
+  onOpen: () => { renderer.reset(); note(`video ws open #${videoWs.stats.connects}`); },
+  onClose: () => note('video ws closed'),
   onMessage: (data) => {
     if (typeof data === 'string') return;
     const p = parseMediaPacket(data);
-    if (p) renderer.push(p);
+    if (!p) return;
+    packets++;
+    lastPacketAt = Date.now();
+    if (p.type === MediaType.Init) note('init segment (encoder restart?)');
+    renderer.push(p);
   },
 });
 videoWs.start();
+
+// Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the MSE
+// pipeline is wedged (seen on the laptop: frames stop, lag grows). A fresh socket makes the phone
+// resend the init segment and a keyframe, which rebuilds the pipeline — the same path as a reconnect.
+// No packets at all is not a stall: the phone's encoder goes quiet on a static screen.
+let wdPackets = 0;
+let wdFrames = 0;
+let wdStalledTicks = 0;
+setInterval(() => {
+  if (!started || !videoWs.open) { wdStalledTicks = 0; return; }
+  const s = renderer.stats();
+  const dp = packets - wdPackets;
+  const df = s.framesDecoded - wdFrames;
+  wdPackets = packets; wdFrames = s.framesDecoded;
+  wdStalledTicks = dp >= 5 && df === 0 ? wdStalledTicks + 1 : 0;
+  if (wdStalledTicks >= 4) {
+    wdStalledTicks = 0;
+    recoveries++;
+    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → video ws 재접속`);
+    videoWs.restart();
+  }
+}, 500);
 
 // The car browser blocks autoplay: the first gesture unlocks video (and later audio).
 let started = false;
@@ -118,14 +156,38 @@ $('btn-fullscreen').addEventListener('click', () => {
 const stats = () => ({
   renderer: renderer.name,
   ...renderer.stats(),
+  packets,
+  idleMs: lastPacketAt ? Date.now() - lastPacketAt : -1,
+  recoveries,
   videoWs: { ...videoWs.stats, open: videoWs.open },
   controlWs: { ...control.stats, open: control.open },
   started,
 });
-(window as any).__carcast = { stats, start };
+(window as any).__carcast = { stats, start, events, restartVideo: () => videoWs.restart() };
+// fps · lag · socket · then only what is abnormal: reconnects, stall recoveries, dropped frames, idle encoder.
 setInterval(() => {
   const s = stats();
-  statsEl.textContent = `${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms ${s.videoWs.open ? '●' : '○'}`;
+  const extra = [
+    s.videoWs.connects > 1 ? `↻${s.videoWs.connects - 1}` : '',
+    s.recoveries ? `복구${s.recoveries}` : '',
+    s.droppedFrames ? `드롭${s.droppedFrames}` : '',
+    s.idleMs > 1500 ? `폰 무응답 ${Math.round(s.idleMs / 1000)}s` : '',
+    s.lastError ? `err ${s.lastError}` : '',
+  ].filter(Boolean).join(' ');
+  statsEl.textContent = `${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms ${s.videoWs.open ? '●' : '○'}${extra ? ` ${extra}` : ''}`;
 }, 500);
+
+// 💾: push this session's numbers and event log to the phone (/api/reports, like the diag page).
+$('btn-save').addEventListener('click', async () => {
+  const s = stats();
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}`;
+  const body = { version: 1, page: location.href, kind: 'session', clientTime: new Date().toISOString(), env: { UA: navigator.userAgent, viewport: `${innerWidth}x${innerHeight}`, dpr: devicePixelRatio }, stats: s, events, summary };
+  const prev = statsEl.textContent;
+  try {
+    const r = await (await fetch('/api/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();
+    statsEl.textContent = r.ok ? `저장됨 #${r.id}` : `저장 실패 ${r.error ?? ''}`;
+  } catch (e) { statsEl.textContent = `저장 실패 ${String(e)}`; }
+  setTimeout(() => { if (statsEl.textContent?.startsWith('저장')) statsEl.textContent = prev; }, 2500);
+});
 
 export type { MediaType };

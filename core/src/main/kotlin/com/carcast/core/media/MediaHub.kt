@@ -14,6 +14,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 open class MediaHub {
     private class Client(val conn: WebSocketConnection) {
         @Volatile var waitingForKey = true
+        @Volatile var sent = 0L
+        @Volatile var dropped = 0L
     }
 
     private val clients = CopyOnWriteArrayList<Client>()
@@ -24,6 +26,18 @@ open class MediaHub {
 
     /** Called after a client attached (the live source answers with a keyframe request). */
     @Volatile var onClientAttached: () -> Unit = {}
+    /** Called the first time a client's queue is full and a frame is dropped (once per client). */
+    @Volatile var onClientStalled: (remote: String, queued: Int) -> Unit = { _, _ -> }
+
+    /**
+     * What each car-side socket actually got. `sent`/`dropped` count media frames offered since the
+     * client attached; `queued` is what is still waiting for the socket to drain. A car that shows
+     * one frame and then nothing is either not being sent to (sent stays low) or not reading
+     * (dropped and queued climb) — the two look identical from the browser.
+     */
+    fun clientStats(): List<Map<String, Any?>> = clients.map {
+        mapOf("remote" to it.conn.remote, "sent" to it.sent, "dropped" to it.dropped, "queued" to it.conn.queuedFrames, "waitingForKey" to it.waitingForKey)
+    }
 
     fun attach(conn: WebSocketConnection) {
         val c = Client(conn)
@@ -35,7 +49,7 @@ open class MediaHub {
         }
         initSegment?.let { conn.send(it) }
         // A late joiner gets the last keyframe immediately so the picture appears without waiting for the GOP.
-        lastKey?.let { if (conn.offer(it)) c.waitingForKey = false }
+        lastKey?.let { if (conn.offer(it)) { c.waitingForKey = false; c.sent++ } }
         onClientAttached()
     }
 
@@ -51,8 +65,10 @@ open class MediaHub {
             if (c.waitingForKey && !keyframe) continue
             if (c.conn.offer(packet)) {
                 c.waitingForKey = false
+                c.sent++
             } else {
                 c.waitingForKey = true
+                if (c.dropped++ == 0L) onClientStalled(c.conn.remote, c.conn.queuedFrames)
             }
         }
     }

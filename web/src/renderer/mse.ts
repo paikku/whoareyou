@@ -8,6 +8,36 @@ export const AAC_MIME = 'audio/mp4; codecs="mp4a.40.2"';
 
 const MAX_LAG_S = 0.3;      // when the buffer runs further ahead than this, jump to the live edge
 const TRIM_KEEP_S = 8;      // keep this much history in the SourceBuffer, remove older
+// Every fragment from the phone says its frame lasts 33 ms. On a static screen the next frame comes
+// 100-150 ms later (or much later), so the timeline is full of gaps, playback underflows at the end
+// of each 33 ms range and Chrome will not resume until several frames are queued — in the car that
+// read "0 fps, lag 8 ms, packets still arriving". A frame is really valid until the next one, so we
+// restamp each fragment's sample duration to this before appending: the buffered range always
+// reaches well past the last frame, the playhead keeps moving at 1x in step with the phone's clock,
+// and a new frame is simply shown when its pts comes up. Lag is measured against the last frame's
+// pts, not the (padded) buffered end.
+const FRAME_TAIL_US = 30_000_000;
+
+/**
+ * Overwrite the single sample's duration in a moof produced by our Fmp4Writer / the fake phone:
+ * one `trun` with flags data-offset|duration|size|flags, so the duration is the first per-sample field.
+ */
+export function patchSampleDuration(frag: Uint8Array, durationUs: number): boolean {
+  const limit = Math.min(frag.length - 8, 512); // the moof is tiny and precedes mdat; never scan the payload
+  for (let i = 0; i < limit; i++) {
+    if (frag[i] !== 0x74 || frag[i + 1] !== 0x72 || frag[i + 2] !== 0x75 || frag[i + 3] !== 0x6e) continue; // 'trun'
+    const flags = (frag[i + 5]! << 16) | (frag[i + 6]! << 8) | frag[i + 7]!;
+    if (!(flags & 0x100)) return false;
+    let off = i + 4 + 4 + 4;                 // type, version+flags, sample_count
+    if (flags & 0x1) off += 4;                // data_offset
+    if (flags & 0x4) off += 4;                // first_sample_flags
+    if (off + 4 > frag.length) return false;
+    frag[off] = (durationUs >>> 24) & 0xff; frag[off + 1] = (durationUs >>> 16) & 0xff;
+    frag[off + 2] = (durationUs >>> 8) & 0xff; frag[off + 3] = durationUs & 0xff;
+    return true;
+  }
+  return false;
+}
 
 export function mseSupported(mime: string = H264_MIME): boolean {
   return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(mime);
@@ -27,6 +57,8 @@ export class MseRenderer implements Renderer {
   private fpsWindow: number[] = [];
   private rvfcHandle = 0;
   private trimTimer = 0;
+  private lastPtsS = -1;        // pts of the newest frame pushed, in media-timeline seconds
+  private lastFrameAtMs = 0;    // performance.now() when it arrived
 
   constructor(video: HTMLVideoElement, private readonly mime: string = H264_MIME) {
     this.video = video;
@@ -48,8 +80,10 @@ export class MseRenderer implements Renderer {
       if (this.ms !== ms) return;
       try {
         const sb = ms.addSourceBuffer(this.mime);
-        sb.mode = 'segments';
-        sb.addEventListener('updateend', () => this.pump());
+        sb.mode = 'segments'; // real pts: the phone's clock is the timeline (see FRAME_TAIL_US)
+        // catchUp after every append, not only before the next one: with a single fragment in the
+        // buffer (car, first frame) nothing else ever arrives to trigger the jump to the live edge.
+        sb.addEventListener('updateend', () => { this.pump(); this.catchUp(); });
         sb.addEventListener('error', () => { this.st.lastError = 'sourcebuffer error'; });
         this.sb = sb;
         this.pump();
@@ -70,6 +104,7 @@ export class MseRenderer implements Renderer {
     this.queue = [];
     this.haveInit = false;
     this.waitingForKey = true;
+    this.lastPtsS = -1;
   }
 
   push(p: MediaPacket): void {
@@ -85,6 +120,9 @@ export class MseRenderer implements Renderer {
         if (p.type !== MediaType.Key) { this.st.droppedFrames++; return; }
         this.waitingForKey = false;
       }
+      patchSampleDuration(p.payload, FRAME_TAIL_US);
+      this.lastPtsS = p.ptsUs / 1e6;
+      this.lastFrameAtMs = performance.now();
       this.queue.push(p.payload);
     }
     this.pump();
@@ -109,13 +147,17 @@ export class MseRenderer implements Renderer {
 
   private catchUp(): void {
     const v = this.video;
-    if (v.buffered.length === 0) return;
-    const end = v.buffered.end(v.buffered.length - 1);
-    const lag = end - v.currentTime;
+    if (v.buffered.length === 0 || this.lastPtsS < 0) return;
+    // How far the newest frame is ahead of the playhead. Negative means the playhead has run past
+    // it — normal on a static screen (nothing newer exists yet), a problem only if frames are
+    // arriving and still land behind us (clock drift, or an overshoot of the 1.1x catch-up).
+    const lag = this.lastPtsS - v.currentTime;
     this.st.latencyMs = Math.max(0, lag * 1000);
     if (v.paused) return; // resume() will start playback on the first gesture
     if (lag > MAX_LAG_S) {
-      v.currentTime = Math.max(0, end - 0.05);
+      v.currentTime = Math.max(v.buffered.start(v.buffered.length - 1), this.lastPtsS - 0.05);
+    } else if (lag < -0.05 && performance.now() - this.lastFrameAtMs < 500) {
+      v.currentTime = this.lastPtsS;
     } else if (lag > MAX_LAG_S / 2) {
       v.playbackRate = 1.1;
     } else if (v.playbackRate !== 1) {

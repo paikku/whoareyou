@@ -5,6 +5,13 @@
 //                   [--ws-reject 0.5]   reject this fraction of WS handshakes (Tesla flakiness)
 //                   [--ws-drop-every 5] close every media/control socket every N seconds (tests reconnect)
 //                   [--delay-ms 200]    add latency to every media frame
+//                   [--pts-stretch 4]   space frames N× further apart (pts and pacing) while each fragment
+//                                       keeps its 33 ms duration: the gappy timeline a static phone screen
+//                                       produces, which stalled MSE in the car
+//                   [--video-silent]    accept /ws/video and send the init segment, then never a frame
+//                   [--video-freeze]    init segment + the cached last keyframe (stamped 50 h into the stream,
+//                                       like a phone whose encoder went idle), then never a frame — Model Y
+//                                       2026.26 report #7/#8: the car must still show that one frame
 //                   [--web ../../app/src/main/assets/web]
 //                   [--addresses 192.168.43.1,10.136.114.168]  "phone" addresses reported in /api/status;
 //                                       the diag page probes them as the private-IP control group
@@ -29,6 +36,10 @@ const CLIP = resolve(here, args.clip ?? '../clips/assets/clips/test-720p30.cmp4'
 const WS_REJECT = Number(args['ws-reject'] ?? 0);
 const WS_DROP_EVERY = Number(args['ws-drop-every'] ?? 0);
 const DELAY_MS = Number(args['delay-ms'] ?? 0);
+const VIDEO_SILENT = args['video-silent'] === 'true';
+const PTS_STRETCH = Number(args['pts-stretch'] ?? 1);
+const VIDEO_FREEZE = args['video-freeze'] === 'true';
+const FREEZE_PTS_US = 180_214_950_000; // what the car saw: buffered=180214.95-180214.98
 const ADDRESSES = (args.addresses ?? 'swlan0=192.168.43.1').split(',').filter(Boolean);
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json' };
@@ -50,6 +61,7 @@ function loadClip(path) {
 const clip = loadClip(CLIP);
 const init = clip.find((r) => r.type === 0);
 const frames = clip.filter((r) => r.type !== 0);
+if (PTS_STRETCH !== 1) for (const f of frames) f.pts = Math.round(f.pts * PTS_STRETCH);
 const clipDurationUs = frames.length ? frames[frames.length - 1].pts + 33_333 : 0;
 console.log(`clip ${CLIP}: ${frames.length} frames, ${(clipDurationUs / 1e6).toFixed(1)} s`);
 
@@ -154,6 +166,7 @@ wss.on('connection', (ws, req) => {
     state.videoClients = videoClients.size;
     ws.waitingForKey = true;
     if (init) ws.send(packet(0, 0, init.payload));
+    if (VIDEO_FREEZE && frames[0]?.type === 2) ws.send(packet(2, FREEZE_PTS_US, frames[0].payload));
     ws.on('close', () => { videoClients.delete(ws); state.videoClients = videoClients.size; });
   } else if (url.pathname === '/ws/control') {
     state.controlClients++;
@@ -192,6 +205,7 @@ function tick() {
     const pkt = packet(f.type, pts, f.payload);
     const send = () => {
       for (const ws of videoClients) {
+        if (VIDEO_SILENT || VIDEO_FREEZE) continue;
         if (ws.readyState !== ws.OPEN) continue;
         if (ws.waitingForKey && !key) continue;
         if (ws.bufferedAmount > 2_000_000) { ws.waitingForKey = true; continue; }

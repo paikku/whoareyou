@@ -10,6 +10,9 @@ export const BASE_URL = process.env.BASE_URL ?? `http://100.99.9.9:${PORT}`;
 const external = !!process.env.BASE_URL; // pointed at a real phone
 
 const teslaUA = 'Mozilla/5.0 (X11; GNU/Linux) AppleWebKit/537.36 (KHTML, like Gecko) Chromium/148.0.7778.178 Chrome/148.0.7778.178 Safari/537.36 Tesla/2026.26';
+// What the car actually sent on 2026-09-10 (Model Y, 2026.26, browser at half width): no Tesla/ token,
+// 804x638 CSS px at DPR 1.96 — see docs/car-tests/model-y-2026.26.md.
+const modelYUA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
 
 const chromiumArgs = [
   // Map the phone address to the fake phone on localhost, and make RFC1918 unreachable.
@@ -40,6 +43,7 @@ export default defineConfig({
   projects: [
     { name: 'tesla-dpr1', use: { ...devices['Desktop Chrome'], deviceScaleFactor: 1, viewport: { width: 1900, height: 1040 }, userAgent: teslaUA, launchOptions: { executablePath: process.env.CHROME_PATH || undefined, args: chromiumArgs } } },
     { name: 'tesla-dpr1.5', use: { ...devices['Desktop Chrome'], deviceScaleFactor: 1.5, viewport: { width: 1266, height: 693 }, userAgent: teslaUA, launchOptions: { executablePath: process.env.CHROME_PATH || undefined, args: chromiumArgs } } },
+    { name: 'model-y-2026.26', use: { ...devices['Desktop Chrome'], deviceScaleFactor: 1.96, viewport: { width: 804, height: 638 }, userAgent: modelYUA, launchOptions: { executablePath: process.env.CHROME_PATH || undefined, args: chromiumArgs } } },
   ],
   webServer: external ? undefined : {
     command: `node ../../tools/fake-phone/server.mjs --port ${PORT} --host 127.0.0.1`,

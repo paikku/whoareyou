@@ -34,6 +34,8 @@ class WebSocketConnection(
     @Volatile var listener: Listener? = null
 
     val queuedFrames: Int get() = queue.size
+    /** "ip:port" of the peer, for status lines; the socket may already be gone. */
+    val remote: String get() = runCatching { "${socket.inetAddress.hostAddress}:${socket.port}" }.getOrDefault("?")
 
     fun start() {
         Thread({ writeLoop() }, "ws-write").apply { isDaemon = true }.start()

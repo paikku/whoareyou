@@ -77,6 +77,7 @@ class StreamSession(
         http = server
         running = true
         event("HTTP 서버 시작 ($process): 0.0.0.0:$port" + if (reports.size > 0) ", 저장된 진단 ${reports.size}건" else "")
+        videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개 가득, 다음 키프레임까지 버림") }
         val live = videoSource
         if (live != null) {
             try {
@@ -192,6 +193,7 @@ class StreamSession(
             "process" to process,
             "port" to port,
             "videoClients" to videoHub.clientCount,
+            "videoClientStats" to videoHub.clientStats(),
             "controlClients" to controlClients.size,
             "controlPackets" to controlPackets,
             "controlErrors" to controlErrors,

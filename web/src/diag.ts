@@ -18,11 +18,23 @@ interface Report {
   env: Record<string, string | boolean | number>;
   api: Record<string, boolean>;
   ws?: { ok: number; avg: number };
-  video?: { packets: number; frames: number; fps: number; latencyMs: number; error: string };
+  /** `state` is the <video> element at the end of the probe (paused/readyState/currentTime/buffered), for stalls. */
+  video?: { packets: number; frames: number; fps: number; latencyMs: number; error: string; state: string; packetTimes: string };
   /** Control group: the car must fail to reach the phone's real (private) addresses. */
   addresses?: Record<string, 'reachable' | 'blocked' | 'skipped'>;
   summary: string;
   log: string;
+}
+
+// Older firmware appended `Tesla/<version>` to the UA; 2026.26 (Model Y) sends a bare
+// `Mozilla/5.0 (X11; Linux x86_64) ... Chrome/148.0.0.0 Safari/537.36`, so the token alone cannot
+// tell the car from a laptop. Label by what the UA does say and let the reader judge.
+function uaLabel(ua: string): string {
+  const fw = /Tesla\/(\S+)/.exec(ua)?.[1];
+  if (fw) return `Tesla ${fw}`;
+  const platform = /\(([^)]*)\)/.exec(ua)?.[1]?.split(';').map((t) => t.trim()).filter(Boolean).slice(0, 2).join(' ') ?? 'unknown';
+  const chrome = /Chrome\/(\d+)/.exec(ua)?.[1];
+  return `${platform}${chrome ? ` Chrome/${chrome}` : ''} (no Tesla/ token)`;
 }
 
 const report: Report = {
@@ -100,35 +112,78 @@ async function wsProbe(): Promise<void> {
 }
 
 // Video: connect once and report decode fps over 5 seconds.
+// Nothing here may wait forever: in the car (Model Y 2026.26) `video.play()` never resolved — the
+// element's play() promise only settles once the first frame is presented — and the page sat on
+// "측정 중…" with nothing saved. Every await is bounded, and whatever we learned goes into the report.
+const VIDEO_WS_OPEN_MS = 5000;
+const VIDEO_PLAY_MS = 3000;
+const VIDEO_MEASURE_MS = 5000;
+const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+/** Resolves to true when `p` settles first, false when the timeout wins. */
+const within = (p: Promise<unknown>, ms: number) => Promise.race([p.then(() => true, () => true), sleep(ms).then(() => false)]);
+
+function videoState(v: HTMLVideoElement): string {
+  const b = v.buffered;
+  const buf = b.length ? `${b.start(0).toFixed(2)}-${b.end(b.length - 1).toFixed(2)}` : 'none';
+  return `paused=${v.paused} ready=${v.readyState} t=${v.currentTime.toFixed(2)} buffered=${buf}${v.error ? ` mediaError=${v.error.code}` : ''}`;
+}
+
 async function videoProbe(): Promise<void> {
   const out = $('video-result');
   const video = document.getElementById('video') as HTMLVideoElement;
+  const empty = (error: string) => ({ packets: 0, frames: 0, fps: 0, latencyMs: 0, error, state: videoState(video), packetTimes: '' });
   if (!mseSupported()) {
     out.textContent = 'MSE 미지원'; out.className = 'bad';
-    report.video = { packets: 0, frames: 0, fps: 0, latencyMs: 0, error: 'MSE unsupported' };
+    report.video = empty('MSE unsupported');
     (window as any).__diag.video = report.video;
     return;
   }
   const r = new MseRenderer(video);
   r.attach(document.body);
   let packets = 0;
+  // When each packet arrived (ms since the probe started), first few + last: "2 packets" from the
+  // phone reads very differently when they came at 0 ms and 8000 ms than at 0 ms and 30 ms.
+  const t0 = performance.now();
+  const firstArrivals: number[] = [];
+  let lastArrival = -1;
   const ws = new WebSocket(wsUrl('/ws/video'));
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') return;
     const p = parseMediaPacket(ev.data);
-    if (p) { packets++; r.push(p); }
+    if (!p) return;
+    packets++;
+    lastArrival = Math.round(performance.now() - t0);
+    if (firstArrivals.length < 5) firstArrivals.push(lastArrival);
+    r.push(p);
   };
   ws.onerror = () => log('video ws error');
-  await new Promise<void>((resolve) => { ws.onopen = () => resolve(); ws.onclose = () => resolve(); });
-  await r.resume();
-  await new Promise((res) => setTimeout(res, 5000));
+  const opened = await within(new Promise<void>((resolve) => { ws.onopen = () => resolve(); ws.onclose = () => resolve(); }), VIDEO_WS_OPEN_MS);
+  let error = '';
+  if (!opened) {
+    error = `video ws: no open/close in ${VIDEO_WS_OPEN_MS}ms`;
+    log(error);
+  } else if (ws.readyState !== WebSocket.OPEN) {
+    error = 'video ws: closed before open';
+    log(error);
+  } else {
+    // play() resolves only once playback actually starts, so a stream that never decodes would
+    // hang here. Give it a moment, then measure regardless — a pending play() is itself the finding.
+    const playing = await within(r.resume(), VIDEO_PLAY_MS);
+    if (!playing) log(`video play() still pending after ${VIDEO_PLAY_MS}ms, measuring anyway`);
+    await sleep(VIDEO_MEASURE_MS);
+  }
   const s = r.stats();
+  const state = videoState(video);
+  const packetTimes = packets ? `${firstArrivals.join(',')}${packets > 5 ? `…last=${lastArrival}` : ''}ms` : '';
   ws.close();
-  out.textContent = `패킷 ${packets}, 디코드 ${s.framesDecoded}프레임, ${s.fps}fps, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, err: ${s.lastError}` : ''}`;
-  out.className = s.framesDecoded > 0 ? 'ok' : 'bad';
-  log(`video probe packets=${packets} frames=${s.framesDecoded} fps=${s.fps}`);
-  report.video = { packets, frames: s.framesDecoded, fps: s.fps, latencyMs: Math.round(s.latencyMs), error: s.lastError };
+  if (!error) error = s.lastError;
+  if (!error && s.framesDecoded === 0) error = packets ? 'no frames decoded (play() never started)' : 'no packets received';
+  else if (!error && s.fps === 0) error = 'stalled: frames stopped before the end of the probe';
+  out.textContent = `패킷 ${packets}, 디코드 ${s.framesDecoded}프레임, ${s.fps}fps, lag ${Math.round(s.latencyMs)}ms${error ? `, err: ${error}` : ''}`;
+  out.className = s.framesDecoded > 0 && !error ? 'ok' : 'bad';
+  log(`video probe packets=${packets} at ${packetTimes || '-'} frames=${s.framesDecoded} fps=${s.fps} ${state}${error ? ` err=${error}` : ''}`);
+  report.video = { packets, frames: s.framesDecoded, fps: s.fps, latencyMs: Math.round(s.latencyMs), error, state, packetTimes };
   (window as any).__diag.video = report.video;
   r.destroy();
 }
@@ -174,7 +229,7 @@ function summarize(): string {
   const blocked = Object.values(report.addresses ?? {}).filter((s) => s === 'blocked').length;
   const reachable = Object.values(report.addresses ?? {}).filter((s) => s === 'reachable').length;
   return [
-    report.firmware ? `Tesla ${report.firmware}` : 'no-Tesla-UA',
+    uaLabel(navigator.userAgent),
     `${innerWidth}x${innerHeight}@${devicePixelRatio}`,
     `mse=${report.api[`MSE ${H264_MIME}`] ? 'O' : 'X'}`,
     w ? `ws ${w.ok}/20 ${w.avg}ms` : 'ws -',
@@ -183,7 +238,10 @@ function summarize(): string {
   ].join(', ');
 }
 
+let submitted = false;
 async function submit(): Promise<void> {
+  if (submitted) return;
+  submitted = true;
   const out = $('report-result');
   report.summary = summarize();
   report.log = logEl.textContent ?? '';
@@ -205,10 +263,21 @@ async function submit(): Promise<void> {
 }
 
 (window as any).__diag = { done: false };
+// Worst case of the probes above: WS 20×3s + video 5+3+5s + addresses 4×4s ≈ 90s. Past that,
+// something is wedged; save what we have rather than sit on "측정 중…" forever.
+const WATCHDOG_MS = 120_000;
+async function step(name: string, fn: () => Promise<void>): Promise<void> {
+  try { await fn(); } catch (e) { log(`${name} failed: ${String(e)}`); }
+}
 (async () => {
-  await wsProbe();
-  await videoProbe();
-  await addressProbe();
+  const watchdog = setTimeout(() => {
+    log(`watchdog: ${WATCHDOG_MS / 1000}초 안에 안 끝남, 지금까지 결과 저장`);
+    submit().then(() => { (window as any).__diag.done = true; });
+  }, WATCHDOG_MS);
+  await step('ws probe', wsProbe);
+  await step('video probe', videoProbe);
+  await step('address probe', addressProbe);
+  clearTimeout(watchdog);
   await submit();
   (window as any).__diag.done = true;
   log('done');
