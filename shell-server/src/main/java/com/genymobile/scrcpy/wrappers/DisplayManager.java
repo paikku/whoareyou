@@ -173,6 +173,26 @@ public final class DisplayManager {
         return (VirtualDisplay) method.invoke(null, name, width, height, displayIdToMirror, surface);
     }
 
+    /**
+     * android.view.Display.getState() of any display (STATE_ON = 2, STATE_OFF = 1, …) through a DisplayManager
+     * built on the fake context, or -1 when the display is unknown. The display controller's real state — what
+     * PowerManager's interactive flag does not tell (it flips the instant sleep is requested, long before the
+     * panel and its backlight follow).
+     */
+    public int getDisplayState(int displayId) {
+        try {
+            Constructor<android.hardware.display.DisplayManager> ctor = android.hardware.display.DisplayManager.class.getDeclaredConstructor(
+                    Context.class);
+            ctor.setAccessible(true);
+            android.hardware.display.DisplayManager dm = ctor.newInstance(FakeContext.get());
+            android.view.Display d = dm.getDisplay(displayId);
+            return d == null ? -1 : d.getState();
+        } catch (Throwable t) {
+            Ln.w("getDisplayState(" + displayId + ") failed: " + t);
+            return -1;
+        }
+    }
+
     public VirtualDisplay createNewVirtualDisplay(String name, int width, int height, int dpi, Surface surface, int flags) throws Exception {
         Constructor<android.hardware.display.DisplayManager> ctor = android.hardware.display.DisplayManager.class.getDeclaredConstructor(
                 Context.class);

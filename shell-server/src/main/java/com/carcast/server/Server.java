@@ -157,6 +157,8 @@ public final class Server {
             // is frozen until PhoneWatch recovers it (or 📵 / /api/screen?on=0 does).
             extra.put("asleep", watch.asleep());
             extra.put("interactive", !screen.isAsleep()); // PowerManager's view of display 0, raw
+            extra.put("mainDisplayState", screen.mainDisplayState()); // the display controller's: 2 = ON, 1 = OFF
+            extra.put("autoPausedMs", Math.max(0, watch.autoPausedUntil - System.currentTimeMillis()));
             extra.put("keptAwake", screen.isKeptAwake());
             extra.put("recoveries", watch.recoveries);
             extra.put("lastRecovery", watch.lastRecovery);
@@ -232,6 +234,13 @@ public final class Server {
         private volatile boolean lastRecoveryFailed;
         /** Panel the driver asked for with the press that started the last recovery, kept for a retry. */
         private volatile boolean lastIntentPanelOn;
+        /** Times of the last few sleep edges: several presses in quick succession mean "give me my phone, now". */
+        private final java.util.ArrayDeque<Long> recentEdges = new java.util.ArrayDeque<>();
+        private static final int RAPID_PRESSES = 3;
+        private static final long RAPID_WINDOW_MS = 10_000;
+        private static final long AUTO_PAUSE_MS = 30_000;
+        /** Until when automatic recovery is suspended after rapid presses (the panel is left lit, the car may freeze). */
+        volatile long autoPausedUntil;
         volatile int recoveries;
         /** The last recovery's log line, in /api/status so a session report from the car carries it. */
         volatile String lastRecovery = "";
@@ -273,12 +282,14 @@ public final class Server {
                     .append(", VD state ").append(source != null ? source.displayState() : -1).append("]: ");
             screen.slept(); // whoever wakes the device from here, the display controller owns the panel again
             if (panelOn) {
-                // Lighting the panel needs the display controller's own off→on pass (see ScreenPower.cycleSleepWake);
-                // a NORMAL request underneath it leaves the panel dark.
-                did.append(screen.cycleSleepWake() ? "재우고 깨움 → 패널 켜짐" : "재우고 깨우기 실패");
+                // Lighting the panel needs the display controller's own off→on pass (see ScreenPower.lightPanel);
+                // a NORMAL request underneath it leaves the backlight at 0.
+                did.append(screen.lightPanel() ? "패널 OFF 확인 후 깨움 → 패널 ON" : "패널이 ON으로 안 돌아옴");
             } else {
                 did.append(screen.wake() ? "폰 깨움" : "폰이 안 깨어남");
-                // Panel first: the driver is looking at the phone; the display work below can take seconds.
+                // Let the display controller finish its own wake pass first, or its ON would land after our OFF
+                // and light the panel we just darkened.
+                did.append(screen.waitMainDisplay(android.view.Display.STATE_ON, 1_500) ? ", 패널 ON 확인" : ", 패널 ON 미확인");
                 did.append(", 패널 끄기: ").append(screen.setMainScreen(false));
             }
             if (source != null) {
@@ -336,7 +347,22 @@ public final class Server {
                     boolean asleep = asleep();
                     if (asleep && !wasAsleep) {
                         wasAsleep = true;
-                        if (!lastRecoveryFailed || now - lastRecoverAt >= RECOVER_RETRY_MS) {
+                        recentEdges.addLast(now);
+                        while (!recentEdges.isEmpty() && now - recentEdges.peekFirst() > RAPID_WINDOW_MS) {
+                            recentEdges.pollFirst();
+                        }
+                        if (now < autoPausedUntil) {
+                            // Paused after rapid presses: the phone is the driver's; nothing until the pause ends.
+                        } else if (recentEdges.size() >= RAPID_PRESSES) {
+                            // Escape hatch: three presses within ten seconds — whatever our bookkeeping says, light the
+                            // panel, keep the stream, and stop reacting for a while so the phone behaves like a phone.
+                            recentEdges.clear();
+                            autoPausedUntil = now + AUTO_PAUSE_MS;
+                            Log.INSTANCE.i(TAG, "전원 버튼 연타 — 폰 화면을 켜고 " + AUTO_PAUSE_MS / 1000 + "초 동안 자동 복구를 멈춥니다 (차에서는 📵로 복구)");
+                            lastIntentPanelOn = true;
+                            recover("연타 탈출", true);
+                            wasAsleep = asleep();
+                        } else if (!lastRecoveryFailed || now - lastRecoverAt >= RECOVER_RETRY_MS) {
                             // The panel we were holding dark means this press was "give me my phone"; a lit panel means "darken it".
                             boolean wantPanelOn = screen.isForcedOff();
                             lastIntentPanelOn = wantPanelOn;
@@ -351,6 +377,8 @@ public final class Server {
                         }
                     } else if (!asleep) {
                         wasAsleep = false;
+                    } else if (now < autoPausedUntil) {
+                        // paused: leave it asleep
                     } else if (lastRecoveryFailed && now - lastRecoverAt >= RECOVER_RETRY_MS) {
                         // Still asleep after a failed recovery: try again, keeping the intent of the original press.
                         recover("재시도", lastIntentPanelOn);

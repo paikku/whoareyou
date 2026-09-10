@@ -109,30 +109,70 @@ final class ScreenPower {
     /** Same for KEYCODE_SLEEP. */
     volatile java.util.function.BooleanSupplier sleepKey;
 
+    /** Waits up to [ms] for display 0 to report [state]; true when it did. */
+    boolean waitMainDisplay(int state, long ms) {
+        long until = System.currentTimeMillis() + ms;
+        while (mainDisplayState() != state) {
+            if (System.currentTimeMillis() >= until) {
+                return false;
+            }
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** android.view.Display state of the phone's own panel (2 = ON, 1 = OFF), as the display controller has it. */
+    int mainDisplayState() {
+        try {
+            return ServiceManager.getDisplayManager().getDisplayState(0);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     /**
-     * Puts the device to sleep and wakes it again — the OFF→ON pass of the display controller that lights the
-     * panel for real. Needed when the panel is dark from our SurfaceControl override: the controller still
-     * thinks the panel is on, so neither the power button nor a plain NORMAL request lights it (seen on the
-     * S26U: "패널 켜기: true (7 ms)" and a panel that stayed dark; two physical presses always worked, and
-     * two presses is exactly sleep + wake). Returns true when the device is interactive at the end.
+     * Lights the panel for real: make the display controller run its own OFF→ON pass, which is the only thing
+     * that restores the backlight after our SurfaceControl override. What went wrong before (S26U, session
+     * reports #19/#21): PowerManager flips to "asleep" the instant the button is pressed, the watch woke the
+     * device within ~50 ms, the controller never got as far as turning the panel off, so on the wake it had
+     * nothing to turn on — a NORMAL request lights the panel but leaves the backlight at 0, and the phone stayed
+     * dark. Two physical presses always worked because the second came after the controller had finished.
+     * So: sleep (if not already), WAIT until display 0 is actually OFF, then wake and wait until it is ON.
+     * Returns true when the panel reports ON at the end.
      */
-    boolean cycleSleepWake() {
+    boolean lightPanel() {
         long t0 = System.currentTimeMillis();
         try {
-            forcedOff = false; // the controller will own the panel after this
-            if (interactive()) {
-                java.util.function.BooleanSupplier s = sleepKey;
-                if (s == null || !s.getAsBoolean()) {
-                    Command.exec("input", "keyevent", "KEYCODE_SLEEP");
+            forcedOff = false; // the controller owns the panel from here
+            if (mainDisplayState() != android.view.Display.STATE_OFF) {
+                if (interactive()) {
+                    java.util.function.BooleanSupplier s = sleepKey;
+                    if (s == null || !s.getAsBoolean()) {
+                        Command.exec("input", "keyevent", "KEYCODE_SLEEP");
+                    }
                 }
-                for (int i = 0; i < 30 && interactive(); i++) {
-                    Thread.sleep(50);
+                for (int i = 0; i < 100 && mainDisplayState() != android.view.Display.STATE_OFF; i++) {
+                    Thread.sleep(20);
                 }
-                Ln.i("sleep for panel cycle: interactive=" + interactive() + " after " + (System.currentTimeMillis() - t0) + " ms");
+                Ln.i("panel cycle: display0 state " + mainDisplayState() + " after " + (System.currentTimeMillis() - t0) + " ms");
             }
-            return wake();
+            boolean woke = wake();
+            for (int i = 0; i < 100 && mainDisplayState() != android.view.Display.STATE_ON; i++) {
+                Thread.sleep(20);
+            }
+            int st = mainDisplayState();
+            if (st != android.view.Display.STATE_ON) {
+                // Last resort: the controller did not bring it up; at least lift the SurfaceControl override.
+                setPhysicalDisplaysPower(true);
+            }
+            Ln.i("panel cycle done: woke=" + woke + " display0 state " + st + " in " + (System.currentTimeMillis() - t0) + " ms");
+            return st == android.view.Display.STATE_ON;
         } catch (Throwable t) {
-            Ln.e("sleep/wake cycle failed: " + t);
+            Ln.e("panel cycle failed: " + t);
             return false;
         }
     }
@@ -146,7 +186,7 @@ final class ScreenPower {
         } catch (Throwable t) {
             dpc = "dumpsys failed: " + t;
         }
-        return "interactive=" + interactive() + " forcedOff=" + forcedOff + " " + dpc;
+        return "interactive=" + interactive() + " display0=" + mainDisplayState() + " forcedOff=" + forcedOff + " " + dpc;
     }
 
     /**
