@@ -192,7 +192,7 @@ setInterval(async () => {
     const asleep = st.asleep === true;
     if (asleep !== phoneAsleep) {
       phoneAsleep = asleep;
-      note(asleep ? 'phone asleep (power button / timeout)' : 'phone awake');
+      note(`${asleep ? 'phone asleep (power button / timeout)' : 'phone awake'} interactive=${st.interactive} displayState=${st.displayState} screenOn=${st.screenOn}`);
       if (asleep) notice('폰이 잠들었습니다 — 깨워서 스트림을 잇는 중 (안 돌아오면 📵)', 8000);
     }
   } catch { /* the phone is away; the video socket's own reconnect covers it */ }

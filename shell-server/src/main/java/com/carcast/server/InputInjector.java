@@ -178,10 +178,19 @@ final class InputInjector {
      * ~1 s of spawning a JVM for it. Used by the power-button recovery, where every 100 ms shows.
      */
     boolean wakeUp() {
+        return pressOnDefaultDisplay(KeyEvent.KEYCODE_WAKEUP);
+    }
+
+    /** KEYCODE_SLEEP: what the power button does on an awake phone, without the button. */
+    boolean sleep() {
+        return pressOnDefaultDisplay(KeyEvent.KEYCODE_SLEEP);
+    }
+
+    private boolean pressOnDefaultDisplay(int keycode) {
         long now = SystemClock.uptimeMillis();
         boolean ok = true;
         for (int action : new int[] {KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP}) {
-            KeyEvent e = new KeyEvent(now, now, action, KeyEvent.KEYCODE_WAKEUP, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
+            KeyEvent e = new KeyEvent(now, now, action, keycode, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
             ok &= ServiceManager.getInputManager().injectInputEvent(e, InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
         }
         return ok;

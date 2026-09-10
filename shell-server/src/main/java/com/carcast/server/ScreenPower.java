@@ -106,6 +106,48 @@ final class ScreenPower {
 
     /** Fast wake path (in-process KEYCODE_WAKEUP injection), set by the server when an input injector exists. */
     volatile java.util.function.BooleanSupplier wakeKey;
+    /** Same for KEYCODE_SLEEP. */
+    volatile java.util.function.BooleanSupplier sleepKey;
+
+    /**
+     * Puts the device to sleep and wakes it again — the OFF→ON pass of the display controller that lights the
+     * panel for real. Needed when the panel is dark from our SurfaceControl override: the controller still
+     * thinks the panel is on, so neither the power button nor a plain NORMAL request lights it (seen on the
+     * S26U: "패널 켜기: true (7 ms)" and a panel that stayed dark; two physical presses always worked, and
+     * two presses is exactly sleep + wake). Returns true when the device is interactive at the end.
+     */
+    boolean cycleSleepWake() {
+        long t0 = System.currentTimeMillis();
+        try {
+            forcedOff = false; // the controller will own the panel after this
+            if (interactive()) {
+                java.util.function.BooleanSupplier s = sleepKey;
+                if (s == null || !s.getAsBoolean()) {
+                    Command.exec("input", "keyevent", "KEYCODE_SLEEP");
+                }
+                for (int i = 0; i < 30 && interactive(); i++) {
+                    Thread.sleep(50);
+                }
+                Ln.i("sleep for panel cycle: interactive=" + interactive() + " after " + (System.currentTimeMillis() - t0) + " ms");
+            }
+            return wake();
+        } catch (Throwable t) {
+            Ln.e("sleep/wake cycle failed: " + t);
+            return false;
+        }
+    }
+
+    /** One line of what PowerManager and the display controller think, for the recovery log. */
+    String describe() {
+        String dpc = "";
+        try {
+            String out = Command.execReadOutput("sh", "-c", "dumpsys display 2>/dev/null | grep -E 'mScreenState=|mPowerState=|mScreenBrightness=|mWakefulness=' | head -4");
+            dpc = out.replace('\n', ' ').replaceAll("\\s+", " ").trim();
+        } catch (Throwable t) {
+            dpc = "dumpsys failed: " + t;
+        }
+        return "interactive=" + interactive() + " forcedOff=" + forcedOff + " " + dpc;
+    }
 
     /**
      * While a car is connected the phone must not time out and sleep (which stops the virtual display too):

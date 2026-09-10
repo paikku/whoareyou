@@ -113,6 +113,11 @@ public final class DisplayVideoSource implements VideoSource {
         return display.isAsleep();
     }
 
+    /** Raw android.view.Display state of the virtual display (2 = ON), -1 without a display. */
+    public int displayState() {
+        return display.state();
+    }
+
     /**
      * Cheaper than recreating: ask DisplayManager to power this display on (Android 15+ requestDisplayPower —
      * the API scrcpy keeps disabled for the *phone* panel, but for a sleeping virtual display it is the one

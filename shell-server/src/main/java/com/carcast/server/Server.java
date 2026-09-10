@@ -120,6 +120,7 @@ public final class Server {
         step(injector == null ? "no input injector" : "input injector ready");
         if (injector != null) {
             screen.wakeKey = injector::wakeUp;
+            screen.sleepKey = injector::sleep;
         }
         try {
             if (!"false".equals(raw.get("stay_awake"))) {
@@ -155,6 +156,7 @@ public final class Server {
             // asleep: the phone went to sleep (power button / timeout) and the virtual display with it — the car
             // is frozen until PhoneWatch recovers it (or 📵 / /api/screen?on=0 does).
             extra.put("asleep", watch.asleep());
+            extra.put("interactive", !screen.isAsleep()); // PowerManager's view of display 0, raw
             extra.put("keptAwake", screen.isKeptAwake());
             extra.put("recoveries", watch.recoveries);
             extra.put("lastRecovery", watch.lastRecovery);
@@ -263,10 +265,17 @@ public final class Server {
             lastRecoverAt = t0;
             recoveries++;
             screen.slept();
-            StringBuilder did = new StringBuilder(why).append(": ");
-            did.append(screen.wake() ? "폰 깨움" : "폰이 안 깨어남");
-            // Panel first: the driver is looking at the phone; the display work below can take seconds.
-            did.append(panelOn ? ", 패널 켜기: " : ", 패널 끄기: ").append(screen.setMainScreen(panelOn));
+            StringBuilder did = new StringBuilder(why).append(" [before: ").append(screen.describe())
+                    .append(", VD state ").append(source != null ? source.displayState() : -1).append("]: ");
+            if (panelOn) {
+                // Lighting the panel needs the display controller's own off→on pass (see ScreenPower.cycleSleepWake);
+                // a NORMAL request underneath it leaves the panel dark.
+                did.append(screen.cycleSleepWake() ? "재우고 깨움 → 패널 켜짐" : "재우고 깨우기 실패");
+            } else {
+                did.append(screen.wake() ? "폰 깨움" : "폰이 안 깨어남");
+                // Panel first: the driver is looking at the phone; the display work below can take seconds.
+                did.append(", 패널 끄기: ").append(screen.setMainScreen(false));
+            }
             if (source != null) {
                 // Give the display group a moment to follow the device before deciding it did not.
                 for (int i = 0; i < 5 && source.displayAsleep(); i++) {
@@ -288,6 +297,7 @@ public final class Server {
                     }
                 }
             }
+            did.append(" [after: ").append(screen.describe()).append(", VD state ").append(source != null ? source.displayState() : -1).append("]");
             did.append(" (").append(System.currentTimeMillis() - t0).append(" ms)");
             Log.INSTANCE.i(TAG, did.toString());
             lastRecovery = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date()) + " " + did;
