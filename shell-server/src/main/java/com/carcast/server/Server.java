@@ -142,11 +142,16 @@ public final class Server {
             t.start();
         }
         step("starting http on port " + opts.getPort());
+        final KeepAwake keepAwake = new KeepAwake(screen);
         ServerMain.INSTANCE.run(opts, () -> {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("uid", uid);
             extra.put("build", BuildConfig.SERVER_BUILD_ID);
             extra.put("screenOn", screen.isMainScreenOn());
+            // asleep: the phone went to sleep (power button / timeout) and the virtual display with it — the car
+            // is frozen until the phone wakes; 📵 (/api/screen?on=0) wakes it and darkens only the panel.
+            extra.put("asleep", screen.isAsleep());
+            extra.put("keptAwake", screen.isKeptAwake());
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());
@@ -168,13 +173,75 @@ public final class Server {
             if ("POST".equals(method)) {
                 boolean on = !"0".equals(query.get("on")) && !"false".equals(query.get("on"));
                 boolean ok = screen.setMainScreen(on);
-                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + "}";
+                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + ",\"asleep\":" + screen.isAsleep() + "}";
             }
-            return "{\"screenOn\":" + screen.isMainScreenOn() + "}";
+            return "{\"screenOn\":" + screen.isMainScreenOn() + ",\"asleep\":" + screen.isAsleep() + "}";
         }, () -> {
+            keepAwake.stop();
             screen.restore();
             return kotlin.Unit.INSTANCE;
+        }, n -> {
+            keepAwake.clients(n);
+            return kotlin.Unit.INSTANCE;
         });
+    }
+
+    /**
+     * Keeps the phone from sleeping while a car is streaming: the screen timeout goes out when the first video
+     * client attaches and comes back {@link #RELEASE_GRACE_MS} after the last one leaves (the car reconnects
+     * often; do not flap the setting), and PowerManager is poked every {@link ScreenPower#USER_ACTIVITY_INTERVAL_MS}
+     * meanwhile. A phone that sleeps takes the virtual display with it, which is what "차가 멈춤" was when the
+     * screen timed out or the power button was pressed instead of 📵.
+     */
+    private static final class KeepAwake {
+        private static final long RELEASE_GRACE_MS = 15_000;
+        private final ScreenPower screen;
+        private final Thread thread;
+        private volatile int clients;
+        private volatile long lastClientGoneAt;
+        private volatile boolean stopped;
+
+        KeepAwake(ScreenPower screen) {
+            this.screen = screen;
+            thread = new Thread(this::loop, "keep-awake");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        void clients(int n) {
+            if (n == 0 && clients > 0) {
+                lastClientGoneAt = System.currentTimeMillis();
+            }
+            clients = n;
+            if (n > 0) {
+                screen.keepAwake(true);
+            }
+        }
+
+        void stop() {
+            stopped = true;
+            thread.interrupt();
+        }
+
+        private void loop() {
+            long lastPoke = 0;
+            while (!stopped) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                long now = System.currentTimeMillis();
+                if (clients > 0) {
+                    if (now - lastPoke >= ScreenPower.USER_ACTIVITY_INTERVAL_MS) {
+                        lastPoke = now;
+                        screen.userActivity();
+                    }
+                } else if (screen.isKeptAwake() && now - lastClientGoneAt >= RELEASE_GRACE_MS) {
+                    screen.keepAwake(false);
+                }
+            }
+        }
     }
 
     /** "1280x720/160" → {width, height, dpi}; dpi defaults to 160. */

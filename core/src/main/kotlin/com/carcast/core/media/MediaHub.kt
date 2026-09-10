@@ -26,6 +26,8 @@ open class MediaHub {
 
     /** Called after a client attached (the live source answers with a keyframe request). */
     @Volatile var onClientAttached: () -> Unit = {}
+    /** Called with the new client count after every attach and detach (the shell server keeps the phone awake while it is > 0). */
+    @Volatile var onClientCountChanged: (Int) -> Unit = {}
     /** Called the first time a client's queue is full and a frame is dropped (once per client). */
     @Volatile var onClientStalled: (remote: String, queued: Int) -> Unit = { _, _ -> }
 
@@ -45,12 +47,13 @@ open class MediaHub {
         conn.listener = object : WebSocketConnection.Listener {
             override fun onBinary(conn: WebSocketConnection, data: ByteArray) {}
             override fun onText(conn: WebSocketConnection, text: String) {}
-            override fun onClose(conn: WebSocketConnection) { clients.remove(c) }
+            override fun onClose(conn: WebSocketConnection) { if (clients.remove(c)) onClientCountChanged(clients.size) }
         }
         initSegment?.let { conn.send(it) }
         // A late joiner gets the last keyframe immediately so the picture appears without waiting for the GOP.
         lastKey?.let { if (conn.offer(it)) { c.waitingForKey = false; c.sent++ } }
         onClientAttached()
+        onClientCountChanged(clients.size)
     }
 
     open fun onInit(packet: ByteArray) {
@@ -76,6 +79,7 @@ open class MediaHub {
     fun closeAll() {
         for (c in clients) c.conn.close()
         clients.clear()
+        onClientCountChanged(0)
     }
 
     companion object {

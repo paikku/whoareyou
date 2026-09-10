@@ -74,8 +74,11 @@ let wdPackets = 0;
 let wdFrames = 0;
 let wdStalledTicks = 0;
 setInterval(() => {
-  if (!started || !videoWs.open) { wdStalledTicks = 0; return; }
   const s = renderer.stats();
+  // A hidden page (other window in front, browser minimised, the car showing the camera) presents no frames at
+  // all — requestVideoFrameCallback does not run — while packets keep coming. That is not a stall; it looked
+  // like one on the laptop ("5 packets, 0 frames, lag 0ms" the moment the window was switched away).
+  if (!started || !videoWs.open || document.hidden) { wdStalledTicks = 0; wdPackets = packets; wdFrames = s.framesDecoded; return; }
   const dp = packets - wdPackets;
   const df = s.framesDecoded - wdFrames;
   wdPackets = packets; wdFrames = s.framesDecoded;
@@ -83,10 +86,11 @@ setInterval(() => {
   if (wdStalledTicks >= 4) {
     wdStalledTicks = 0;
     recoveries++;
-    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → video ws 재접속`);
+    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}; ${renderer.debug?.() ?? ''}) → video ws 재접속`);
     videoWs.restart();
   }
 }, 500);
+document.addEventListener('visibilitychange', () => note(document.hidden ? 'page hidden' : 'page visible'));
 
 // The car browser blocks autoplay: the first gesture unlocks video (and later audio).
 let started = false;
@@ -163,6 +167,7 @@ $('btn-app').addEventListener('click', async () => {
 // the phone's display and the car is left streaming an empty display (black, encoder idle). The phone watches
 // for that (/api/status.appOnPhone); poll it so the stats line says "폰이 가져감" instead of looking broken.
 let appOnPhone = false;
+let phoneAsleep = false;
 let appEpoch = 0;
 setInterval(async () => {
   if (document.hidden) return;
@@ -176,15 +181,26 @@ setInterval(async () => {
       note(now ? `phone took ${st.app ?? 'the app'} (display ${st.appDisplay})` : 'app back on the car display');
       if (now) notice('폰이 앱을 가져갔습니다 — ▶로 다시 띄우기', 8000);
     }
+    // The phone went to sleep (power button or timeout): the virtual display sleeps with it and the picture
+    // freezes. 📵 wakes it and turns only the panel off — the state the driver wanted in the first place.
+    const asleep = st.asleep === true;
+    if (asleep !== phoneAsleep) {
+      phoneAsleep = asleep;
+      note(asleep ? 'phone asleep (power button / timeout)' : 'phone awake');
+      if (asleep) notice('폰이 잠들어 화면이 멈췄습니다 — 📵를 누르면 폰을 깨우고 화면만 끕니다', 8000);
+    }
   } catch { /* the phone is away; the video socket's own reconnect covers it */ }
 }, 5000);
 
 // Phone screen off/on (M7): only the phone's own display; the virtual display and audio keep running.
+// If the phone is asleep (power button), "off" wakes it first and darkens the panel — never the power button.
 $('btn-screen').addEventListener('click', async () => {
   try {
     const cur = await (await fetch('/api/screen')).json();
-    const r = await (await fetch(`/api/screen?on=${cur.screenOn ? 0 : 1}`, { method: 'POST' })).json();
+    const off = cur.asleep ? 0 : cur.screenOn ? 0 : 1;
+    const r = await (await fetch(`/api/screen?on=${off}`, { method: 'POST' })).json();
     if (!r.ok) window.alert('폰 화면 전원 변경 실패');
+    else { phoneAsleep = false; notice(cur.asleep ? '폰을 깨우고 화면만 껐습니다' : off === 0 ? '폰 화면 끔 (스트림은 계속)' : '폰 화면 켬'); }
   } catch (e) { window.alert(`요청 실패: ${String(e)}`); }
 });
 
@@ -201,6 +217,7 @@ const stats = () => ({
   idleMs: lastPacketAt ? Date.now() - lastPacketAt : -1,
   recoveries,
   appOnPhone,
+  phoneAsleep,
   videoWs: { ...videoWs.stats, open: videoWs.open },
   controlWs: { ...control.stats, open: control.open },
   started,
@@ -214,6 +231,7 @@ setInterval(() => {
     s.recoveries ? `복구${s.recoveries}` : '',
     s.droppedFrames ? `드롭${s.droppedFrames}` : '',
     s.appOnPhone ? '📱폰이 앱을 가져감' : '',
+    s.phoneAsleep ? '😴폰 잠듦 — 📵' : '',
     s.idleMs > 1500 ? `폰 무응답 ${Math.round(s.idleMs / 1000)}s` : '',
     s.lastError ? `err ${s.lastError}` : '',
   ].filter(Boolean).join(' ');

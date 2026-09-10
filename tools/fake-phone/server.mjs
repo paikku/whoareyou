@@ -128,7 +128,7 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/screen') {
     if (req.method === 'POST') state.screenOn = url.searchParams.get('on') !== '0';
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, screenOn: state.screenOn ?? true }));
+    res.end(JSON.stringify({ ok: true, screenOn: state.screenOn ?? true, asleep: false }));
     return;
   }
   if (url.pathname === '/api/reports') {

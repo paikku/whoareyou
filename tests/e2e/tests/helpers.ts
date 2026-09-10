@@ -11,6 +11,7 @@ export interface ClientStats {
   idleMs: number;
   recoveries: number;
   appOnPhone: boolean;
+  phoneAsleep: boolean;
   videoWs: { connects: number; failures: number; open: boolean };
   controlWs: { connects: number; failures: number; open: boolean };
   started: boolean;

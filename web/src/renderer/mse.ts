@@ -57,6 +57,7 @@ export class MseRenderer implements Renderer {
   private fpsWindow: number[] = [];
   private rvfcHandle = 0;
   private trimTimer = 0;
+  private tickTimer = 0;
   private lastPtsS = -1;        // pts of the newest frame pushed, in media-timeline seconds
   private lastFrameAtMs = 0;    // performance.now() when it arrived
 
@@ -68,6 +69,19 @@ export class MseRenderer implements Renderer {
     this.open();
     this.startFrameCounter();
     this.trimTimer = window.setInterval(() => this.trim(), 2000);
+    // catchUp also on a clock, not only on appends: when the phone's screen goes static no append comes, and a
+    // 1.1x catch-up left running would drag the playhead past every frame that arrives afterwards.
+    this.tickTimer = window.setInterval(() => this.catchUp(), 100);
+  }
+
+  /** One line of pipeline state for the session log, so a stall report says what the element was doing. */
+  debug(): string {
+    const v = this.video;
+    const b = v.buffered;
+    const ranges = [];
+    for (let i = 0; i < b.length; i++) ranges.push(`${b.start(i).toFixed(2)}-${b.end(i).toFixed(2)}`);
+    return `t=${v.currentTime.toFixed(2)} pts=${this.lastPtsS.toFixed(2)} rate=${v.playbackRate} paused=${v.paused} ready=${v.readyState}` +
+      ` buf=[${ranges.join(',')}] q=${this.queue.length} key=${!this.waitingForKey} hidden=${document.hidden}`;
   }
 
   private open(): void {
@@ -154,12 +168,16 @@ export class MseRenderer implements Renderer {
     const lag = this.lastPtsS - v.currentTime;
     this.st.latencyMs = Math.max(0, lag * 1000);
     if (v.paused) return; // resume() will start playback on the first gesture
+    const fresh = performance.now() - this.lastFrameAtMs < 500; // frames are flowing right now
     if (lag > MAX_LAG_S) {
       v.currentTime = Math.max(v.buffered.start(v.buffered.length - 1), this.lastPtsS - 0.05);
-    } else if (lag < -0.05 && performance.now() - this.lastFrameAtMs < 500) {
+      v.playbackRate = 1;
+    } else if (lag < -0.01 && fresh) {
+      // A frame just arrived behind the playhead (clock drift, catch-up overshoot): show it.
       v.currentTime = this.lastPtsS;
-    } else if (lag > MAX_LAG_S / 2) {
-      v.playbackRate = 1.1;
+      v.playbackRate = 1;
+    } else if (lag > MAX_LAG_S / 2 && fresh) {
+      v.playbackRate = 1.1; // only while frames keep coming; the tick resets it once they stop
     } else if (v.playbackRate !== 1) {
       v.playbackRate = 1;
     }
@@ -227,6 +245,7 @@ export class MseRenderer implements Renderer {
 
   destroy(): void {
     window.clearInterval(this.trimTimer);
+    window.clearInterval(this.tickTimer);
     this.close();
     this.video.removeAttribute('src');
     this.video.load();

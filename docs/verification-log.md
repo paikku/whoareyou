@@ -156,6 +156,8 @@
 | M6 | 소리 | ⏳ 미구현 — 소리는 폰에서 남 (오디오 캡처는 M6에서) |
 | M7 | 📵 폰 화면만 OFF | ❌ "폰 화면 전환 실패": `requestDisplayPower(0,false)`가 실패. scrcpy 4.1은 이 API를 `USE_ANDROID_15_DISPLAY_POWER=false`로 꺼 두고(#5530) `SurfaceControl.setDisplayPowerMode`를 쓴다 — M0에서 된 것은 그 경로. 같은 경로로 교체(다음 빌드), 폰 ⏳ |
 | — | 노트북 `/diag` 보고 | `no-Tesla-UA, 1108x632@1.25, mse=O, ws 20/20 35ms, video 61f 0fps lag 3224ms` (진단 페이지 자체 측정; 본 화면은 영상 재생됨) |
+| M7-b | 폰이 잠들면(전원 버튼·화면 시간 초과) 차가 멈춤 | ⏳ 사용자 보고(2026-09-10, 노트북): "폰 화면 끄니까 멈추고 검게 꺼짐". 설계상 VD는 폰의 전원 상태를 따라가므로 전원 버튼은 전체 정지(M0 확인). 대응: 차가 붙어 있는 동안 `screen_off_timeout`을 12시간으로(15초 유예 후 복구) + 30초마다 userActivity, `/api/status.asleep`로 잠듦을 표시하고 📵가 `KEYCODE_WAKEUP`으로 깨운 뒤 패널만 끔. 폰 ⏳ (📵 자체가 되는지 = M7, 그리고 잠든 뒤 📵로 복구되는지) |
+| — | 노트북 세션 #16(07:41): 81초에 `decode stall (5 packets, 0 frames in 2s, lag 0ms)` | 해석: `lag 0` = 재생 헤드가 최신 프레임과 같거나 앞. 패킷은 오는데 프레임 0이면서 lag 0인 상태는 **창을 가렸을 때**(requestVideoFrameCallback이 안 돎)와 일치 — 감시기 오판으로 재접속 1회. 수정: 페이지가 hidden이면 감시기 정지, stall 이벤트에 렌더러 상태 한 줄(`t= pts= rate= paused= …`) 첨부, 1.1x 따라잡기가 프레임이 끊긴 뒤에도 남던 잠재 결함도 정리(100ms 틱에서 리셋). 다음 보고서의 stall 줄로 확정 |
 | M4-b | 폰에서 쓰는 앱을 차에서 띄울 때 / 차에서 도는 앱을 폰에서 열 때 | ⏳ 사용자 보고(2026-09-10): 폰에서 앱을 쓰는 중이면 차 쪽이 "충돌", 폰에서 닫으면 정상. 코드 분석 결과 원인은 안드로이드의 task 재사용 — `am start --display N`이 폰의 task를 차로 **옮기고**, 폰 런처가 다시 폰으로 옮긴다(핑퐁). 대응: `/api/app`가 `am stack list`로 위치를 보고 다른 디스플레이면 `am start -S`로 재실행(기본 `restart=auto`), 워처가 `appDisplay`/`appOnPhone`을 상태에 실어 차 화면이 "폰이 가져감"을 표시. 폰 검증 절차: testing-guide.md §B "M4-b". 폰 ⏳ (특히 One UI 8의 `am stack list` 출력이 파서와 맞는지) |
 
 ### 3.7 아직 B층에서 안 한 것

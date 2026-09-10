@@ -66,6 +66,9 @@ class StreamSession(
     /** Receives parsed car → phone control messages (touch/key/text); the shell process injects them. */
     var controlHandler: ((ControlMessage) -> Unit)? = null
 
+    /** Number of `/ws/video` clients after each attach/detach; the shell server keeps the phone awake while it is > 0. */
+    var onVideoClients: ((Int) -> Unit)? = null
+
     /** Extra /api endpoints from the host process (e.g. /api/screen); return JSON or null for "not mine". */
     var extraApi: ((method: String, path: String, query: Map<String, String>) -> String?)? = null
 
@@ -84,6 +87,7 @@ class StreamSession(
         running = true
         event("HTTP 서버 시작 ($process): 0.0.0.0:$port" + if (reports.size > 0) ", 저장된 진단 ${reports.size}건" else "")
         videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개 가득, 다음 키프레임까지 버림") }
+        videoHub.onClientCountChanged = { n -> onVideoClients?.invoke(n) }
         val live = videoSource
         if (live != null) {
             try {

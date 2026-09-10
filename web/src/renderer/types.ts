@@ -16,5 +16,7 @@ export interface Renderer {
   resume(): Promise<void>;
   reset(): void;
   stats(): RendererStats;
+  /** One line of pipeline state for the session log (what the element was doing when a stall was declared). */
+  debug?(): string;
   destroy(): void;
 }
