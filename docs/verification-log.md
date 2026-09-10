@@ -15,12 +15,12 @@
 | # | 가정 | 상태 | 어디서 | 근거 |
 |---|---|---|---|---|
 | 1 | 라우트 없는 VpnService tun 주소(100.99.9.9)로 핫스팟 클라이언트가 폰 서버에 접속된다 | ⚠️ **조건부 통과** — 서버 소켓이 **shell uid(2000)** 일 때만. 앱 uid 소켓은 ❌ | B (S26U + 노트북) | §3.2, §3.3 |
-| 2 | 테슬라 2026.26 브라우저가 `http://100.99.9.9`를 열고 MSE H.264를 디코딩한다 | ⏳ 실차 미실시. PC의 Chrome 148(테슬라 프로필)에서는 ✅ | C | §2.3 |
+| 2 | 테슬라 2026.26 브라우저가 `http://100.99.9.9`를 열고 MSE H.264를 디코딩한다 | ✅ **실차 확인 (2026-09-10, Model Y 2026.26, 빌드 `1424f30`, report #9)**: 페이지 열림, MSE H.264 디코드 5초 120프레임 24fps. 핫스팟 주소(10.207.x.x)는 차단 → tun 우회가 필요한 이유도 실측 | C | §4, car-tests/model-y |
 | 3 | shell 권한으로 띄운 scrcpy 서버 포크가 갤럭시에서 VD 생성 + 타 앱 실행 + 터치 주입이 된다 | ✅ M0 (stock scrcpy 4.1, 2026-09-05, 8/8 항목): VD 생성·앱 실행·터치·IME 로컬·UHID 한글·`--turn-screen-off --stay-awake`로 폰 화면만 끄기·서버 단독 기동 모두 됨. 전원 버튼 화면 OFF는 전체 정지. 단 "앱 자신의 APK를 `app_process`로 shell uid에서 실행"은 ✅, **앱이 내장 ADB로 직접 띄우는 것도 ✅** | B | §3.3, §3.4 |
 | 4 | 오디오 캡처(`output`/`playback`)가 One UI 8에서 된다 | ✅ `output`: 원격 재생 + 폰 무음. `playback --audio-dup`: 양쪽 재생 (M0 2026-09-05) | B | car-tests/s26u |
 | — | 폰 화면만 끄고 VD를 유지할 수 있다 (`--turn-screen-off --stay-awake`) | ✅ M0 4번 (충전 중). 앱 구현: `requestDisplayPower` 경로는 ❌ "전환 실패"(d98be88) → scrcpy와 같은 SurfaceControl 경로로 교체, 폰 ⏳ | B | car-tests/s26u, §3.6 |
-| 5 | WS 간헐 실패가 재시도로 해결된다 | PC ✅ (거부 34%·절단 5초마다 → 15초 내 복구) / 실차 ⏳ | A → C | §2.3 |
-| 6 | MSE 지연이 터치 조작에 견딜 수준(<300ms) | PC ✅ (fps ≥ 25, lag < 300ms) / 실기기·실차 ⏳ | A → B/C | §2.3 |
+| 5 | WS 간헐 실패가 재시도로 해결된다 | PC ✅ (거부 34%·절단 5초마다 → 15초 내 복구) / 실차 ✅ 핸드셰이크 20/20 ×3회(24~25ms) — 2026.26에서는 간헐 실패 자체가 안 보임 | A → C | §2.3, §4 |
+| 6 | MSE 지연이 터치 조작에 견딜 수준(<300ms) | PC ✅ (fps ≥ 25, lag < 300ms) / **실차 ✅ lag 61ms, 24fps** (report #9). 본 화면 영상·터치도 사용자 확인 "전부 작동" | A → B/C | §2.3, §4 |
 | — | 앱 하나(APK)에 shell 서버 dex를 넣고 `CLASSPATH=<base.apk> app_process`로 실행할 수 있다 | ✅ uid=2000, build id 검증 동작 | B | §3.3 |
 | — | Kadb(순수 JVM ADB 페어링)로 NDK 없이 갈 수 있다 | ✅ POM 확인(okio, spake2-java, hiddenapibypass, BouncyCastle). 코드는 M3에서 | A | dev-plan |
 | — | 매 CI 빌드의 APK를 덮어 설치할 수 있다 | ✅ 고정 debug keystore 커밋 후 | B | §3.1 |
@@ -200,7 +200,11 @@ adbd가 계속 살아 있으므로 §3.5의 cgroup SIGKILL(=USB 디버깅 토글
 
 ---
 
-## 4. C층: 실차 (Model Y, 2026.26) — 🟡 1차 방문 2026-09-10, 부분 확인
+## 4. C층: 실차 (Model Y, 2026.26) — ✅ 2026-09-10 첫 방문에서 영상·터치 동작
+
+**report #9 (04:14 UTC, 빌드 `1424f30`)**: `ws 20/20 24ms, video 120f 24fps lag 61ms, private-ip blocked=1 reachable=2`. 가정 2·5·6 실차 ✅.
+사용자 확인: 본 화면에서 영상·터치 "전부 작동". 남은 미해결은 #7의 `packets=2`(아래) — 재현 조건을 아직 모른다.
+
 
 1차 방문(빌드 `add8b48`): 차 브라우저가 `http://100.99.9.9:3333/diag`를 열었고(**100.64/10 대역 열림 확인**), MSE H.264 Baseline·High·H.265·AAC 전부 O,
 WebCodecs X, secure context X, viewport 804x638 / screen 1306x816 / **DPR 1.96**, UA에 **`Tesla/` 토큰 없음**(`X11; Linux x86_64 … Chrome/148.0.0.0`).
