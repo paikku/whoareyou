@@ -16,7 +16,13 @@
     <string name="open_adb_settings">무선 디버깅 설정</string>
     <string name="pair_channel">CarCast 페어링</string>
     <string name="pair_title">CarCast 페어링</string>
-    <string name="wifi_hint">무선 디버깅은 Wi-Fi에 연결된 동안만 켜집니다 (핫스팟은 해당 없음). 집 Wi-Fi에서 페어링·시작을 하면 서버는 재부팅 전까지 유지됩니다.</string>
+    <string name="wifi_hint">무선 디버깅은 Wi-Fi에 연결된 동안만 켜집니다 (핫스팟은 해당 없음). 포트는 토글을 껐다 켤 때마다 바뀌므로, 붙지 못하면 개발자 옵션에서 무선 디버깅을 껐다 켜 보세요.</string>
+    <string name="tcp_mode_on">TCP 모드: 꺼짐 — 눌러서 켜기 (Wi-Fi 없이 쓰기 시도)</string>
+    <string name="tcp_mode_on_confirm">adbd를 TCP 모드로 바꿔 Wi-Fi 없이도 접속되게 합니다. 성공하면 차 안에서도 서버를 다시 띄울 수 있습니다.\n\n⚠️ 전환할 때 adbd가 재시작되므로 실행 중인 서버가 종료되고, 기기에 따라 무선 디버깅이 꺼질 수 있습니다(개발자 옵션에서 껐다 켜면 복구됩니다). 아직 검증되지 않은 기능입니다. 시도할까요?</string>
+    <string name="tcp_mode_off">TCP 모드: 켜짐 — 눌러서 끄기 (adbd를 USB 전용으로)</string>
+    <string name="tcp_mode_on_action">TCP 모드 켜기</string>
+    <string name="tcp_mode_off_action">TCP 모드 끄기</string>
+    <string name="tcp_mode_off_confirm">adbd를 TCP 모드에서 USB 전용으로 되돌립니다. adbd가 재시작되므로 실행 중인 서버도 함께 종료되고, 다시 띄우려면 Wi-Fi에 연결된 곳에서 \'시작\'을 눌러야 합니다. 되돌릴까요?</string>
     <string name="pair_prompt">무선 디버깅 화면에서 \'페어링 코드로 기기 페어링\'을 누르고, 그 창을 띄운 채 여기에 6자리 코드를 입력하세요 (앱으로 돌아가면 창이 닫혀 무효)</string>
     <string name="pair_working">페어링 중…</string>
     <string name="pair_done">페어링 완료. 앱이 서버를 직접 시작합니다.</string>
@@ -31,7 +37,7 @@
     <string name="manual_pair_now">이 포트·코드로 페어링</string>
     <string name="save">저장</string>
     <string name="stop_server">서버 종료</string>
-    <string name="stop_server_confirm">shell 서버를 종료합니다. 다시 띄우려면 Wi-Fi에 연결된 곳에서 \'시작\'을 눌러야 합니다 (무선 디버깅은 Wi-Fi에서만 켜짐). 종료할까요?</string>
+    <string name="stop_server_confirm">shell 서버를 종료합니다. TCP 모드가 켜져 있으면 \'시작\'으로 어디서든 다시 띄울 수 있고, 아니면 Wi-Fi에 연결된 곳에서 눌러야 합니다. 종료할까요?</string>
     <string name="copy_log">로그 복사</string>
     <string name="clear_log">로그 지우기</string>
     <string name="copied">로그 %1$d줄을 클립보드에 복사했습니다</string>

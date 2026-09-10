@@ -13,8 +13,8 @@ import java.io.IOException
  * A connection to this phone's own adbd over wireless debugging (always 127.0.0.1, the port comes
  * from mDNS or the user). Everything here blocks; call from a background thread.
  */
-class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
-    private val kadb = Kadb.create(host, port, connectTimeout = 5000, socketTimeout = 0)
+class AdbLink(val port: Int, val host: String = "127.0.0.1", connectTimeoutMs: Int = 5000) : AutoCloseable {
+    private val kadb = Kadb.create(host, port, connectTimeout = connectTimeoutMs, socketTimeout = 0)
 
     class NotPairedException(cause: Throwable) : IOException("이 앱의 키가 페어링되어 있지 않음", cause)
 
@@ -33,6 +33,38 @@ class AdbLink(val port: Int, val host: String = "127.0.0.1") : AutoCloseable {
 
     @Throws(IOException::class)
     fun shell(command: String): String = kadb.shell(command).allOutput
+
+    /**
+     * Switches adbd to TCP mode on [port] — the `tcpip:` service, byte for byte what `adb tcpip <port>`
+     * sends. This is adbd's legacy RSA-key path, not the wireless-debugging one Android gates on a Wi-Fi
+     * client connection, so adbd keeps the port open with Wi-Fi off and while the phone is a hotspot.
+     * That is what lets the app reach shell in the car (see docs/hotspot-only.md).
+     *
+     * adbd writes one line and then re-executes itself, so this link dies immediately after — and so does
+     * everything adbd had started, because init kills adbd's whole cgroup. Always call this **before**
+     * launching the server, never after.
+     */
+    @Throws(IOException::class)
+    fun tcpip(port: Int): String = restart(AdbServices.tcpip(port))
+
+    /** Undoes [tcpip]: adbd goes back to USB/wireless only. Restarts adbd the same way. */
+    @Throws(IOException::class)
+    fun usbOnly(): String = restart(AdbServices.USB)
+
+    /** adbd answers with a single line ("restarting in TCP mode port: N") and may cut us off mid-line. */
+    private fun restart(service: String): String {
+        val line = StringBuilder()
+        kadb.open(service).use { stream ->
+            runCatching {
+                while (line.length < 200) {
+                    val b = stream.source.readByte().toInt()
+                    if (b == '\n'.code) break
+                    line.append(b.toChar())
+                }
+            }
+        }
+        return line.toString().trim()
+    }
 
     /**
      * Runs [command] and streams its stdout/stderr lines to [onLine] on a daemon thread until the

@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private var lastLog = ""
     private var lastCommand = ""
     private lateinit var manual: Button
+    private lateinit var tcpMode: Button
     private lateinit var useVpn: android.widget.CheckBox
     private lateinit var serverInApp: android.widget.CheckBox
     private val handler = Handler(Looper.getMainLooper())
@@ -69,6 +70,8 @@ class MainActivity : AppCompatActivity() {
             runCatching { startActivity(AdbPrefs.wirelessDebuggingIntent()) }
                 .onFailure { StreamService.log("개발자 옵션을 열지 못함: $it") }
         }
+        tcpMode = findViewById(R.id.tcp_mode)
+        tcpMode.setOnClickListener { if (AdbPrefs(this).tcpModeOptIn) confirmTcpModeOff() else confirmTcpModeOn() }
         findViewById<Button>(R.id.stop_server).setOnClickListener {
             androidx.appcompat.app.AlertDialog.Builder(this)
                 .setMessage(R.string.stop_server_confirm)
@@ -205,6 +208,37 @@ class MainActivity : AppCompatActivity() {
         return "#${last.optInt("id")} ${last.optString("receivedAt").replace("T", " ").removeSuffix("Z")} ${last.optString("remote").substringBefore(':')}\n  ${last.optString("summary")}"
     }
 
+    /** Opt in: the switch restarts adbd, so it never happens on its own — see AdbPrefs.tcpModeOptIn. */
+    private fun confirmTcpModeOn() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setMessage(R.string.tcp_mode_on_confirm)
+            .setPositiveButton(R.string.tcp_mode_on_action) { _, _ ->
+                AdbPrefs(this).apply { tcpModeOptIn = true; tcpModeFailures = 0 }
+                StreamService.log("TCP 모드 시도를 켰습니다 — 다음 adb 접속에서 전환합니다")
+                startSession()
+            }
+            .setNegativeButton(android.R.string.cancel, null).show()
+    }
+
+    private fun confirmTcpModeOff() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setMessage(R.string.tcp_mode_off_confirm)
+            .setPositiveButton(R.string.tcp_mode_off_action) { _, _ ->
+                val prefs = AdbPrefs(this)
+                val port = prefs.tcpPort
+                Thread {
+                    // adbd restarts, so this also takes the server down; say so rather than leaving the log silent.
+                    val r = if (port > 0) runCatching { com.carcast.adb.AdbLink(port).use { it.usbOnly() } } else null
+                    prefs.tcpModeOptIn = false
+                    prefs.tcpPort = 0
+                    prefs.tcpModeFailures = 0
+                    StreamService.log("TCP 모드 해제: " + (r?.fold({ it.ifEmpty { "(응답 없음 — adbd 재시작)" } }, { "adbd에 못 붙음 ($it) — 앱 쪽 기억만 지웠습니다" })
+                        ?: "설정된 포트 없음 — 앱 쪽 기억만 지웠습니다"))
+                }.start()
+            }
+            .setNegativeButton(android.R.string.cancel, null).show()
+    }
+
     private fun startSession() {
         startForegroundService(
             Intent(this, StreamService::class.java)
@@ -231,14 +265,24 @@ class MainActivity : AppCompatActivity() {
                             " clients=" + (Regex("\"videoClients\":(\\d+)").find(st)?.groupValues?.get(1) ?: "?")
                     }
                 ).append('\n')
-                append("adb: ").append(StreamService.linkState ?: if (AdbPrefs(this@MainActivity).paired) "페어링됨, 세션 없음" else "미페어링").append('\n')
-                if (!onWifi()) append("※ ").append(getString(R.string.wifi_hint)).append('\n')
+                val prefs = AdbPrefs(this@MainActivity)
+                append("adb: ").append(StreamService.linkState ?: if (prefs.paired) "페어링됨, 세션 없음" else "미페어링").append('\n')
+                append("TCP 모드: ").append(
+                    when {
+                        // The port alone does not mean adbd is serving it — the log's probe line is the truth.
+                        prefs.tcpModeOptIn && prefs.tcpPort > 0 -> "포트 ${prefs.tcpPort} (전환 시도됨 — 로그의 '열려 있음/닫힘' 확인)"
+                        prefs.tcpModeOptIn -> "켜는 중 — 다음 adb 접속에서 전환합니다"
+                        else -> "꺼짐 (아래 버튼으로 시도)"
+                    }
+                ).append('\n')
+                if (!onWifi() && prefs.tcpPort == 0) append("※ ").append(getString(R.string.wifi_hint)).append('\n')
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
                 append("차에서 보낸 진단: ").append(lastReportLine(st)).append('\n')
                 append("인터페이스:\n")
                 for (i in SelfTest.interfaces()) append("  ").append(i.name).append(' ').append(i.address).append('\n')
             }
+            tcpMode.setText(if (AdbPrefs(this@MainActivity).tcpModeOptIn) R.string.tcp_mode_off else R.string.tcp_mode_on)
             val cmd = StreamService.shellCommand()
             if (cmd != lastCommand) { lastCommand = cmd; command.text = cmd }
             val lines = StreamService.logLines.joinToString("\n")

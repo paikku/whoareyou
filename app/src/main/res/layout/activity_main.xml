@@ -102,6 +102,14 @@
         android:text="@string/open_adb_settings" />
 
     <Button
+        android:id="@+id/tcp_mode"
+        style="?attr/materialButtonOutlinedStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/tcp_mode_on" />
+
+    <Button
         android:id="@+id/selftest"
         style="?attr/materialButtonOutlinedStyle"
         android:layout_width="match_parent"

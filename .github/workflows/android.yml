@@ -60,6 +60,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # JDK 17 here: Kadb ships Java 21 class files, so a unit test that loads a class touching it
+      # dies with UnsupportedClassVersionError. Keep pure logic out of those classes (see AdbServices).
       - name: Unit tests (core, mux, app, adb)
         run: ./gradlew :core:test :mux:test :app:testDebugUnitTest :adb:testDebugUnitTest --stacktrace
 
