@@ -70,8 +70,10 @@ final class DisplayCapture {
     }
 
     boolean isAsleep() {
+        // Only the states that mean "not rendering": OFF and the doze pair. STATE_UNKNOWN (0, seen right after
+        // creation) and ON_SUSPEND are not a sleep — treating them as one made recovery loop.
         int s = state();
-        return s != -1 && s != android.view.Display.STATE_ON;
+        return s == android.view.Display.STATE_OFF || s == android.view.Display.STATE_DOZE || s == android.view.Display.STATE_DOZE_SUSPEND;
     }
 
     /**

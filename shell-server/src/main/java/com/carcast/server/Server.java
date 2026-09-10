@@ -157,6 +157,7 @@ public final class Server {
             extra.put("asleep", watch.asleep());
             extra.put("keptAwake", screen.isKeptAwake());
             extra.put("recoveries", watch.recoveries);
+            extra.put("lastRecovery", watch.lastRecovery);
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());
@@ -223,7 +224,10 @@ public final class Server {
         private volatile long lastClientGoneAt;
         private volatile long lastRecoverAt;
         private volatile boolean stopped;
+        private volatile boolean wasAsleep;
         volatile int recoveries;
+        /** The last recovery's log line, in /api/status so a session report from the car carries it. */
+        volatile String lastRecovery = "";
 
         PhoneWatch(ScreenPower screen, DisplayVideoSource source) {
             this.screen = screen;
@@ -261,6 +265,8 @@ public final class Server {
             screen.slept();
             StringBuilder did = new StringBuilder(why).append(": ");
             did.append(screen.wake() ? "폰 깨움" : "폰이 안 깨어남");
+            // Panel first: the driver is looking at the phone; the display work below can take seconds.
+            did.append(panelOn ? ", 패널 켜기: " : ", 패널 끄기: ").append(screen.setMainScreen(panelOn));
             if (source != null) {
                 // Give the display group a moment to follow the device before deciding it did not.
                 for (int i = 0; i < 5 && source.displayAsleep(); i++) {
@@ -282,9 +288,9 @@ public final class Server {
                     }
                 }
             }
-            did.append(panelOn ? ", 패널 켜기: " : ", 패널 끄기: ").append(screen.setMainScreen(panelOn));
             did.append(" (").append(System.currentTimeMillis() - t0).append(" ms)");
             Log.INSTANCE.i(TAG, did.toString());
+            lastRecovery = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date()) + " " + did;
             return did.toString();
         }
 
@@ -303,12 +309,27 @@ public final class Server {
                         lastPoke = now;
                         screen.userActivity();
                     }
-                    if (asleep() && now - lastRecoverAt >= RECOVER_RETRY_MS) {
-                        // The panel we were holding dark means this press was "give me my phone"; a lit panel means "darken it".
-                        boolean wantPanelOn = screen.isForcedOff();
-                        Log.INSTANCE.i(TAG, "폰이 잠듦 (전원 버튼/시간 초과) — 차가 연결돼 있어 깨웁니다; 패널은 "
-                                + (wantPanelOn ? "꺼져 있었으니 켭니다 (폰을 쓰려는 것)" : "켜져 있었으니 끕니다 (화면만 끄려는 것)"));
-                        recover("자동 복구", wantPanelOn);
+                    // Edge-triggered: one recovery per awake→asleep transition. If our reading still says "asleep"
+                    // after a recovery (a state we misjudge), log it once and wait for a real change rather than
+                    // recreating the display every few seconds — that read as flicker in the car and a phone
+                    // that would not stay on.
+                    boolean asleep = asleep();
+                    if (asleep && !wasAsleep) {
+                        wasAsleep = true;
+                        if (now - lastRecoverAt >= RECOVER_RETRY_MS) {
+                            // The panel we were holding dark means this press was "give me my phone"; a lit panel means "darken it".
+                            boolean wantPanelOn = screen.isForcedOff();
+                            Log.INSTANCE.i(TAG, "폰이 잠듦 (전원 버튼/시간 초과) — 차가 연결돼 있어 깨웁니다; 패널은 "
+                                    + (wantPanelOn ? "꺼져 있었으니 켭니다 (폰을 쓰려는 것)" : "켜져 있었으니 끕니다 (화면만 끄려는 것)"));
+                            recover("자동 복구", wantPanelOn);
+                            wasAsleep = asleep();
+                            if (wasAsleep) {
+                                Log.INSTANCE.w(TAG, "복구 뒤에도 잠듦으로 읽힘 (interactive=" + !screen.isAsleep() + ", VD asleep="
+                                        + (source != null && source.displayAsleep()) + ") — 상태가 바뀔 때까지 다시 시도하지 않음", null);
+                            }
+                        }
+                    } else if (!asleep) {
+                        wasAsleep = false;
                     }
                 } else if (now - lastClientGoneAt >= RELEASE_GRACE_MS) {
                     if (screen.isKeptAwake()) {

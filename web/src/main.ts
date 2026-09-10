@@ -168,6 +168,7 @@ $('btn-app').addEventListener('click', async () => {
 // for that (/api/status.appOnPhone); poll it so the stats line says "폰이 가져감" instead of looking broken.
 let appOnPhone = false;
 let phoneAsleep = false;
+let lastRecovery = '';
 let appEpoch = 0;
 setInterval(async () => {
   if (document.hidden) return;
@@ -183,6 +184,11 @@ setInterval(async () => {
     }
     // The phone went to sleep (power button or timeout): the virtual display sleeps with it and the picture
     // freezes. 📵 wakes it and turns only the panel off — the state the driver wanted in the first place.
+    // The phone's recovery log line (what it did about a sleep and how long it took) goes into the session log.
+    if (typeof st.lastRecovery === 'string' && st.lastRecovery && st.lastRecovery !== lastRecovery) {
+      lastRecovery = st.lastRecovery;
+      note(`phone recovery: ${st.lastRecovery}`);
+    }
     const asleep = st.asleep === true;
     if (asleep !== phoneAsleep) {
       phoneAsleep = asleep;
