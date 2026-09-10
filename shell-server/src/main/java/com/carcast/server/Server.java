@@ -11,8 +11,10 @@ import java.util.Map;
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [decorations=false] [app=com.google.android.youtube] [source=clip]
- *     [stay_awake=true] [screen_off=false]
+ *     [stay_awake=true] [screen_off=false] [audio=output|mic|none] [audio_bitrate=128000]
  * </pre>
+ * {@code audio=output} (default) captures what the phone plays (REMOTE_SUBMIX, the phone speaker goes silent)
+ * and streams it as AAC on {@code /ws/audio}; {@code none} disables it. Audio failing never stops the video.
  * Extra endpoints: {@code POST /api/screen?on=0|1} turns only the phone's main display off/on (the virtual
  * display keeps running); {@code GET /api/screen} reports it.
  * The video comes from a virtual display (scrcpy-style, M4) unless {@code source=clip} forces the bundled test clip.
@@ -105,6 +107,19 @@ public final class Server {
         }
         final DisplayVideoSource source = display;
         step(source == null ? "source clip" : "source display " + source.width() + "x" + source.height());
+        DisplayAudioSource audioTmp = null;
+        String audioName = raw.getOrDefault("audio", "output");
+        if (source != null && !"none".equals(audioName)) {
+            try {
+                audioTmp = new DisplayAudioSource(audioName, Integer.parseInt(raw.getOrDefault("audio_bitrate", "128000")));
+            } catch (RuntimeException e) {
+                System.err.println("carcast-server: bad audio options: " + e.getMessage());
+                System.exit(2);
+                return;
+            }
+        }
+        final DisplayAudioSource audio = audioTmp;
+        step(audio == null ? "no audio" : "audio " + audioName);
         final String initialApp = raw.get("app");
         final ScreenPower screen = new ScreenPower();
         InputInjector injectorTmp = null;
@@ -174,7 +189,7 @@ public final class Server {
         }, () -> {
             screen.restore();
             return kotlin.Unit.INSTANCE;
-        });
+        }, audio);
     }
 
     /** "1280x720/160" → {width, height, dpi}; dpi defaults to 160. */

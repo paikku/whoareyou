@@ -2,6 +2,7 @@
 import { KEYCODE, KeyAction, MediaType, encodeKey, encodeText, parseMediaPacket } from './protocol';
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { MseRenderer, mseSupported } from './renderer/mse';
+import { AudioPlayer, audioSupported } from './renderer/audio';
 import { MjpegRenderer } from './renderer/mjpeg';
 import type { Renderer } from './renderer/types';
 import { TouchInput } from './input';
@@ -9,6 +10,7 @@ import { TouchInput } from './input';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
 const video = $<HTMLVideoElement>('video');
+const audioEl = $<HTMLAudioElement>('audio');
 const canvas = $<HTMLCanvasElement>('mjpeg');
 const overlay = $('overlay');
 const overlayMsg = $('overlay-msg');
@@ -26,6 +28,17 @@ function pickRenderer(): Renderer {
 let renderer = pickRenderer();
 renderer.attach(stage);
 overlayMsg.textContent = `화면을 터치하면 시작합니다 (${renderer.name})`;
+
+// Audio (M6): the phone's sound on /ws/audio, played by its own element and kept on the video's
+// playhead. Off with ?audio=off, or with the 🔊 button (remembered). Needs the MSE renderer: the
+// playhead we sync to is the <video>'s.
+const audioWanted = params.get('audio') !== 'off' && renderer.name === 'mse' && audioSupported();
+const audio = audioWanted ? new AudioPlayer(audioEl) : null;
+audio?.attach();
+audio?.setMuted(localStorage.getItem('carcast.audio') === 'off');
+// The audio element cannot play closer than ~150 ms to its live edge; hold the video back that much
+// so the two can meet (costs about 130 ms of touch latency; ?audio=off restores the 50 ms edge).
+if (audio) (renderer as MseRenderer).setTargetLag(0.18);
 
 const control = new ReconnectingWs(wsUrl('/ws/control'), {
   onMessage: (data) => {
@@ -66,6 +79,31 @@ const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ?
 });
 videoWs.start();
 
+let audioRecoveries = 0;
+const audioWs = audio ? new ReconnectingWs(wsUrl('/ws/audio'), {
+  onOpen: () => { audio.reset(); note(`audio ws open #${audioWs!.stats.connects}`); },
+  onClose: () => note('audio ws closed'),
+  onMessage: (data) => {
+    if (typeof data === 'string') return;
+    const p = parseMediaPacket(data);
+    if (!p) return;
+    audio.push(p);
+  },
+}) : null;
+audioWs?.start();
+
+// Keep the audio on the video's playhead; if audio has data under the playhead but stops
+// advancing for 2 s, rebuild it through a fresh socket (init + frames), like the video watchdog.
+setInterval(() => {
+  if (!audio || !started || video.paused) return;
+  audio.syncTo(video.currentTime);
+  if (audio.stats().stalledTicks >= 8) {
+    audioRecoveries++;
+    note(`audio stall (buffered ${audio.stats().bufferedMs}ms, sync ${audio.stats().syncMs}ms) → audio ws 재접속`);
+    audioWs!.restart();
+  }
+}, 250);
+
 // Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the MSE
 // pipeline is wedged (seen on the laptop: frames stop, lag grows). A fresh socket makes the phone
 // resend the init segment and a keyframe, which rebuilds the pipeline — the same path as a reconnect.
@@ -94,7 +132,11 @@ const start = async () => {
   if (started) return;
   started = true;
   overlay.hidden = true;
+  // Both play() calls ride on this gesture; the video's promise only settles on the first frame,
+  // so unlock the audio first rather than after that wait.
+  const audioStarted = audio?.resume();
   await renderer.resume();
+  await audioStarted;
 };
 overlay.addEventListener('pointerdown', start, { once: true });
 stage.addEventListener('pointerdown', start, { once: true });
@@ -147,6 +189,21 @@ $('btn-screen').addEventListener('click', async () => {
   } catch (e) { window.alert(`요청 실패: ${String(e)}`); }
 });
 
+// 🔊/🔇: mute is per car (localStorage), the phone keeps streaming either way.
+const audioBtn = $<HTMLButtonElement>('btn-audio');
+const showAudioBtn = () => {
+  audioBtn.hidden = !audio;
+  audioBtn.textContent = audio?.stats().muted ? '🔇' : '🔊';
+};
+showAudioBtn();
+audioBtn.addEventListener('click', () => {
+  if (!audio) return;
+  const muted = !audio.stats().muted;
+  audio.setMuted(muted);
+  localStorage.setItem('carcast.audio', muted ? 'off' : 'on');
+  showAudioBtn();
+});
+
 $('btn-fullscreen').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   else document.documentElement.requestFullscreen().catch(() => {});
@@ -161,6 +218,8 @@ const stats = () => ({
   recoveries,
   videoWs: { ...videoWs.stats, open: videoWs.open },
   controlWs: { ...control.stats, open: control.open },
+  audio: audio ? { ...audio.stats(), recoveries: audioRecoveries } : null,
+  audioWs: audioWs ? { ...audioWs.stats, open: audioWs.open } : null,
   started,
 });
 (window as any).__carcast = { stats, start, events, restartVideo: () => videoWs.restart() };
@@ -173,6 +232,8 @@ setInterval(() => {
     s.droppedFrames ? `드롭${s.droppedFrames}` : '',
     s.idleMs > 1500 ? `폰 무응답 ${Math.round(s.idleMs / 1000)}s` : '',
     s.lastError ? `err ${s.lastError}` : '',
+    s.audio?.recoveries ? `♪복구${s.audio.recoveries}` : '',
+    s.audio?.lastError ? `♪err ${s.audio.lastError}` : '',
   ].filter(Boolean).join(' ');
   statsEl.textContent = `${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms ${s.videoWs.open ? '●' : '○'}${extra ? ` ${extra}` : ''}`;
 }, 500);
@@ -180,7 +241,9 @@ setInterval(() => {
 // 💾: push this session's numbers and event log to the phone (/api/reports, like the diag page).
 $('btn-save').addEventListener('click', async () => {
   const s = stats();
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}`;
+  const a = s.audio;
+  const audioSummary = a ? ` audio ${a.frames}f sync ${a.syncMs}ms${a.playing ? '' : ' paused'}${a.muted ? ' muted' : ''}${a.recoveries ? ` 복구${a.recoveries}` : ''}${a.lastError ? ` err=${a.lastError}` : ''}` : ' audio -';
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}${audioSummary}`;
   const body = { version: 1, page: location.href, kind: 'session', clientTime: new Date().toISOString(), env: { UA: navigator.userAgent, viewport: `${innerWidth}x${innerHeight}`, dpr: devicePixelRatio }, stats: s, events, summary };
   const prev = statsEl.textContent;
   try {

@@ -4,9 +4,10 @@ import { MediaType, type MediaPacket } from '../protocol';
 import type { Renderer, RendererStats } from './types';
 
 export const H264_MIME = 'video/mp4; codecs="avc1.42E01E"';
-export const AAC_MIME = 'audio/mp4; codecs="mp4a.40.2"';
+export { AAC_MIME } from './audio';
 
 const MAX_LAG_S = 0.3;      // when the buffer runs further ahead than this, jump to the live edge
+const EDGE_LAG_S = 0.05;    // where a jump lands: this far behind the newest frame
 const TRIM_KEEP_S = 8;      // keep this much history in the SourceBuffer, remove older
 // Every fragment from the phone says its frame lasts 33 ms. On a static screen the next frame comes
 // 100-150 ms later (or much later), so the timeline is full of gaps, playback underflows at the end
@@ -59,9 +60,19 @@ export class MseRenderer implements Renderer {
   private trimTimer = 0;
   private lastPtsS = -1;        // pts of the newest frame pushed, in media-timeline seconds
   private lastFrameAtMs = 0;    // performance.now() when it arrived
+  private targetLagS = EDGE_LAG_S;
 
   constructor(video: HTMLVideoElement, private readonly mime: string = H264_MIME) {
     this.video = video;
+  }
+
+  /**
+   * How far behind the newest frame to play. 50 ms by default (touch latency). With audio on, the
+   * <audio> element underruns unless ~120-150 ms is buffered past its playhead, and its data arrives
+   * no earlier than the video's — so the video holds back this much to leave the audio that room.
+   */
+  setTargetLag(seconds: number): void {
+    this.targetLagS = Math.max(EDGE_LAG_S, seconds);
   }
 
   attach(_container: HTMLElement): void {
@@ -154,12 +165,17 @@ export class MseRenderer implements Renderer {
     const lag = this.lastPtsS - v.currentTime;
     this.st.latencyMs = Math.max(0, lag * 1000);
     if (v.paused) return; // resume() will start playback on the first gesture
-    if (lag > MAX_LAG_S) {
-      v.currentTime = Math.max(v.buffered.start(v.buffered.length - 1), this.lastPtsS - 0.05);
-    } else if (lag < -0.05 && performance.now() - this.lastFrameAtMs < 500) {
-      v.currentTime = this.lastPtsS;
-    } else if (lag > MAX_LAG_S / 2) {
+    const target = this.targetLagS;
+    const recent = performance.now() - this.lastFrameAtMs < 500;
+    if (lag > target + MAX_LAG_S - EDGE_LAG_S) {
+      v.currentTime = Math.max(v.buffered.start(v.buffered.length - 1), this.lastPtsS - target);
+    } else if (lag < -0.05 && recent) {
+      v.currentTime = this.lastPtsS - target;
+    } else if (lag > target + 0.1) {
       v.playbackRate = 1.1;
+    } else if (target > EDGE_LAG_S && lag < target - 0.05 && recent) {
+      // Closer to the live edge than the audio can follow: ease back (invisible on the padded timeline).
+      v.playbackRate = 0.95;
     } else if (v.playbackRate !== 1) {
       v.playbackRate = 1;
     }

@@ -5,6 +5,8 @@
 //   type 0 = INIT   payload = ftyp+moov (fMP4 init segment)
 //   type 1 = FRAME  payload = moof+mdat, non-keyframe
 //   type 2 = KEY    payload = moof+mdat, keyframe (safe point to start decoding)
+// /ws/audio carries AAC-LC the same way (one 1024-sample frame per fragment, every packet KEY);
+// video and audio pts share the phone's monotonic clock, which is how the car keeps them in step.
 //
 // Control WebSocket (/ws/control):
 //   car -> phone, binary: [u8 kind][...]

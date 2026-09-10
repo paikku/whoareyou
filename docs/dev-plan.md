@@ -140,8 +140,22 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 - 검증: Playwright 좌표 왕복. [폰] 스크롤/롱프레스/핀치, VD 안 삼성 키보드로 한글 입력.
 
 ### M6. 오디오 [세션 → 폰 → 차]
-- 이식 `audio/{AudioCapture,AudioDirectCapture,AudioPlaybackCapture,AudioEncoder,AudioCodec,AudioSource}`. M0 결과로 `output` vs `playback+audio_dup` 선택. AAC-LC 48kHz, `Fmp4Writer` 오디오 트랙(`mp4a+esds`), 웹은 같은 MediaSource에 오디오 SourceBuffer, 첫 터치 `video.play()`.
-- 검증: Playwright 오디오 버퍼 진행. [차] A/V 동기, 폰 스피커 무음 설정.
+- **구현됨(2026-09-10), 폰·차 검증 대기:** scrcpy v4.1의 `audio/{AudioCapture,AudioConfig,AudioDirectCapture,AudioRecordReader,AudioSource}`를
+  원본 그대로 복사하고(`REMOTE_SUBMIX` = `--audio-source=output`, M0에서 One UI 8 동작 확인), 자체 `AacEncoder`(MediaCodec AAC-LC 48kHz 스테레오 128kbps,
+  입력/출력 블로킹 루프 2개, pts는 AudioRecord의 monotonic 타임스탬프 = 영상 pts와 같은 시계)와 `DisplayAudioSource`(core `AudioSource` 구현).
+  core `EncodedAacSink` → mux `Fmp4AudioWriter`(단일 트랙 mp4a+esds, µs 타임스케일, AAC 프레임당 moof 1개, 전 패킷 KEY) → `/ws/audio`.
+  서버 옵션 `audio=output|mic|none`(기본 output) `audio_bitrate=128000`; 오디오 실패는 로그·`/api/status.audio`에만 남고 영상은 계속(`source=failed`).
+  **웹은 같은 MediaSource의 두 번째 트랙이 아니라 별도 `<audio>` 요소 + 자체 MediaSource**: HTMLMediaElement는 모든 SourceBuffer가 재생 헤드를 덮어야
+  재생하므로 오디오가 멈추면(REMOTE_SUBMIX 무음 구간, 캡처 사망) 영상까지 멈춘다 — 둘을 분리하고 `AudioPlayer.syncTo(video.currentTime)`가 250ms마다
+  오디오 재생 헤드를 영상 헤드에 맞춘다(250ms 이상 어긋나면 seek — 단 seek는 ~180ms 늦게 안착하므로 1초에 한 번만 — 30ms 이상은 1.05x/0.95x로, 그것도
+  재생 헤드 앞에 180ms 이상 버퍼가 있을 때만: Chrome의 MSE `<audio>`는 앞에 ~120ms 미만이 남으면 멈춘다). **그래서 오디오가 켜지면 영상은 라이브 엣지
+  50ms가 아니라 180ms 뒤에서 재생**(`MseRenderer.setTargetLag`) — 그만큼(≈130ms) 터치 지연이 늘고, `?audio=off`면 원래대로. 가짜 폰 실측: 동기 -29ms에서 안정. 첫 터치에서 `audio.play()`도 함께
+  (`video.play()`보다 먼저 호출 — 영상 play()는 첫 프레임까지 안 끝남). 🔊 버튼은 차 쪽 음소거(localStorage), `?audio=off`로 비활성.
+  오디오 stall 워치독(데이터가 있는데 2초간 진행 없음 → `/ws/audio` 재접속). `/diag`에 오디오 프로브(패킷·프레임·버퍼·진행·폰 쪽 `status.audio`).
+  클립 모드·PC 실행은 테스트 톤 `test-tone-48k.cmp4`(ffmpeg ADTS → `mux` CLI, `Adts` 파서)를 송출하고 가짜 폰도 같은 파일을 재생(`--audio-silent`, `--audio-off` 고장 주입).
+  `playback+audio_dup`(폰에서도 소리)은 미이식.
+- 검증: [세션] `Fmp4AudioWriterTest`·`EncodedAacSinkTest`, 산출물 ffmpeg 디코드 OK, e2e `audio.spec.ts`(동기 ±150ms 내, 음소거 토글, `?audio=off`, 오디오 없는 폰에서 영상 무영향, diag 프로브).
+  [폰] `/api/status.audio`가 `source=display frames↑`인지, 폰 스피커 무음, 노트북에서 소리·동기. [차] 차 스피커 출력, 첫 터치 후 소리(자동재생 정책), A/V 동기, 유튜브 30분.
 
 ### M7. 라이프사이클/화면 끄기/재연결/킬스위치 [세션 → 폰]
 - **일부 구현(2026-09-05):** `ScreenPower` — scrcpy `Device.setDisplayPower` 그대로: 물리 디스플레이 전부 `SurfaceControl.setDisplayPowerMode`(Android 14+는 `DisplayControl` 토큰). Android 15의 `requestDisplayPower`는 scrcpy도 꺼 둔 경로(#5530)이고 S26U에서 실패 확인(d98be88). `stay_on_while_plugged_in=7`(서버 종료 시 복원, 강제로 끈 화면도 복원).
@@ -157,11 +171,11 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 
 ---
 
-## 진행 상황과 다음 착수 (2026-09-05)
-- 완료·폰 검증: M0, M1, M2, M3, M4, M5. 실차(C층) 전제 조건(핫스팟에서 shell 서버 접속)도 통과.
-- 다음: **M6 오디오**(`output` 캡처 → AAC → fMP4 오디오 트랙 → 웹 SourceBuffer; M0에서 One UI 8 캡처 동작 확인됨),
-  **M7** 📵 재검증(`fdc2350`), 하룻밤·재부팅 후 복구, "서버 종료" 킬 스위치 확인, 핫스팟 Playwright(`BASE_URL`) 수치.
-- 차가 오면 C층 `/diag` 체크리스트.
+## 진행 상황과 다음 착수 (2026-09-10)
+- 완료·폰 검증: M0, M1, M2, M3, M4, M5, M8(TCP 모드). 실차 1차 방문(Model Y 2026.26)에서 영상·터치 동작(verification-log §4).
+- **M6 오디오 구현 완료(세션 검증만)** — 다음 폰 테스트에서 `/api/status.audio`와 노트북 소리, 다음 실차에서 차 스피커·자동재생·동기.
+- 다음: **M7** 📵 재검증(`fdc2350`), 하룻밤·재부팅 후 복구, 정지 화면에서 저속 프레임 유지(폰 쪽, car-tests/model-y §4), 핫스팟 Playwright(`BASE_URL`) 수치.
+- 차가 오면 C층 체크리스트(testing-guide §3.C: 이제 소리 포함).
 
 ## 라이선스
 `docs/LICENSES/`에 scrcpy(Genymobile)·Shizuku(RikkaApps)·Kadb Apache-2.0 NOTICE, BoringSSL/BouncyCastle/Conscrypt 고지.

@@ -38,6 +38,7 @@
 | WebCodecs / AudioContext / RTCPeerConnection | X / O / O (rVFC·Fullscreen·Pointer Events·createImageBitmap도 O) | `api[...]` |
 | WS 20회 성공 / 평균 ms | **20/20, 25ms** | `ws.ok`, `ws.avg` |
 | 디코드 프레임 / fps / lag ms / 에러 | #7: **0 / 0 / 0 / `no frames decoded (play() never started)`** — `packets=2`, `paused=false ready=1 t=0.00 buffered=180214.95-180214.98` · **#9: 120 / 24 / 61 / 없음** | `video.frames`, `video.fps`, `video.latencyMs`, `video.error`, `video.state` |
+| 오디오 프로브 (패킷 / 프레임 / 진행 ms / 폰 쪽 상태) — 2026-09-10 빌드부터 | 미실시 (1차 방문 빌드에는 없음) | `audio.packets`, `audio.frames`, `audio.advancedMs`, `audio.phone` |
 | 사설 주소 대조군 (핫스팟 주소 → 차단되어야 정상) | `swlan0=10.207.115.115` **blocked** ✅ · `rmnet_data2=192.0.0.2` **reachable** · `rmnet_data3=192.0.0.4` **reachable** | `addresses` |
 
 ## 3. 재생 (`http://100.99.9.9:3333/`)
@@ -49,6 +50,9 @@
 | 3 | 화면 터치 시 앱 로그에 `control 패킷` 증가 (집에서 확인) | 터치 동작은 O, 로그 수치는 미기록 |
 | 4 | 후진 기어 → 다시 D 후 영상 복구 시간 | |
 | 5 | 5분 연속 재생 중 끊김 횟수 | |
+| 6 | 소리(M6): 첫 터치 후 차 스피커에서 소리 (유튜브 ▶) | 미실시 — 다음 방문. 안 나면 💾 세션 리포트의 `audio ...` 부분 |
+| 7 | 소리와 입 모양 동기 (어긋나면 소리가 앞/뒤 어느 쪽, 대략 ms) | |
+| 8 | 🔊 버튼으로 음소거/해제 | |
 
 ## 4. 판정 → verification-log.md §1에 반영
 

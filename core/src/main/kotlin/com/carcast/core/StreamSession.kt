@@ -1,5 +1,6 @@
 package com.carcast.core
 
+import com.carcast.core.media.AudioSource
 import com.carcast.core.media.ClipSource
 import com.carcast.core.media.ControlMessage
 import com.carcast.core.media.MediaHub
@@ -28,13 +29,18 @@ class StreamSession(
     reportDir: File? = null,
     /** Live video (the virtual display in the shell process); null falls back to the bundled test clip. */
     private val videoSource: VideoSource? = null,
+    /** Live audio (REMOTE_SUBMIX → AAC in the shell process); null plays the bundled test tone when the clip plays. */
+    private val audioSource: AudioSource? = null,
 ) {
     val reports = ReportStore(reportDir)
     private var http: HttpServer? = null
     private val videoHub = MediaHub()
-    private val audioHub = MediaHub()
+    private val audioHub = MediaHub(replayLastKey = false)
     private var clip: ClipSource? = null
+    private var audioClip: ClipSource? = null
     @Volatile private var liveSourceRunning = false
+    @Volatile private var liveAudioRunning = false
+    @Volatile private var audioError: String? = null
     private val controlClients = CopyOnWriteArrayList<WebSocketConnection>()
 
     @Volatile var running = false
@@ -42,6 +48,7 @@ class StreamSession(
     @Volatile var controlPackets = 0L
         private set
     val videoClients: Int get() = videoHub.clientCount
+    val audioClients: Int get() = audioHub.clientCount
     val controlClientCount: Int get() = controlClients.size
 
     /** Human-readable events (also logged); the app shows them on screen, the shell prints them. */
@@ -93,6 +100,7 @@ class StreamSession(
                 startClip()
             }
         } else startClip()
+        startAudio()
     }
 
     private fun startClip() {
@@ -104,10 +112,35 @@ class StreamSession(
         }
     }
 
+    /**
+     * Audio is best effort: the live capture may be refused (permission, another recorder, a ROM
+     * quirk) and the car must still get its picture. With the clip playing, the test tone plays too,
+     * so the PC dry run and the Playwright suite exercise the same `/ws/audio` path as the phone.
+     */
+    private fun startAudio() {
+        val live = audioSource
+        if (live != null) {
+            try {
+                live.start(audioHub)
+                liveAudioRunning = true
+                event("오디오 소스 시작: ${live.info()}")
+            } catch (e: Throwable) {
+                audioError = e.message ?: e.toString()
+                Log.e(TAG, "audio source failed; continuing without audio", e)
+                event("오디오 소스 실패 (${audioError}) — 소리 없이 계속")
+            }
+        } else if (clip != null && assets.exists("clips/$TEST_TONE")) {
+            audioClip = ClipSource(assets, "clips/$TEST_TONE", audioHub, loopGapUs = 21_333, threadName = "audio-clip-source").also { it.start() }
+            event("테스트 톤 송출: $TEST_TONE")
+        }
+    }
+
     fun stop() {
         if (!running) return
         if (liveSourceRunning) { runCatching { videoSource?.stop() }; liveSourceRunning = false }
+        if (liveAudioRunning) { runCatching { audioSource?.stop() }; liveAudioRunning = false }
         clip?.stop(); clip = null
+        audioClip?.stop(); audioClip = null
         videoHub.closeAll()
         audioHub.closeAll()
         for (c in controlClients) c.close()
@@ -120,7 +153,7 @@ class StreamSession(
     private fun onWebSocket(path: String, query: Map<String, String>, conn: WebSocketConnection): Boolean {
         return when (path) {
             "/ws/video" -> { videoHub.attach(conn); event("video 클라이언트 접속 (${videoHub.clientCount})"); true }
-            "/ws/audio" -> { audioHub.attach(conn); true }
+            "/ws/audio" -> { audioHub.attach(conn); event("audio 클라이언트 접속 (${audioHub.clientCount})"); true }
             "/ws/control" -> {
                 controlClients += conn
                 conn.listener = object : WebSocketConnection.Listener {
@@ -194,6 +227,8 @@ class StreamSession(
             "port" to port,
             "videoClients" to videoHub.clientCount,
             "videoClientStats" to videoHub.clientStats(),
+            "audioClients" to audioHub.clientCount,
+            "audio" to audioStatus(),
             "controlClients" to controlClients.size,
             "controlPackets" to controlPackets,
             "controlErrors" to controlErrors,
@@ -210,6 +245,17 @@ class StreamSession(
         return Json.obj(fields)
     }
 
+    /** What the car may expect on /ws/audio: "display" (live capture), "clip" (test tone), "none", or "failed" with the reason. */
+    private fun audioStatus(): Map<String, Any?> {
+        val err = audioError
+        return when {
+            liveAudioRunning -> linkedMapOf<String, Any?>("source" to "display").also { m -> audioSource?.let { m.putAll(it.info()) } }
+            err != null -> mapOf("source" to "failed", "error" to err)
+            audioClip != null -> mapOf("source" to "clip")
+            else -> mapOf("source" to "none")
+        }
+    }
+
     /**
      * Non-loopback IPv4 addresses of this host, "iface=addr". The diag page uses them as the control
      * group: the car must NOT be able to open http://<hotspot address>:port, only the tun address.
@@ -224,6 +270,7 @@ class StreamSession(
     companion object {
         private const val TAG = "StreamSession"
         const val TEST_CLIP = "test-720p30.cmp4"
+        const val TEST_TONE = "test-tone-48k.cmp4"
     }
 }
 

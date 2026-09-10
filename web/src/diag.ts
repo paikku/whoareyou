@@ -2,7 +2,8 @@
 // Everything measured here is also POSTed back to the phone (/api/report), so the car visit is
 // "open the page, wait for 저장됨", and the numbers are read later from a laptop or the app.
 import { parseMediaPacket } from './protocol';
-import { H264_MIME, AAC_MIME, MseRenderer, mseSupported } from './renderer/mse';
+import { H264_MIME, MseRenderer, mseSupported } from './renderer/mse';
+import { AAC_MIME, AudioPlayer, audioSupported } from './renderer/audio';
 import { wsUrl } from './transport/ws';
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -20,6 +21,8 @@ interface Report {
   ws?: { ok: number; avg: number };
   /** `state` is the <video> element at the end of the probe (paused/readyState/currentTime/buffered), for stalls. */
   video?: { packets: number; frames: number; fps: number; latencyMs: number; error: string; state: string; packetTimes: string };
+  /** `phone` is what /api/status said about its audio source (display/clip/failed + reason): tells "car cannot play" from "phone did not capture". */
+  audio?: { packets: number; frames: number; bufferedMs: number; advancedMs: number; error: string; state: string; phone: string };
   /** Control group: the car must fail to reach the phone's real (private) addresses. */
   addresses?: Record<string, 'reachable' | 'blocked' | 'skipped'>;
   summary: string;
@@ -188,6 +191,71 @@ async function videoProbe(): Promise<void> {
   r.destroy();
 }
 
+// Audio: does /ws/audio deliver AAC, does this browser's MSE accept it, and does a (muted) <audio>
+// element advance through it. Muted, so it needs no gesture; the sound itself and the autoplay
+// policy for it are checked on the main page in the car (testing-guide §C).
+const AUDIO_WS_OPEN_MS = 5000;
+const AUDIO_MEASURE_MS = 4000;
+
+function audioState(a: HTMLAudioElement): string {
+  const b = a.buffered;
+  const buf = b.length ? `${b.start(0).toFixed(2)}-${b.end(b.length - 1).toFixed(2)}` : 'none';
+  return `paused=${a.paused} ready=${a.readyState} t=${a.currentTime.toFixed(2)} buffered=${buf}${a.error ? ` mediaError=${a.error.code}` : ''}`;
+}
+
+async function audioProbe(): Promise<void> {
+  const out = $('audio-result');
+  const el = document.getElementById('audio') as HTMLAudioElement;
+  let phone = '';
+  try {
+    const st = await (await fetch('/api/status')).json();
+    phone = st.audio ? `${st.audio.source ?? '?'}${st.audio.error ? `: ${st.audio.error}` : ''}${st.audio.codec ? ` ${st.audio.codec}` : ''}` : 'no audio field';
+  } catch (e) { phone = `status fetch failed: ${String(e)}`; }
+  const finish = (r: NonNullable<Report['audio']>) => {
+    report.audio = r;
+    (window as any).__diag.audio = r;
+    out.textContent = `패킷 ${r.packets}, 프레임 ${r.frames}, 버퍼 ${r.bufferedMs}ms, 진행 ${r.advancedMs}ms, 폰: ${r.phone}${r.error ? `, err: ${r.error}` : ''}`;
+    out.className = r.frames > 0 && r.advancedMs > 0 && !r.error ? 'ok' : 'bad';
+    log(`audio probe packets=${r.packets} frames=${r.frames} buffered=${r.bufferedMs}ms advanced=${r.advancedMs}ms phone=${r.phone} ${r.state}${r.error ? ` err=${r.error}` : ''}`);
+  };
+  if (!audioSupported()) { finish({ packets: 0, frames: 0, bufferedMs: 0, advancedMs: 0, error: 'MSE AAC unsupported', state: audioState(el), phone }); return; }
+  const player = new AudioPlayer(el);
+  player.attach();
+  const ws = new WebSocket(wsUrl('/ws/audio'));
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string') return;
+    const p = parseMediaPacket(ev.data);
+    if (p) player.push(p);
+  };
+  ws.onerror = () => log('audio ws error');
+  const opened = await within(new Promise<void>((resolve) => { ws.onopen = () => resolve(); ws.onclose = () => resolve(); }), AUDIO_WS_OPEN_MS);
+  let error = '';
+  let advancedMs = 0;
+  if (!opened) error = `audio ws: no open/close in ${AUDIO_WS_OPEN_MS}ms`;
+  else if (ws.readyState !== WebSocket.OPEN) error = 'audio ws: closed before open';
+  else {
+    await within(player.resume(), 2000);
+    await sleep(1000);
+    // Steer onto our own live edge (no video here), then see whether the playhead moves.
+    const t0 = el.currentTime;
+    for (let i = 0; i < AUDIO_MEASURE_MS / 250; i++) {
+      const live = player.stats().lastPtsS;
+      if (live >= 0) player.syncTo(live - 0.3);
+      await sleep(250);
+    }
+    advancedMs = Math.round((el.currentTime - t0) * 1000);
+  }
+  const s = player.stats();
+  const state = audioState(el);
+  ws.close();
+  if (!error) error = s.lastError;
+  if (!error && s.frames === 0) error = s.packets ? 'init only, no AAC frames from the phone' : 'no packets received';
+  else if (!error && advancedMs <= 0) error = 'audio element did not advance';
+  finish({ packets: s.packets, frames: s.frames, bufferedMs: s.bufferedMs, advancedMs, error, state, phone });
+  player.destroy();
+}
+
 // Control group: the phone's real addresses (hotspot 10.x etc.) must be unreachable from the car,
 // otherwise the tun address detour is unnecessary — and if a firmware update opens or closes them
 // we want to know. Cross-origin, so use no-cors: an opaque response means "reachable", a network
@@ -225,6 +293,7 @@ async function addressProbe(): Promise<void> {
 
 function summarize(): string {
   const v = report.video;
+  const a = report.audio;
   const w = report.ws;
   const blocked = Object.values(report.addresses ?? {}).filter((s) => s === 'blocked').length;
   const reachable = Object.values(report.addresses ?? {}).filter((s) => s === 'reachable').length;
@@ -234,6 +303,7 @@ function summarize(): string {
     `mse=${report.api[`MSE ${H264_MIME}`] ? 'O' : 'X'}`,
     w ? `ws ${w.ok}/20 ${w.avg}ms` : 'ws -',
     v ? `video ${v.frames}f ${v.fps}fps lag ${v.latencyMs}ms${v.error ? ` err=${v.error}` : ''}` : 'video -',
+    a ? `audio ${a.frames}f ${a.advancedMs > 0 ? 'plays' : 'stuck'}${a.error ? ` err=${a.error}` : ''}` : 'audio -',
     `private-ip blocked=${blocked} reachable=${reachable}`,
   ].join(', ');
 }
@@ -263,7 +333,7 @@ async function submit(): Promise<void> {
 }
 
 (window as any).__diag = { done: false };
-// Worst case of the probes above: WS 20×3s + video 5+3+5s + addresses 4×4s ≈ 90s. Past that,
+// Worst case of the probes above: WS 20×3s + video 5+3+5s + audio 5+2+5s + addresses 4×4s ≈ 100s. Past that,
 // something is wedged; save what we have rather than sit on "측정 중…" forever.
 const WATCHDOG_MS = 120_000;
 async function step(name: string, fn: () => Promise<void>): Promise<void> {
@@ -276,6 +346,7 @@ async function step(name: string, fn: () => Promise<void>): Promise<void> {
   }, WATCHDOG_MS);
   await step('ws probe', wsProbe);
   await step('video probe', videoProbe);
+  await step('audio probe', audioProbe);
   await step('address probe', addressProbe);
   clearTimeout(watchdog);
   await submit();

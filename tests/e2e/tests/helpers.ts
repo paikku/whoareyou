@@ -12,6 +12,11 @@ export interface ClientStats {
   recoveries: number;
   videoWs: { connects: number; failures: number; open: boolean };
   controlWs: { connects: number; failures: number; open: boolean };
+  audio: {
+    packets: number; frames: number; bufferedMs: number; syncMs: number; seeks: number; playing: boolean; muted: boolean;
+    lastPtsS: number; stalledTicks: number; lastError: string; recoveries: number;
+  } | null;
+  audioWs: { connects: number; failures: number; open: boolean } | null;
   started: boolean;
 }
 

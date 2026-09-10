@@ -12,6 +12,10 @@
 //                   [--video-freeze]    init segment + the cached last keyframe (stamped 50 h into the stream,
 //                                       like a phone whose encoder went idle), then never a frame — Model Y
 //                                       2026.26 report #7/#8: the car must still show that one frame
+//                   [--audio-clip ../clips/assets/clips/test-tone-48k.cmp4]  AAC test tone replayed on /ws/audio
+//                   [--audio-silent]    accept /ws/audio and send the init segment, then never a frame: the phone's
+//                                       capture died — the video must not care
+//                   [--audio-off]       no audio at all (/api/status says so), like audio=none on the phone
 //                   [--web ../../app/src/main/assets/web]
 //                   [--addresses 192.168.43.1,10.136.114.168]  "phone" addresses reported in /api/status;
 //                                       the diag page probes them as the private-IP control group
@@ -39,6 +43,9 @@ const DELAY_MS = Number(args['delay-ms'] ?? 0);
 const VIDEO_SILENT = args['video-silent'] === 'true';
 const PTS_STRETCH = Number(args['pts-stretch'] ?? 1);
 const VIDEO_FREEZE = args['video-freeze'] === 'true';
+const AUDIO_CLIP = resolve(here, args['audio-clip'] ?? '../clips/assets/clips/test-tone-48k.cmp4');
+const AUDIO_SILENT = args['audio-silent'] === 'true';
+const AUDIO_OFF = args['audio-off'] === 'true';
 const FREEZE_PTS_US = 180_214_950_000; // what the car saw: buffered=180214.95-180214.98
 const ADDRESSES = (args.addresses ?? 'swlan0=192.168.43.1').split(',').filter(Boolean);
 
@@ -65,6 +72,14 @@ if (PTS_STRETCH !== 1) for (const f of frames) f.pts = Math.round(f.pts * PTS_ST
 const clipDurationUs = frames.length ? frames[frames.length - 1].pts + 33_333 : 0;
 console.log(`clip ${CLIP}: ${frames.length} frames, ${(clipDurationUs / 1e6).toFixed(1)} s`);
 
+// Audio: the same record format, replayed on its own loop (its own duration, so the two clips need not match).
+const audioClip = !AUDIO_OFF && statSync(AUDIO_CLIP, { throwIfNoEntry: false }) ? loadClip(AUDIO_CLIP) : [];
+const audioInit = audioClip.find((r) => r.type === 0);
+const audioFrames = audioClip.filter((r) => r.type !== 0);
+const AUDIO_FRAME_US = 21_333;
+const audioDurationUs = audioFrames.length ? audioFrames[audioFrames.length - 1].pts + AUDIO_FRAME_US : 0;
+if (audioFrames.length) console.log(`audio ${AUDIO_CLIP}: ${audioFrames.length} frames, ${(audioDurationUs / 1e6).toFixed(1)} s${AUDIO_SILENT ? ' (silent: init only)' : ''}`);
+
 // The clip's fragments carry their original timestamps in `tfdt`; when looping we re-stamp them
 // so the MSE timeline keeps increasing (exactly what the app's ClipSource does).
 function packet(type, ptsUs, payload) {
@@ -80,7 +95,7 @@ function packet(type, ptsUs, payload) {
 }
 
 // ---- state exposed to tests --------------------------------------------------------------
-const state = { touches: [], keys: [], texts: [], videoClients: 0, controlClients: 0, framesSent: 0, wsRejected: 0, wsAccepted: 0 };
+const state = { touches: [], keys: [], texts: [], videoClients: 0, audioClients: 0, controlClients: 0, framesSent: 0, audioFramesSent: 0, wsRejected: 0, wsAccepted: 0 };
 // Diagnostic reports posted by /diag (same API as the phone's ReportStore, memory only).
 const reports = [];
 
@@ -92,6 +107,7 @@ const server = createServer((req, res) => {
     const last = reports[reports.length - 1];
     res.end(JSON.stringify({
       type: 'status', running: true, source: 'fake', width: 1280, height: 720, addresses: ADDRESSES,
+      audio: AUDIO_OFF || !audioInit ? { source: 'none' } : AUDIO_SILENT ? { source: 'failed', error: 'fake: audio-silent' } : { source: 'clip', codec: 'mp4a.40.2' },
       reports: reports.length, lastReport: last ? { id: last.id, receivedAt: last.receivedAt, remote: last.remote, summary: last.summary } : null,
       ...state,
     }));
@@ -159,6 +175,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 const videoClients = new Set();
+const audioClients = new Set();
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/ws/video') {
@@ -181,7 +198,10 @@ wss.on('connection', (ws, req) => {
     });
     ws.on('close', () => { state.controlClients--; });
   } else if (url.pathname === '/ws/audio') {
-    // No audio until M6.
+    audioClients.add(ws);
+    state.audioClients = audioClients.size;
+    if (audioInit) ws.send(packet(0, 0, audioInit.payload));
+    ws.on('close', () => { audioClients.delete(ws); state.audioClients = audioClients.size; });
   } else {
     ws.close(1008, 'unknown path');
   }
@@ -221,6 +241,32 @@ function tick() {
   setImmediate(tick);
 }
 
+let audioLoop = 0;
+let audioIdx = 0;
+function tickAudio() {
+  const f = audioFrames[audioIdx];
+  const pts = audioLoop * audioDurationUs + f.pts;
+  const dueNs = BigInt(pts) * 1000n;
+  const nowNs = process.hrtime.bigint() - t0;
+  if (nowNs < dueNs) {
+    setTimeout(tickAudio, Number((dueNs - nowNs) / 1_000_000n));
+    return;
+  }
+  const pkt = packet(2, pts, f.payload);
+  const send = () => {
+    for (const ws of audioClients) {
+      if (AUDIO_SILENT || ws.readyState !== ws.OPEN) continue;
+      if (ws.bufferedAmount > 500_000) continue;
+      ws.send(pkt);
+      state.audioFramesSent++;
+    }
+  };
+  if (DELAY_MS > 0) setTimeout(send, DELAY_MS); else send();
+  audioIdx++;
+  if (audioIdx >= audioFrames.length) { audioIdx = 0; audioLoop++; }
+  setImmediate(tickAudio);
+}
+
 if (WS_DROP_EVERY > 0) {
   setInterval(() => {
     for (const ws of wss.clients) ws.terminate();
@@ -231,4 +277,5 @@ if (WS_DROP_EVERY > 0) {
 server.listen(PORT, HOST, () => {
   console.log(`fake phone on http://${HOST}:${PORT}/  web=${WEB}  ws-reject=${WS_REJECT} ws-drop-every=${WS_DROP_EVERY}s delay=${DELAY_MS}ms`);
   if (frames.length) tick();
+  if (audioFrames.length) tickAudio();
 });

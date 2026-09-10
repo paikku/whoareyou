@@ -11,7 +11,14 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Backpressure: a client whose send queue is full drops frames until the next keyframe,
  * so it never receives a delta frame whose reference it missed.
  */
-open class MediaHub {
+open class MediaHub(
+    /**
+     * Give a late joiner the last keyframe right away (video: a picture without waiting for the GOP).
+     * Off for audio: every AAC frame is a "keyframe" and a stale 21 ms of sound from minutes ago
+     * would only put a lone range far behind the live edge into the client's buffer.
+     */
+    private val replayLastKey: Boolean = true,
+) {
     private class Client(val conn: WebSocketConnection) {
         @Volatile var waitingForKey = true
         @Volatile var sent = 0L
@@ -60,7 +67,7 @@ open class MediaHub {
     }
 
     open fun onFrame(packet: ByteArray, keyframe: Boolean) {
-        if (keyframe) lastKey = packet
+        if (keyframe && replayLastKey) lastKey = packet
         for (c in clients) {
             if (c.waitingForKey && !keyframe) continue
             if (c.conn.offer(packet)) {

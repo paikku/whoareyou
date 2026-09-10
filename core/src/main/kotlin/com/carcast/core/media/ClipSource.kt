@@ -11,14 +11,21 @@ import java.io.IOException
  *
  * File format: repeated records of [u8 type][u64 pts_us][u32 len][payload]; type as in MediaHub.
  */
-class ClipSource(private val assets: Assets, private val name: String, private val hub: MediaHub) {
+class ClipSource(
+    private val assets: Assets,
+    private val name: String,
+    private val hub: MediaHub,
+    /** Gap appended after the last record when looping: one frame of the clip (33 ms video, 21 ms audio). */
+    private val loopGapUs: Long = 33_333,
+    private val threadName: String = "clip-source",
+) {
     private var thread: Thread? = null
     @Volatile private var running = false
 
     fun start() {
         if (running) return
         running = true
-        thread = Thread({ loop() }, "clip-source").apply { isDaemon = true; start() }
+        thread = Thread({ loop() }, threadName).apply { isDaemon = true; start() }
     }
 
     fun stop() {
@@ -75,7 +82,7 @@ class ClipSource(private val assets: Assets, private val name: String, private v
                 return
             }
             // Loop seamlessly: continue timestamps after the last frame.
-            ptsBase += lastPts + 33_333
+            ptsBase += lastPts + loopGapUs
         }
     }
 }

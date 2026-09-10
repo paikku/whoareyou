@@ -17,7 +17,7 @@
 | 1 | 라우트 없는 VpnService tun 주소(100.99.9.9)로 핫스팟 클라이언트가 폰 서버에 접속된다 | ⚠️ **조건부 통과** — 서버 소켓이 **shell uid(2000)** 일 때만. 앱 uid 소켓은 ❌ | B (S26U + 노트북) | §3.2, §3.3 |
 | 2 | 테슬라 2026.26 브라우저가 `http://100.99.9.9`를 열고 MSE H.264를 디코딩한다 | ✅ **실차 확인 (2026-09-10, Model Y 2026.26, 빌드 `1424f30`, report #9)**: 페이지 열림, MSE H.264 디코드 5초 120프레임 24fps. 핫스팟 주소(10.207.x.x)는 차단 → tun 우회가 필요한 이유도 실측 | C | §4, car-tests/model-y |
 | 3 | shell 권한으로 띄운 scrcpy 서버 포크가 갤럭시에서 VD 생성 + 타 앱 실행 + 터치 주입이 된다 | ✅ M0 (stock scrcpy 4.1, 2026-09-05, 8/8 항목): VD 생성·앱 실행·터치·IME 로컬·UHID 한글·`--turn-screen-off --stay-awake`로 폰 화면만 끄기·서버 단독 기동 모두 됨. 전원 버튼 화면 OFF는 전체 정지. 단 "앱 자신의 APK를 `app_process`로 shell uid에서 실행"은 ✅, **앱이 내장 ADB로 직접 띄우는 것도 ✅** | B | §3.3, §3.4 |
-| 4 | 오디오 캡처(`output`/`playback`)가 One UI 8에서 된다 | ✅ `output`: 원격 재생 + 폰 무음. `playback --audio-dup`: 양쪽 재생 (M0 2026-09-05) | B | car-tests/s26u |
+| 4 | 오디오 캡처(`output`/`playback`)가 One UI 8에서 된다 | ✅ `output`: 원격 재생 + 폰 무음. `playback --audio-dup`: 양쪽 재생 (M0 2026-09-05, stock scrcpy). **앱 구현(M6, 2026-09-10)은 ⏳** — 같은 `REMOTE_SUBMIX` 경로를 shell 서버에 넣고 AAC/fMP4로 송출; PC에서 테스트 톤으로 e2e ✅, 폰·차 미실시 | B → C | §2.2, §2.3, dev-plan M6 |
 | — | 폰 화면만 끄고 VD를 유지할 수 있다 (`--turn-screen-off --stay-awake`) | ✅ M0 4번 (충전 중). 앱 구현: `requestDisplayPower` 경로는 ❌ "전환 실패"(d98be88) → scrcpy와 같은 SurfaceControl 경로로 교체, 폰 ⏳ | B | car-tests/s26u, §3.6 |
 | 5 | WS 간헐 실패가 재시도로 해결된다 | PC ✅ (거부 34%·절단 5초마다 → 15초 내 복구) / 실차 ✅ 핸드셰이크 20/20 ×3회(24~25ms) — 2026.26에서는 간헐 실패 자체가 안 보임 | A → C | §2.3, §4 |
 | 6 | MSE 지연이 터치 조작에 견딜 수준(<300ms) | PC ✅ (fps ≥ 25, lag < 300ms) / **실차 ✅ lag 61ms, 24fps** (report #9). 본 화면 영상·터치도 사용자 확인 "전부 작동" | A → B/C | §2.3, §4 |
@@ -57,6 +57,8 @@
 | `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합, `POST /api/report` 저장·비JSON 거부·256KB 초과 413·`GET /api/reports`·status의 `lastReport` |
 | `core` | `ControlMessageTest` | 웹 터치/키/텍스트 패킷 파싱(정규화 좌표, UTF-8), 잘린·미지 패킷 거부 |
 | `core` | `EncodedH264SinkTest` | 인코더 출력(config 버퍼 + Annex-B AU, 원본 .h264에서 추출) → init 세그먼트 1개 + 프레임당 moof/mdat 1개, 첫 패킷 TYPE_KEY, pts 유지, SPS/PPS 인라인 키프레임만으로도 부트스트랩 |
+| `mux` | `Fmp4AudioWriterTest` | ADTS 픽스처(376프레임, AAC-LC 48kHz 스테레오, ASC `11 90`) 파싱, 오디오 init 세그먼트(`soun`/`smhd`/`mp4a` 채널·샘플레이트·`esds` 디스크립터 체인), 프래그먼트(sync sample, 21333µs, data_offset) |
+| `core` | `EncodedAacSinkTest` | 코덱 설정 → init 1개, 프레임당 KEY 패킷 1개(pts 유지), 설정 전 프레임 폐기, 같은 설정 재전달 무시, 다른 설정이면 새 init |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
@@ -153,7 +155,7 @@
 |---|---|---|
 | M4 | 노트북 브라우저에 폰 가상 화면 영상 | ✅ `source=display 1280x720 displayId=7 encoder=c2.qti.avc.encoder`, `frames=3716 keyframes=32`. ▶로 유튜브 실행 ✅ (`app=com.google.android.youtube/.app.honeycomb.Shell$HomeActivity`) |
 | M5 | 클릭·스크롤·키보드 | ✅ `input=true injected=72 injectFailed=0 controlErrors=0` |
-| M6 | 소리 | ⏳ 미구현 — 소리는 폰에서 남 (오디오 캡처는 M6에서) |
+| M6 | 소리 | ⏳ 2026-09-10 구현(`REMOTE_SUBMIX` → AAC → `/ws/audio` → 별도 `<audio>`), 폰 미실시. 볼 것: `/api/status.audio.source=display`·`frames`, 폰 무음, 노트북 소리·동기 |
 | M7 | 📵 폰 화면만 OFF | ❌ "폰 화면 전환 실패": `requestDisplayPower(0,false)`가 실패. scrcpy 4.1은 이 API를 `USE_ANDROID_15_DISPLAY_POWER=false`로 꺼 두고(#5530) `SurfaceControl.setDisplayPowerMode`를 쓴다 — M0에서 된 것은 그 경로. 같은 경로로 교체(다음 빌드), 폰 ⏳ |
 | — | 노트북 `/diag` 보고 | `no-Tesla-UA, 1108x632@1.25, mse=O, ws 20/20 35ms, video 61f 0fps lag 3224ms` (진단 페이지 자체 측정; 본 화면은 영상 재생됨) |
 
@@ -193,7 +195,7 @@ adbd가 계속 살아 있으므로 §3.5의 cgroup SIGKILL(=USB 디버깅 토글
 - **M8 TCP 모드(2026-09-05 구현):** 무선 디버깅으로 붙은 직후 `tcpip:<랜덤 고포트>` 전환 → loopback 재접속 → 서버 기동.
   확인할 것: ① adbd 응답 줄, ② 전환 후 `id`가 uid=2000인지, ③ **Wi-Fi를 끈 채** "서버 종료" 후 앱이 다시 띄우는지,
   ④ USB 디버깅 토글을 꺼도 서버가 유지되는지, ⑤ `persist.adb.tcp.port` 로그가 "설정됨"인지 "설정 불가"인지, ⑥ 재부팅 후 Wi-Fi 없이 붙는지.
-- M7 📵 재검증 (`fdc2350`의 SurfaceControl 경로), M6 오디오(미구현).
+- M7 📵 재검증 (`fdc2350`의 SurfaceControl 경로), **M6 오디오 첫 폰 확인**(`/api/status.audio`, 노트북 소리; 실패 시 `error` 문자열).
 - "서버 종료" 킬 스위치, 재부팅 후 Wi-Fi에서 "시작" 한 번으로 복구, 하룻밤 방치 후 유지.
 - `BASE_URL=http://100.99.9.9:3333 npx playwright test`를 노트북에서 폰에 대고 실행(자동화된 fps·지연 수치).
 - 5GHz 핫스팟에서 720p30 10분 연속(대역폭), 세로 고정 앱에서의 회전 동작.
@@ -223,7 +225,7 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 (`POST /api/report` → `/data/local/tmp/carcast/`, 조회 `GET /api/reports` 또는 앱의 공유 버튼). 첫 터치 후 재생·전체화면은 손으로.
 결과는 `car-tests/<펌웨어>.md`와 이 문서 §1의 가정 2·5·6에 반영.
 
-선행 조건(B층): 분리 실행 서버가 핫스팟·화면 OFF 후 유지 ✅ (§3.5, **USB 디버깅 토글 ON 필수**), 핫스팟 너머에서 라이브 영상·터치 ✅ (§3.6) — **실차 갈 준비 완료.** 소리는 아직 폰에서 난다(M6).
+선행 조건(B층): 분리 실행 서버가 핫스팟·화면 OFF 후 유지 ✅ (§3.5, **USB 디버깅 토글 ON 필수**), 핫스팟 너머에서 라이브 영상·터치 ✅ (§3.6) — **실차 갈 준비 완료.** 소리(M6)는 2026-09-10 구현, 폰·차 미확인 — 다음 방문 항목.
 
 ---
 
@@ -232,7 +234,7 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 2. ~~M0: One UI 8에서 shell의 VD 생성·`--start-app`·`display_ime_policy=local`·오디오 소스 선택 (가정 3·4).~~ 완료 → car-tests/s26u-one-ui-8.md
 3. ~~M3: Kadb 2.1.1 `pair`/`connect`, NsdManager `_adb-tls-pairing`/`_adb-tls-connect`, 데몬화한 서버의 수명(Shizuku #1125류).~~ 완료 → §3.4, §3.5. 남은 것: 재부팅 후 포트 재발견, "서버 종료" 킬 스위치.
 4. shell 서버의 수명: 하룻밤 방치, 앱이 죽었을 때 정리. (adbd 종료 시 죽는 문제는 USB 디버깅 토글로 해결, §3.5)
-6. M7 📵: SurfaceControl 경로(`fdc2350`)가 S26U에서 되는지. M6: `output` 캡처를 서버에 넣고 차 스피커로.
+6. M7 📵: SurfaceControl 경로(`fdc2350`)가 S26U에서 되는지. M6(구현됨): shell 서버의 `REMOTE_SUBMIX` 캡처가 One UI 8에서 서는지(`status.audio`), 차 브라우저가 첫 터치 뒤 `<audio>`를 재생하는지, A/V 동기.
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
 ---

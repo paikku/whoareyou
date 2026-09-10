@@ -10,13 +10,16 @@
 - **검증 기록(무엇을 어떤 테스트로 확인했나, 가정별 상태): [docs/verification-log.md](docs/verification-log.md)**
 - 실차/실기기 원본 표: [docs/car-tests/](docs/car-tests/)
 
-## 현재 상태 (2026-09-05: M1~M5 폰에서 검증 완료, M7 수정 후 검증 대기, M6 오디오 미착수)
+## 현재 상태 (2026-09-10: M1~M5 폰·실차 검증 완료, M6 오디오 구현·폰/차 검증 대기, M7 수정 후 검증 대기)
 
 앱은 VpnService로 `100.99.9.9`를 폰에 붙인다. `http://100.99.9.9:3333`의 웹 클라이언트와 스트림은
 **shell uid 프로세스**(`com.carcast.server.Server`, `app_process`로 기동)가 서빙한다. Android 14+는 VPN 주소로
 오는 패킷을 앱 uid 소켓에는 전달하지 않기 때문이다(실측: docs/dev-plan.md). 서버는 scrcpy에서 가져온 방식으로
 **가상 디스플레이**(1280x720)를 만들어 H.264로 인코딩해 fMP4/WebSocket으로 송출하고(`POST /api/app`으로 그 화면에 앱 실행),
-VD를 못 만들면 번들된 테스트 클립으로 대체한다. 브라우저 터치·키·텍스트는 그 VD에 주입되고(`/ws/control`),
+VD를 못 만들면 번들된 테스트 클립으로 대체한다. **소리(M6)**는 폰이 재생하는 오디오를 `REMOTE_SUBMIX`로 잡아(scrcpy의
+`--audio-source=output`: 폰 스피커는 무음) AAC-LC로 인코딩해 `/ws/audio`로 보내고, 브라우저는 별도 `<audio>` 요소로 재생하며
+영상 재생 헤드에 맞춘다(같은 폰 시계 pts). 오디오가 실패해도 영상은 그대로 나온다(`audio=none`으로 끌 수 있음, 웹 🔊 버튼은 차 쪽 음소거).
+브라우저 터치·키·텍스트는 그 VD에 주입되고(`/ws/control`),
 📵 버튼은 폰 화면만 끈다(`/api/screen`). 차에서 `/diag`를 열면 브라우저 환경·API
 지원·WS 성공률·디코드 fps·사설 주소 차단 여부를 측정해 폰 서버에 저장한다(`/api/reports`, 앱의 공유 버튼). M3부터 앱이 폰 자신의 무선 디버깅에 페어링(Kadb, 알림에 코드 입력)해 이 서버를 **분리 실행**한다. 무선 디버깅은
 Wi-Fi 연결 중에만 켜지므로 집 Wi-Fi에서 띄우고, 서버는 재부팅 전까지(차에서도) 유지된다. 끄기는 앱의 "서버 종료".
@@ -69,3 +72,6 @@ BASE_URL=http://127.0.0.1:3399 CHROME_PATH=... npx playwright test
 ```
 
 테스트 클립 재생성: `./gradlew :mux:installDist && mux/build/install/mux/bin/mux tools/clips/test-720p30.h264 tools/clips/assets/clips/test-720p30.cmp4 30`
+오디오 테스트 톤(8초, 440/660Hz 좌우 교대, AAC-LC 48kHz 스테레오)은 ffmpeg로 ADTS를 만든 뒤 같은 CLI로:
+`mux/build/install/mux/bin/mux tools/clips/test-tone-48k.aac tools/clips/assets/clips/test-tone-48k.cmp4`
+(클립 모드와 PC 실행에서는 이 톤이 `/ws/audio`로 나간다.)

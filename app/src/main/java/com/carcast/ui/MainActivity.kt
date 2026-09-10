@@ -201,6 +201,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** One line about the newest report the car sent, from the /api/status JSON the service polls. */
+    /** `/api/status.audio` in one line: display (capture running, N frames), clip, none, or failed with the reason. */
+    private fun audioLine(status: String): String {
+        val audio = runCatching { org.json.JSONObject(status).optJSONObject("audio") }.getOrNull() ?: return "?"
+        return when (val source = audio.optString("source")) {
+            "display" -> "캡처 중 (${audio.optString("capture")}, ${audio.optString("codec")}, frames=${audio.optLong("frames")}, drift=${audio.optLong("driftMs")}ms)" +
+                (audio.optString("error").takeIf { it.isNotEmpty() }?.let { " ⚠ $it" } ?: "")
+            "clip" -> "테스트 톤"
+            "failed" -> "실패 — ${audio.optString("error")} (영상은 계속)"
+            else -> source.ifEmpty { "?" }
+        }
+    }
+
     private fun lastReportLine(statusJson: String?): String {
         val st = runCatching { JSONObject(statusJson ?: return "-") }.getOrNull() ?: return "-"
         val n = st.optInt("reports", 0)
@@ -265,6 +277,8 @@ class MainActivity : AppCompatActivity() {
                             " clients=" + (Regex("\"videoClients\":(\\d+)").find(st)?.groupValues?.get(1) ?: "?")
                     }
                 ).append('\n')
+                // M6: the audio source is best effort; "failed: <why>" here is the first thing to read when the car is silent.
+                if (running && st != null) append("오디오: ").append(audioLine(st)).append('\n')
                 val prefs = AdbPrefs(this@MainActivity)
                 append("adb: ").append(StreamService.linkState ?: if (prefs.paired) "페어링됨, 세션 없음" else "미페어링").append('\n')
                 append("TCP 모드: ").append(

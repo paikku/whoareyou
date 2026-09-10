@@ -1,5 +1,6 @@
 package com.carcast.core
 
+import com.carcast.core.media.AudioSource
 import com.carcast.core.media.ControlMessage
 import com.carcast.core.media.VideoSource
 import java.io.File
@@ -61,8 +62,10 @@ object ServerMain {
         control: ((ControlMessage) -> Unit)? = null,
         extraApi: ((String, String, Map<String, String>) -> String?)? = null,
         onStopped: () -> Unit = {},
+        audioSource: AudioSource? = null,
     ) {
-        val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource)
+        val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir,
+            videoSource = videoSource, audioSource = audioSource)
         session.onStartApp = startApp
         session.controlHandler = control
         session.extraApi = extraApi

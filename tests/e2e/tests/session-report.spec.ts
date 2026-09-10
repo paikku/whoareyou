@@ -12,7 +12,8 @@ test('main page saves a session report with stats and events', async ({ page }) 
   const reports = await page.evaluate(async () => (await fetch('/api/reports')).json());
   const mine = reports.find((r: any) => r.report.kind === 'session');
   expect(mine, JSON.stringify(reports.map((r: any) => r.summary))).toBeTruthy();
-  expect(mine.summary).toMatch(/^session mse \d+fps lag \d+ms frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+$/);
+  expect(mine.summary).toMatch(/^session mse \d+fps lag \d+ms frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+ audio \d+f sync -?\d+ms$/);
+  expect(mine.report.stats.audio.frames).toBeGreaterThan(0);
   expect(mine.report.events.join('\n')).toContain('video ws open #1');
   expect(mine.report.stats.recoveries).toBe(0);
   // The stats line shows only what is abnormal: a clean run has no reconnects or recoveries on it.
