@@ -175,8 +175,8 @@ public final class Server {
             if ("POST".equals(method)) {
                 boolean on = !"0".equals(query.get("on")) && !"false".equals(query.get("on"));
                 // 📵 on a sleeping phone: bring the stream back first (wake + fresh display), then the panel as asked.
-                String recovered = watch.asleep() ? watch.recover("📵") : null;
-                boolean ok = screen.setMainScreen(on);
+                String recovered = watch.asleep() ? watch.recover("📵", on) : null;
+                boolean ok = recovered != null ? screen.isMainScreenOn() == on : screen.setMainScreen(on);
                 return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + ",\"asleep\":" + watch.asleep()
                         + (recovered != null ? ",\"recovered\":" + com.carcast.core.Json.INSTANCE.str(recovered) : "") + "}";
             }
@@ -198,17 +198,20 @@ public final class Server {
      * video client attaches and comes back {@link #RELEASE_GRACE_MS} after the last one leaves (the car
      * reconnects often; do not flap the setting); PowerManager is poked every
      * {@link ScreenPower#USER_ACTIVITY_INTERVAL_MS} meanwhile.</li>
-     * <li>Recovers from the power button: a phone that sleeps takes the virtual display with it ("차가 멈춤").
-     * While a car is connected the first sleep is undone within a second or two — wake the device, and since
-     * the virtual display's own power group does not wake with it, recreate the display and relaunch the app —
-     * and the panel is turned off through SurfaceControl, which is what the driver meant by pressing power.
-     * A second sleep within {@link #RECOVER_BACKOFF_MS} is taken as "I want my phone" and left alone
-     * (the car shows 😴 and 📵 recovers on request).</li>
+     * <li>Makes the power button a panel toggle while a car is connected. Pressing it always puts the device to
+     * sleep, which takes the virtual display with it ("차가 멈춤"), so every sleep is undone within a second or
+     * two: wake the device, and since the virtual display's own power group does not wake with it, recreate
+     * the display and relaunch the app. What the panel ends up as follows what the driver meant: the panel was
+     * lit → they wanted it dark (SurfaceControl off, device awake); the panel was already held dark by us →
+     * they wanted their phone back (panel on). Before this, a dark-held panel needed two presses (sleep, wake)
+     * and the car froze on the first one.</li>
+     * <li>When the last client leaves, the panel is lit again so the phone behaves normally without us.</li>
      * </ul>
      */
     private static final class PhoneWatch {
         private static final long RELEASE_GRACE_MS = 15_000;
-        private static final long RECOVER_BACKOFF_MS = 60_000;
+        /** Between recovery attempts, so a device that will not wake is not hammered. */
+        private static final long RECOVER_RETRY_MS = 5_000;
         private static final String TAG = "PhoneWatch";
         private final ScreenPower screen;
         private final DisplayVideoSource source;
@@ -217,7 +220,6 @@ public final class Server {
         private volatile long lastClientGoneAt;
         private volatile long lastRecoverAt;
         private volatile boolean stopped;
-        private volatile boolean asleepLogged;
         volatile int recoveries;
 
         PhoneWatch(ScreenPower screen, DisplayVideoSource source) {
@@ -248,8 +250,8 @@ public final class Server {
             thread.interrupt();
         }
 
-        /** Wake, get a rendering virtual display back, darken the panel. Serialized; returns what was done. */
-        synchronized String recover(String why) {
+        /** Wake, get a rendering virtual display back, leave the panel as asked. Serialized; returns what was done. */
+        synchronized String recover(String why, boolean panelOn) {
             lastRecoverAt = System.currentTimeMillis();
             recoveries++;
             screen.slept();
@@ -274,7 +276,7 @@ public final class Server {
                     did.append(", VD 켜짐");
                 }
             }
-            did.append(", 패널 끄기: ").append(screen.setMainScreen(false));
+            did.append(panelOn ? ", 패널 켜기: " : ", 패널 끄기: ").append(screen.setMainScreen(panelOn));
             Log.INSTANCE.i(TAG, did.toString());
             return did.toString();
         }
@@ -293,19 +295,21 @@ public final class Server {
                         lastPoke = now;
                         screen.userActivity();
                     }
-                    boolean asleep = asleep();
-                    if (asleep && now - lastRecoverAt >= RECOVER_BACKOFF_MS) {
-                        asleepLogged = false;
-                        Log.INSTANCE.i(TAG, "폰이 잠듦 (전원 버튼/시간 초과) — 차가 연결돼 있어 깨우고 패널만 끕니다. 폰을 쓰려면 1분 안에 한 번 더 끄세요");
-                        recover("자동 복구");
-                    } else if (asleep && !asleepLogged) {
-                        asleepLogged = true;
-                        Log.INSTANCE.i(TAG, "폰이 1분 안에 다시 잠듦 — 폰을 쓰려는 것으로 보고 그대로 둡니다 (차에서 📵로 복구)");
-                    } else if (!asleep) {
-                        asleepLogged = false;
+                    if (asleep() && now - lastRecoverAt >= RECOVER_RETRY_MS) {
+                        // The panel we were holding dark means this press was "give me my phone"; a lit panel means "darken it".
+                        boolean wantPanelOn = screen.isForcedOff();
+                        Log.INSTANCE.i(TAG, "폰이 잠듦 (전원 버튼/시간 초과) — 차가 연결돼 있어 깨웁니다; 패널은 "
+                                + (wantPanelOn ? "꺼져 있었으니 켭니다 (폰을 쓰려는 것)" : "켜져 있었으니 끕니다 (화면만 끄려는 것)"));
+                        recover("자동 복구", wantPanelOn);
                     }
-                } else if (screen.isKeptAwake() && now - lastClientGoneAt >= RELEASE_GRACE_MS) {
-                    screen.keepAwake(false);
+                } else if (now - lastClientGoneAt >= RELEASE_GRACE_MS) {
+                    if (screen.isKeptAwake()) {
+                        screen.keepAwake(false);
+                    }
+                    if (screen.isForcedOff()) {
+                        Log.INSTANCE.i(TAG, "차가 떠남 — 폰 패널을 다시 켭니다");
+                        screen.setMainScreen(true);
+                    }
                 }
             }
         }

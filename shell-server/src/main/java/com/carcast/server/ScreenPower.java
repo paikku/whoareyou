@@ -71,6 +71,11 @@ final class ScreenPower {
         forcedOff = false;
     }
 
+    /** Whether we are holding the panel dark through SurfaceControl (PowerManager still counts it as on). */
+    boolean isForcedOff() {
+        return forcedOff;
+    }
+
     /**
      * Wakes the device the way a key press does, then waits for PowerManager to agree. Returns whether it did.
      * The lock screen comes up on the phone; the virtual display is ALWAYS_UNLOCKED, so the car needs nothing.
