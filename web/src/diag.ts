@@ -19,7 +19,7 @@ interface Report {
   api: Record<string, boolean>;
   ws?: { ok: number; avg: number };
   /** `state` is the <video> element at the end of the probe (paused/readyState/currentTime/buffered), for stalls. */
-  video?: { packets: number; frames: number; fps: number; latencyMs: number; error: string; state: string };
+  video?: { packets: number; frames: number; fps: number; latencyMs: number; error: string; state: string; packetTimes: string };
   /** Control group: the car must fail to reach the phone's real (private) addresses. */
   addresses?: Record<string, 'reachable' | 'blocked' | 'skipped'>;
   summary: string;
@@ -131,7 +131,7 @@ function videoState(v: HTMLVideoElement): string {
 async function videoProbe(): Promise<void> {
   const out = $('video-result');
   const video = document.getElementById('video') as HTMLVideoElement;
-  const empty = (error: string) => ({ packets: 0, frames: 0, fps: 0, latencyMs: 0, error, state: videoState(video) });
+  const empty = (error: string) => ({ packets: 0, frames: 0, fps: 0, latencyMs: 0, error, state: videoState(video), packetTimes: '' });
   if (!mseSupported()) {
     out.textContent = 'MSE 미지원'; out.className = 'bad';
     report.video = empty('MSE unsupported');
@@ -141,12 +141,21 @@ async function videoProbe(): Promise<void> {
   const r = new MseRenderer(video);
   r.attach(document.body);
   let packets = 0;
+  // When each packet arrived (ms since the probe started), first few + last: "2 packets" from the
+  // phone reads very differently when they came at 0 ms and 8000 ms than at 0 ms and 30 ms.
+  const t0 = performance.now();
+  const firstArrivals: number[] = [];
+  let lastArrival = -1;
   const ws = new WebSocket(wsUrl('/ws/video'));
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') return;
     const p = parseMediaPacket(ev.data);
-    if (p) { packets++; r.push(p); }
+    if (!p) return;
+    packets++;
+    lastArrival = Math.round(performance.now() - t0);
+    if (firstArrivals.length < 5) firstArrivals.push(lastArrival);
+    r.push(p);
   };
   ws.onerror = () => log('video ws error');
   const opened = await within(new Promise<void>((resolve) => { ws.onopen = () => resolve(); ws.onclose = () => resolve(); }), VIDEO_WS_OPEN_MS);
@@ -166,14 +175,15 @@ async function videoProbe(): Promise<void> {
   }
   const s = r.stats();
   const state = videoState(video);
+  const packetTimes = packets ? `${firstArrivals.join(',')}${packets > 5 ? `…last=${lastArrival}` : ''}ms` : '';
   ws.close();
   if (!error) error = s.lastError;
   if (!error && s.framesDecoded === 0) error = packets ? 'no frames decoded (play() never started)' : 'no packets received';
   else if (!error && s.fps === 0) error = 'stalled: frames stopped before the end of the probe';
   out.textContent = `패킷 ${packets}, 디코드 ${s.framesDecoded}프레임, ${s.fps}fps, lag ${Math.round(s.latencyMs)}ms${error ? `, err: ${error}` : ''}`;
   out.className = s.framesDecoded > 0 && !error ? 'ok' : 'bad';
-  log(`video probe packets=${packets} frames=${s.framesDecoded} fps=${s.fps} ${state}${error ? ` err=${error}` : ''}`);
-  report.video = { packets, frames: s.framesDecoded, fps: s.fps, latencyMs: Math.round(s.latencyMs), error, state };
+  log(`video probe packets=${packets} at ${packetTimes || '-'} frames=${s.framesDecoded} fps=${s.fps} ${state}${error ? ` err=${error}` : ''}`);
+  report.video = { packets, frames: s.framesDecoded, fps: s.fps, latencyMs: Math.round(s.latencyMs), error, state, packetTimes };
   (window as any).__diag.video = report.video;
   r.destroy();
 }

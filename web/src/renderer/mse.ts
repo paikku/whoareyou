@@ -49,7 +49,9 @@ export class MseRenderer implements Renderer {
       try {
         const sb = ms.addSourceBuffer(this.mime);
         sb.mode = 'segments';
-        sb.addEventListener('updateend', () => this.pump());
+        // catchUp after every append, not only before the next one: with a single fragment in the
+        // buffer (car, first frame) nothing else ever arrives to trigger the jump to the live edge.
+        sb.addEventListener('updateend', () => { this.pump(); this.catchUp(); });
         sb.addEventListener('error', () => { this.st.lastError = 'sourcebuffer error'; });
         this.sb = sb;
         this.pump();
@@ -115,7 +117,8 @@ export class MseRenderer implements Renderer {
     this.st.latencyMs = Math.max(0, lag * 1000);
     if (v.paused) return; // resume() will start playback on the first gesture
     if (lag > MAX_LAG_S) {
-      v.currentTime = Math.max(0, end - 0.05);
+      // Never land before the range we have (a lone 30 ms fragment would put end-0.05 in the gap).
+      v.currentTime = Math.max(v.buffered.start(v.buffered.length - 1), end - 0.05);
     } else if (lag > MAX_LAG_S / 2) {
       v.playbackRate = 1.1;
     } else if (v.playbackRate !== 1) {
