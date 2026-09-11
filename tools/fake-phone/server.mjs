@@ -152,6 +152,18 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, appOnPhone: state.appOnPhone }));
     return;
   }
+  if (url.pathname === '/api/fake/no-app') {
+    // Test hook: the app's task is gone from the virtual display (closed, force-stopped, swiped away).
+    // frames keeps its count — the bug this guards was reading that cumulative counter as "nothing yet".
+    state.appOnPhone = false;
+    // 진짜 폰처럼 보이게 한다: source=display 일 때만 차가 "앱이 없다"를 말한다(클립 재생 중에는 아니다).
+    state.source = 'display';
+    state.frames = 5000; // 누적 프레임은 이미 쌓여 있다 — 이 값을 "아직 아무것도 없음"으로 읽던 것이 버그였다
+    state.appDisplay = url.searchParams.get('on') === '0' ? 7 : null;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, appDisplay: state.appDisplay }));
+    return;
+  }
   if (url.pathname === '/api/reset') {
     state.touches = []; state.keys = []; state.texts = [];
     res.writeHead(200); res.end('ok');

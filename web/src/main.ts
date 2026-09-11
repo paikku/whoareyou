@@ -255,11 +255,13 @@ function updateStatePanel(): void {
     });
     return;
   }
-  // 앱을 아직 하나도 안 띄운 상태. 빈 가상 디스플레이는 합성할 것이 없어 인코더가 한 장도 내지 않으므로
-  // (2026-09-11 가상 폰 실측) 차에는 아무것도 안 나온다 — 고장이 아니라 "고를 차례"라고 말해 준다.
-  if (lastStatus && lastStatus.source === 'display' && lastStatus.appDisplay === null && !lastStatus.frames) {
+  // 가상 화면에 앱의 task 가 하나도 없는 상태. 그릴 것이 없으면 인코더도 아무것도 내지 않으므로
+  // (2026-09-11 가상 폰 실측) 차에는 마지막 프레임이 얼어붙은 채로 남는다 — 고장처럼 보이지만 고장이 아니다.
+  // 처음부터 안 띄운 경우와, 쓰던 앱이 닫힌 경우가 모두 여기다. 무작위 탐색에서 앱이 사라진 뒤 12단계 동안
+  // 아무 설명 없이 죽은 화면이 이어졌다(seed 501398062): 그때 이 패널이 떴어야 했다.
+  if (lastStatus && lastStatus.source === 'display' && lastStatus.appDisplay === null) {
     stateName = 'no-app';
-    showState('아직 띄운 앱이 없습니다', '차 화면에 띄울 앱을 고르세요. 빈 화면은 그릴 것이 없어 영상도 나오지 않습니다.', {
+    showState('차 화면에 띄운 앱이 없습니다', '앱을 고르면 바로 나옵니다. 그릴 것이 없는 동안에는 영상도 멈춰 있습니다.', {
       label: '앱 띄우기',
       run: () => $('btn-app').click(),
     });

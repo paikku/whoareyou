@@ -63,7 +63,12 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
   const notes = disagreements(after);
   if (noticeMs === null) notes.unshift('서버가 끝내 알아채지 못함');
   if (!after.serverAlive) notes.unshift('서버가 죽었다');
-  if (recoveryMs === null && !action.mayStopVideo) notes.unshift('영상이 돌아오지 않았다');
+  if (recoveryMs === null && !action.mayStopVideo) {
+    // 가상 화면에 앱이 없으면 그릴 것이 없다. 영상이 안 오는 것이 당연하므로 어긋남이 아니라 상태다.
+    notes.unshift(after.appDisplay === null && after.appOnPhone === false
+      ? '앱이 없어 화면이 빈다 (정상)'
+      : '영상이 돌아오지 않았다');
+  }
 
   return {
     action: action.id,
