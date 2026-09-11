@@ -96,6 +96,26 @@ export function collectVideo(ms) {
   });
 }
 
+/**
+ * 화면을 계속 움직여 둔다. 가상 디스플레이는 **픽셀이 바뀔 때만** 버퍼를 올리므로, 정지 화면에서는
+ * 인코더가 사실상 아무것도 내지 않는다(가상 폰 실측: 8초에 1조각). 그래서 "디스플레이 → 인코더 → fMP4 →
+ * 클라이언트" 경로를 보려면 그릴 것을 만들어 줘야 한다. 실기기의 하드웨어 인코더가 정지 화면에서도
+ * REPEAT_PREVIOUS_FRAME_AFTER 로 바닥을 지키는지는 B 에서 MAX_GAP_MS 로 따로 본다.
+ */
+export async function wiggle() {
+  const c = await control();
+  let y = 0.3;
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (stopped) return;
+    y = y > 0.7 ? 0.3 : y + 0.1;
+    c.touch(0, 0.5, y);
+    c.touch(2, 0.5, y + 0.05);
+    c.touch(1, 0.5, y + 0.05, 0);
+  }, 250);
+  return () => { stopped = true; clearInterval(timer); c.close(); };
+}
+
 /** /ws/control 에 붙어 터치·키를 보낸다. web/src/protocol.ts 와 같은 바이트. */
 export async function control() {
   const ws = new WebSocket(`${WS_BASE}/ws/control`);
