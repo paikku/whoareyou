@@ -1,0 +1,14 @@
+{
+  "name": "@carcast/device-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "가상 폰(에뮬레이터) 또는 실기기 위에서 도는 서버를 검사한다. 브라우저는 쓰지 않는다 — 그쪽은 tests/e2e.",
+  "scripts": {
+    "test": "node --test tests/0*.test.mjs",
+    "test:kill-switch": "node --test tests/kill-switch.test.mjs"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}
