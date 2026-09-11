@@ -13,7 +13,7 @@ import { dirname, resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { Ctx, adbAvailable, byId, pickApp } from './lifecycle/actions';
 import { clientStats, probe, sleep } from './lifecycle/probe';
-import { Step, applyAndMeasure, reset, table } from './lifecycle/runner';
+import { Step, applyAndMeasure, openCarPage, reset, table } from './lifecycle/runner';
 
 const BASE = process.env.BASE_URL ?? '';
 test.skip(!BASE, '진짜 서버가 있어야 한다 (tools/virtual-phone/vphone.sh up)');
@@ -31,20 +31,13 @@ async function context(page: any): Promise<Ctx> {
   return { page, base: BASE, app: pickApp(), post };
 }
 
-// 가상 폰의 소프트웨어 인코더는 정지 화면에서 거의 아무것도 내지 않는다(0.3fps 실측). 그래서 그 자리에서는
-// "프레임이 흐르는가"를 시작 조건으로 걸 수 없다 — 대신 한 장이라도 오면 진행하고, 못 오면 기록만 남긴다.
-// 상태(앱 위치, 화면 전원, 서버 생존)는 프레임과 무관하게 확인할 수 있고, 그것이 이 시나리오가 보려는 것이다.
 const THROUGHPUT = !process.env.NO_THROUGHPUT;
 
 async function open(page: any) {
-  await page.goto('/');
-  await page.locator('#overlay').click({ position: { x: 100, y: 100 } });
-  const want = THROUGHPUT ? 5 : 0;
-  await page.waitForFunction((n: number) => (window as any).__carcast.stats().framesDecoded > n, want, { timeout: 45_000 })
-    .catch(() => {
-      if (THROUGHPUT) throw new Error('45초 안에 프레임이 오지 않았다');
-      test.info().annotations.push({ type: 'note', description: '프레임이 오지 않은 채로 시작한다 (가상 폰: 인코더가 쉬는 중)' });
-    });
+  const flowing = await openCarPage(page, BASE);
+  if (!flowing) {
+    test.info().annotations.push({ type: 'note', description: '프레임이 오지 않은 채로 시작한다 (가상 폰: 인코더가 쉬는 중)' });
+  }
 }
 
 /** 시나리오 하나: 동작을 순서대로 걸고 표를 남긴다. */

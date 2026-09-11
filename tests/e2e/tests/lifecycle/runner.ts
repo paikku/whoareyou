@@ -79,6 +79,31 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
   };
 }
 
+/**
+ * 차 페이지를 열고 그림이 살아 있는 상태까지 데려온다. 두 spec 이 같은 것을 쓰게 하려고 여기 둔다 —
+ * 따로 갖고 있다가 한쪽만 고쳐서 탐색이 준비 단계에서 죽은 적이 있다(2026-09-11).
+ *
+ * 가상 폰에서는 화면이 멈춰 있으면 프레임이 아예 안 온다. 그래서 기다리는 동안 화면을 흔들고,
+ * 그래도 안 오면 실패시키지 않고 알린다 — 상태(앱 위치·전원·서버 생존)는 프레임과 무관하게 볼 수 있다.
+ */
+export async function openCarPage(page: Page, base: string): Promise<boolean> {
+  await page.goto('/');
+  await page.locator('#overlay').click({ position: { x: 100, y: 100 } });
+  const stop = await wiggle(base).catch(() => null);
+  try {
+    const want = NO_THROUGHPUT ? 0 : 5;
+    await page.waitForFunction((n: number) => (window as any).__carcast.stats().framesDecoded > n, want, { timeout: 45_000 });
+    return true;
+  } catch {
+    if (!NO_THROUGHPUT) throw new Error('45초 안에 프레임이 오지 않았다');
+    return false;
+  } finally {
+    stop?.();
+  }
+}
+
+export { NO_THROUGHPUT };
+
 /** 차 화면이 살아 있는 상태로 되돌린다 (다음 동작을 깨끗한 자리에서 시작하려고). */
 export async function reset(ctx: Ctx): Promise<void> {
   const { page, base, post, app } = ctx;
