@@ -140,7 +140,8 @@ export const PHONE_ACTIONS: Action[] = [
   {
     id: 'phone.force-stop-app',
     side: 'phone',
-    title: '그 앱을 강제 종료한다',
+    // 앱이 사라지면 가상 디스플레이에 그릴 것이 없다 — 흔들어도 프레임은 안 나온다. 정상이다.
+    title: '그 앱을 강제 종료한다 (차 화면은 빈다)',
     mayStopVideo: true,
     async run({ app }) { adbShell(`am force-stop ${app.pkg}`); await sleep(1000); },
   },

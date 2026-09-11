@@ -77,7 +77,7 @@ test('앱 전환: 폰과 차가 같은 앱을 두고 주고받는다', async ({ 
     'phone.open-app',        // 폰이 가져간다
     'car.open-app',          // 차가 되찾는다 (강제 종료 후 새로)
     'phone.home',            // 폰에서 홈 — 차 화면은 그대로여야 한다
-    'phone.force-stop-app',  // 앱이 죽는다
+    'phone.force-stop-app',  // 앱이 죽는다 — 차 화면은 빈다(그릴 것이 없다)
     'car.open-app',          // 다시 띄운다
   ]);
 

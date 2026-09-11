@@ -164,8 +164,14 @@ final class InputInjector {
             default:
                 return false;
         }
-        if (action == MotionEvent.ACTION_MOVE && !down[slot]) {
-            return true; // stray move after up/cancel: nothing to do
+        if (action != MotionEvent.ACTION_DOWN && !down[slot]) {
+            // A stray event for a finger we are not holding. The common case is the UP that arrives on the
+            // car's *new* control socket after the old one died mid-gesture: we already cancelled that
+            // gesture when the socket went away, so this UP has nothing to lift. Counting it as a failed
+            // injection would be worse than useless — injectFailed is the number the guide tells people to
+            // check for the Samsung INJECT_EVENTS permission, and a false one there sends them chasing a
+            // permission problem they do not have.
+            return true;
         }
         if (action == MotionEvent.ACTION_DOWN) {
             down[slot] = true;
