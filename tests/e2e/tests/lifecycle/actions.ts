@@ -31,7 +31,27 @@ export interface Action {
   /** 이 동작 뒤에 영상이 끊기는 것이 **정상**인가 (끊김 자체를 실패로 세지 않는다) */
   mayStopVideo?: boolean;
   run(ctx: Ctx): Promise<void>;
+  /**
+   * 이 동작의 결과가 서버 상태에 **반영되기까지** 기다린다. 앱 전환에서는 이 시간이 곧 체감이다:
+   * 폰이 앱을 가져간 순간과 차가 그 사실을 알고 안내를 띄우는 순간 사이의 간격. 표에 "알아챔" 으로 남는다.
+   */
+  settle?(ctx: Ctx): Promise<number | null>;
 }
+
+/** cond() 가 참이 될 때까지의 ms. 시간 안에 안 되면 null. */
+export async function until(cond: () => Promise<boolean>, timeoutMs = 15_000): Promise<number | null> {
+  const t0 = Date.now();
+  for (;;) {
+    if (await cond().catch(() => false)) return Date.now() - t0;
+    if (Date.now() - t0 > timeoutMs) return null;
+    await sleep(250);
+  }
+}
+
+const appOnPhoneIs = (base: string, want: boolean) => async () => {
+  const res = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(3000) });
+  return (await res.json()).appOnPhone === want;
+};
 
 /** `cmd package resolve-activity --brief` 로 이 기기에서 띄울 수 있는 앱 하나를 고른다. */
 export function pickApp(): { pkg: string; component: string } {
@@ -79,8 +99,10 @@ export const PHONE_ACTIONS: Action[] = [
     mayStopVideo: true,
     async run({ app }) {
       adbShell(`am start --display 0 -n ${app.component} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER`);
-      await sleep(1000);
+      await sleep(500);
     },
+    // 차가 "폰이 가져갔다"를 알아채기까지. 이 값이 크면 운전자는 그동안 멈춘 그림을 이유도 모른 채 본다.
+    settle: ({ base }) => until(appOnPhoneIs(base, true), 15_000),
   },
   {
     id: 'phone.home',
@@ -130,7 +152,8 @@ export const CAR_ACTIONS: Action[] = [
     id: 'car.open-app',
     side: 'car',
     title: '차에서 ▶ 로 앱을 띄운다',
-    async run({ post, app }) { await post(`/api/app?name=${encodeURIComponent(app.pkg)}`); await sleep(1500); },
+    async run({ post, app }) { await post(`/api/app?name=${encodeURIComponent(app.pkg)}`); await sleep(500); },
+    settle: ({ base }) => until(appOnPhoneIs(base, false), 15_000),
   },
   {
     id: 'car.screen-off',

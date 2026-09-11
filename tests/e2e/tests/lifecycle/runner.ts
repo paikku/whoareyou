@@ -20,6 +20,8 @@ export interface Step {
   after: Probe;
   /** 동작 뒤 다시 프레임이 흐르기까지 걸린 시간. null 이면 시간 안에 돌아오지 않았다. */
   recoveryMs: number | null;
+  /** 그 동작의 결과를 서버가 알아채기까지 걸린 시간 (앱 전환에서 곧 체감). */
+  noticeMs?: number | null;
   /** 동작 직후 곧바로 흐르고 있었다 (끊김 없음) */
   uninterrupted: boolean;
   reconnects: number;
@@ -31,6 +33,8 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
   const before = await probe(page, base);
 
   await action.run(ctx);
+  // 알아채는 시간과 복구 시간은 같은 순간부터 따로 흐른다 — 함께 재야 서로를 왜곡하지 않는다.
+  const settling = action.settle?.(ctx);
 
   // 동작 직후를 기준점으로 삼는다. 새로고침처럼 카운터가 0으로 돌아가는 동작이 있어서
   // before 가 아니라 여기서 다시 읽어야 한다.
@@ -50,8 +54,10 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
     await sleep(250);
   }
 
+  const noticeMs = settling ? await settling : undefined;
   const after = await probe(page, base);
   const notes = disagreements(after);
+  if (noticeMs === null) notes.unshift('서버가 끝내 알아채지 못함');
   if (!after.serverAlive) notes.unshift('서버가 죽었다');
   if (recoveryMs === null && !action.mayStopVideo) notes.unshift('영상이 돌아오지 않았다');
 
@@ -62,6 +68,7 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
     before,
     after,
     recoveryMs,
+    noticeMs,
     uninterrupted,
     reconnects: Math.max(0, after.wsConnects - before.wsConnects),
     notes,
@@ -87,11 +94,12 @@ export function table(steps: Step[]): string {
     const app = s.after.appOnPhone === null ? '-' : s.after.appOnPhone ? '📱폰' : `차(${s.after.appDisplay})`;
     const screen = s.after.screenOn === null ? '-'
       : `${s.after.screenOn ? '켜짐' : '꺼짐'}${s.after.panelState ? `/${s.after.panelState}` : ''}`;
-    return `| ${i + 1} | ${s.side === 'phone' ? '📱' : '🚗'} ${s.title} | ${rec} | ${s.reconnects} | ${app} | ${screen} | ${s.after.fps} | ${s.notes.join(', ') || '-'} |`;
+    const notice = s.noticeMs === undefined ? '-' : s.noticeMs === null ? '**못 알아챔**' : `${(s.noticeMs / 1000).toFixed(1)}s`;
+    return `| ${i + 1} | ${s.side === 'phone' ? '📱' : '🚗'} ${s.title} | ${rec} | ${notice} | ${s.reconnects} | ${app} | ${screen} | ${s.after.fps} | ${s.notes.join(', ') || '-'} |`;
   });
   return [
-    '| # | 무슨 일이 일어났나 | 차 화면 복구 | 재접속 | 앱 위치 | 폰 화면 | fps | 어긋남 |',
-    '|---|---|---|---|---|---|---|---|',
+    '| # | 무슨 일이 일어났나 | 차 화면 복구 | 알아챔 | 재접속 | 앱 위치 | 폰 화면 | fps | 어긋남 |',
+    '|---|---|---|---|---|---|---|---|---|',
     ...rows,
   ].join('\n');
 }

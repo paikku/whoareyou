@@ -37,8 +37,10 @@ public final class DisplayVideoSource implements VideoSource {
     private static final String TAG = "DisplayVideoSource";
     /** How often the watcher asks Android where the launched app's task is (one `am stack list` per tick). */
     private static final long APP_WATCH_INTERVAL_MS = 5_000;
-    /** While the picture is frozen (empty display), look much sooner — that is when the driver is waiting. */
+    /** While the picture is frozen, or just after the car launched an app, look sooner — the driver is waiting. */
     private static final long APP_WATCH_BUSY_INTERVAL_MS = 1_000;
+    /** How long after a launch the ping-pong is likely, so the fast poll is worth its cost. */
+    private static final long APP_WATCH_FAST_WINDOW_MS = 20_000;
     private static final int APP_WATCH_MAX_FAILURES = 3;
 
     private final DisplayCapture display;
@@ -50,6 +52,7 @@ public final class DisplayVideoSource implements VideoSource {
     private volatile String lastPackage = "";
     /** Display the launched app's task was last seen on; null when it has no task (or was never looked up). */
     private volatile Integer appDisplay;
+    private volatile long fastWatchUntilMs;
     private Thread appWatcher;
 
     public DisplayVideoSource(int width, int height, int dpi, boolean systemDecorations, int bitRate, int maxFps) {
@@ -175,6 +178,7 @@ public final class DisplayVideoSource implements VideoSource {
         lastApp = component;
         lastPackage = pkg;
         appDisplay = id;
+        fastWatchUntilMs = System.currentTimeMillis() + APP_WATCH_FAST_WINDOW_MS;
         startAppWatcher();
         // The picture is about to change completely. Without this the car waits up to I_FRAME_INTERVAL (2 s)
         // for the next IDR and shows the *previous* app's last frame meanwhile — the "app switch is slow"
@@ -214,11 +218,16 @@ public final class DisplayVideoSource implements VideoSource {
      * took the app" in the server log and in {@code /api/status} (appDisplay / appOnPhone). It only reports —
      * pulling the task back on its own would just fight the user for the app.
      *
-     * The poll is adaptive, because the delay here is what the driver feels: the phone taking the app is the
-     * moment the picture dies, and a fixed 5 s poll means up to 5 s of a frozen frame before the car can say
-     * why. An empty virtual display has nothing to compose, so the encoder's frame counter stops dead — that
-     * is a free, precise hint. When it stops advancing we check every second; otherwise we stay lazy, because
-     * `am stack list` is a process spawn and this runs for the whole drive.
+     * The poll is adaptive, because the delay here is what the driver feels: a fixed 5 s poll means up to
+     * five seconds of a stale picture before the car can say why. Two cheap hints tell us when to look often:
+     *
+     *  - the encoder's frame counter stopped (an empty virtual display has nothing to compose, so the
+     *    picture is dead — but this is not reliable: on some ROMs the display keeps composing something
+     *    after the task leaves, which is exactly what the virtual phone showed);
+     *  - the car has just launched an app, which is when the ping-pong happens. For a short window after
+     *    that, look every second.
+     *
+     * Otherwise stay lazy: `am stack list` is a process spawn and this thread runs for the whole drive.
      */
     private synchronized void startAppWatcher() {
         if (appWatcher != null && appWatcher.isAlive()) {
@@ -231,8 +240,9 @@ public final class DisplayVideoSource implements VideoSource {
                 long frames = sink != null ? sink.getFrames() : 0;
                 boolean stalled = frames == lastFrames;
                 lastFrames = frames;
+                boolean justLaunched = System.currentTimeMillis() < fastWatchUntilMs;
                 try {
-                    Thread.sleep(stalled ? APP_WATCH_BUSY_INTERVAL_MS : APP_WATCH_INTERVAL_MS);
+                    Thread.sleep(stalled || justLaunched ? APP_WATCH_BUSY_INTERVAL_MS : APP_WATCH_INTERVAL_MS);
                 } catch (InterruptedException e) {
                     return;
                 }

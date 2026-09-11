@@ -85,7 +85,10 @@ test('앱 전환: 폰과 차가 같은 앱을 두고 주고받는다', async ({ 
   for (const s of steps) expect(s.after.serverAlive, `${s.title} 뒤 서버가 죽었다`).toBe(true);
   const [carOpen, phoneTook, carRetook] = steps;
   expect(carOpen.after.appOnPhone, '차가 띄웠는데 앱이 차에 없다').toBe(false);
+  expect(phoneTook.noticeMs, '폰이 가져갔는데 서버가 끝내 알아채지 못했다').not.toBeNull();
   expect(phoneTook.after.appOnPhone, '폰이 가져갔는데 서버가 모른다').toBe(true);
+  // 운전자가 이유도 모른 채 멈춘 그림을 보는 시간. 감시자의 빠른 주기(1초) 안쪽이어야 한다.
+  expect(phoneTook.noticeMs!, `차가 알아채는 데 ${phoneTook.noticeMs}ms 걸렸다`).toBeLessThan(8_000);
   expect(carRetook.after.appOnPhone, '차가 되찾았는데 여전히 폰에 있다고 한다').toBe(false);
   // 폰이 가져간 뒤에도 차는 계속 프레임을 받는다(빈 디스플레이). 그래서 "검은 화면"이 되는 것이고,
   // 사용자에게는 상태줄로 알린다 — 이 사실 자체를 표에 남겨 둔다.
