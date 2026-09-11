@@ -26,7 +26,8 @@ npm run device
 echo "::endgroup::"
 
 echo "::group::차 쪽 클라이언트를 진짜 서버에 대고 (Chrome 148, Model Y 프로필)"
-CHROME_PATH="$(find tests/e2e/.cache -name chrome -type f | head -1)" \
+# 절대 경로로: npm workspace 는 tests/e2e 에서 돌기 때문에 상대 경로는 어긋난다.
+CHROME_PATH="$PWD/$(find tests/e2e/.cache -name chrome -type f | head -1)" \
 BASE_URL=http://127.0.0.1:3333 \
   npm test --workspace tests/e2e -- --project=model-y-2026.26
 echo "::endgroup::"

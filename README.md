@@ -7,6 +7,7 @@
 - **핫스팟 전용으로 가는 길(Wi-Fi 요구 제거 계획): [docs/hotspot-only.md](docs/hotspot-only.md)**
 - **남들은 어떻게 하나(Tesor·TeslaMirror·TeslaDisplay·Castla 조사): [docs/prior-art.md](docs/prior-art.md)**
 - **테스트 가이드(어디서 무엇을): [docs/testing-guide.md](docs/testing-guide.md)**
+- **가상 폰(폰 없이 폰 쪽 코드 돌려보기): [tools/virtual-phone/README.md](tools/virtual-phone/README.md)**
 - **검증 기록(무엇을 어떤 테스트로 확인했나, 가정별 상태): [docs/verification-log.md](docs/verification-log.md)**
 - 실차/실기기 원본 표: [docs/car-tests/](docs/car-tests/)
 
@@ -71,3 +72,15 @@ BASE_URL=http://127.0.0.1:3399 CHROME_PATH=... npx playwright test
 ```
 
 테스트 클립 재생성: `./gradlew :mux:installDist && mux/build/install/mux/bin/mux tools/clips/test-720p30.h264 tools/clips/assets/clips/test-720p30.cmp4 30`
+
+폰이 없을 때는 **가상 폰**(에뮬레이터)에 같은 서버를 띄워 같은 테스트를 돌린다. 가상 디스플레이·앱 실행·앱 충돌·
+터치 주입·킬 스위치가 여기서 걸린다 (VPN 주소 배달·핫스팟·무선 디버깅 페어링은 그대로 실기기 몫):
+
+```bash
+tools/virtual-phone/vphone.sh sdk    # 최초 1회
+./gradlew :app:assembleDebug && tools/virtual-phone/vphone.sh up
+npm run device                       # 기기 검사
+tools/virtual-phone/vphone.sh down
+```
+
+GitHub Actions(`emulator.yml`)가 푸시마다 같은 순서를 돈다. 자세히: [tools/virtual-phone/README.md](tools/virtual-phone/README.md)

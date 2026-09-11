@@ -1,10 +1,11 @@
 # 테스트 가이드: 어디서, 무엇을, 언제
 
-세 곳에서 테스트한다. 위쪽일수록 빠르고 싸다. **아래 단계는 위 단계가 통과한 뒤, 그리고 정말 필요할 때만** 내려간다.
+네 곳에서 테스트한다. 위쪽일수록 빠르고 싸다. **아래 단계는 위 단계가 통과한 뒤, 그리고 정말 필요할 때만** 내려간다.
 
 | 장소 | 장비 | 걸리는 시간 | 여기서 잡는 것 |
 |---|---|---|---|
 | **A. 개발 PC / CI** | PC 하나 (또는 GitHub Actions) | 초 ~ 2분 | 웹 클라이언트 전부, fMP4 먹서, 프로토콜, 재연결 로직 |
+| **A+. 가상 폰** | PC 하나 (KVM 있는 리눅스 / CI) | 5~10분 | 폰 쪽 코드 대부분: 가상 디스플레이·앱 실행·앱 충돌·입력 주입·킬 스위치 |
 | **B. 폰 + 노트북** | S26U + 노트북(폰 핫스팟 접속) | 10~30분 | tun 주소 배달, 핫스팟 속도, 삼성 전용 동작(VD·오디오·화면 OFF·키보드) |
 | **C. 실차** | Model Y L | 5분 | 테슬라 브라우저 정책(사설 IP 차단), 진짜 디코드 성능, WS 실패율 |
 
@@ -21,13 +22,15 @@
 ② 먹서 단위 테스트   5초    ./gradlew :mux:test
 ③ e2e 빠른 세트     40초   npm run e2e:quick        ← 웹/프로토콜 고칠 때 기본
 ④ e2e 전체         2분    npm run e2e              ← 커밋 전
-⑤ APK 빌드         2~5분  ./gradlew :app:assembleDebug   ← 폰에 설치할 때만
-⑥ 폰 검증          10분+  APK 설치 → 노트북에서 curl / Playwright
-⑦ 실차 검증        5분    /diag 체크리스트
+⑤ APK 빌드         2~5분  ./gradlew :app:assembleDebug   ← 폰/가상 폰에 올릴 때
+⑥ 가상 폰 검사      5~10분 tools/virtual-phone/vphone.sh up && npm run device  ← 폰 쪽 코드 고쳤을 때
+⑦ 폰 검증          10분+  APK 설치 → 노트북에서 curl / Playwright
+⑧ 실차 검증        5분    /diag 체크리스트
 ```
 
 - ①~④는 **폰이 없어도** 된다. 코드 대부분(웹, 먹서, 서버 프로토콜)은 여기서 끝난다.
-- ⑤는 실제로 폰에 올릴 때만. 웹만 고쳤다면 APK를 다시 빌드할 필요 없이 ③④로 충분하다.
+- ⑤는 폰이나 가상 폰에 올릴 때만. 웹만 고쳤다면 APK를 다시 빌드할 필요 없이 ③④로 충분하다.
+- ⑥도 **폰이 없어도** 된다. shell-server/ 나 core/ 를 고쳤다면 ⑦ 전에 여기서 먼저 깨진다.
 - CI도 같은 원칙: `web.yml`은 웹/테스트 파일이 바뀔 때, `android.yml`은 안드로이드/Gradle 파일이 바뀔 때만 돈다. 웹만 고쳤는데 APK가 필요하면 Actions 탭에서 `android` 워크플로를 **수동 실행(Run workflow)** 한다.
 
 ### 최초 1회 준비 (개발 PC)
@@ -48,20 +51,20 @@ export CHROME_PATH=$(find ~/경로/Tesla/tests/e2e/.cache -name chrome -type f |
 
 ## 2. 기능별로 어디서 어떻게 테스트하나
 
-| 기능 | A. PC/CI | B. 폰+노트북 | C. 실차 |
-|---|---|---|---|
-| **웹 클라이언트 (화면, 버튼, 진단 페이지)** | `npm run e2e:quick`. 가짜 폰이 클립을 쏘고 Chrome 148이 받는다 | `BASE_URL=http://100.99.9.9:3333 npx playwright test` 로 같은 테스트를 폰에 대고 실행 | `/diag` 열고 `저장됨` 확인 (결과는 폰에 저장) |
-| **영상 디코드 / 지연** | `stream.spec.ts`: fps ≥ 25, 지연 < 300ms, 10초 무정지 | 노트북 Chrome에서 `http://100.99.9.9:3333/` 눈으로 확인 + 위 Playwright | `/diag` 의 fps·lag 수치 |
-| **터치 / 키 입력** | `input.spec.ts`: 클릭 → 가짜 폰이 받은 정규화 좌표 검증 | 노트북 클릭에 폰 가상 화면의 앱이 반응, `/api/status.injected/injectFailed` | 차 화면 터치로 앱 조작 |
-| **재연결 (WS 끊김, 거부)** | `reconnect.spec.ts`: 고장 주입(거부 34%, 지연 150ms, 5초마다 절단) | 폰 화면 끄기/핫스팟 재접속 후 복구 확인 | 후진 기어 전환 후 복구 확인 |
-| **fMP4 먹서** | `./gradlew :mux:test` + (선택) ffmpeg로 디코드 | 해당 없음 | 해당 없음 |
-| **VpnService 가짜 IP (가정 1)** | 불가 | **핵심.** 노트북을 폰 핫스팟에 붙이고 `curl http://100.99.9.9:3333/api/status` | 차에서 `/diag` 열림 여부 |
-| **사설 IP 차단 (가정 2)** | Playwright가 192.168.*/10.* 접속을 DNS 실패로 흉내; `/diag`가 서버의 주소 목록을 자동 프로브 | 불가 | `/diag`의 "사설 주소 차단 확인"이 핫스팟 주소를 `차단됨`으로 보고하는지 |
-| **핫스팟 대역폭** | 불가 | 5GHz 핫스팟에서 720p30이 끊김 없이 10분 | 동일 |
-| **ADB 페어링·shell 서버 (M3)** | 프로토콜 단위 테스트만 | **핵심.** 앱에서 페어링 → `uid=2000` 표시 | 해당 없음 |
-| **가상 디스플레이·앱 실행 (M4)** | CI 에뮬레이터(선택) | **핵심.** 삼성 One UI 동작은 여기서만 | 차에서 앱 조작 |
-| **오디오 (M6)** | 오디오 SourceBuffer 진행 여부 | 폰 스피커 무음/출력 선택 확인 | 차 스피커로 재생, 첫 터치 후 소리 |
-| **화면 OFF·발열·배터리 (M7)** | 불가 | 화면 끄고 30분 연속 스트리밍 | 동일 |
+| 기능 | A. PC/CI | A+. 가상 폰 | B. 폰+노트북 | C. 실차 |
+|---|---|---|---|---|
+| **웹 클라이언트 (화면, 버튼, 진단 페이지)** | `npm run e2e:quick`. 가짜 폰이 클립을 쏘고 Chrome 148이 받는다 | 같은 테스트를 **진짜 서버**에 대고: `BASE_URL=http://127.0.0.1:3333` | `BASE_URL=http://100.99.9.9:3333 npx playwright test` 로 같은 테스트를 폰에 대고 실행 | `/diag` 열고 `저장됨` 확인 (결과는 폰에 저장) |
+| **영상 디코드 / 지연** | `stream.spec.ts`: fps ≥ 25, 지연 < 300ms, 10초 무정지 | 진짜 인코더 출력으로 같은 검사(소프트웨어 인코더라 fps 기준은 낮다) | 노트북 Chrome에서 `http://100.99.9.9:3333/` 눈으로 확인 + 위 Playwright | `/diag` 의 fps·lag 수치 |
+| **터치 / 키 입력** | `input.spec.ts`: 클릭 → 가짜 폰이 받은 정규화 좌표 검증 | **핵심.** `device-input.spec.ts` + `npm run device`: 브라우저 클릭이 안드로이드까지 주입되는지 | 노트북 클릭에 폰 가상 화면의 앱이 반응, `/api/status.injected/injectFailed` | 차 화면 터치로 앱 조작 |
+| **재연결 (WS 끊김, 거부)** | `reconnect.spec.ts`: 고장 주입(거부 34%, 지연 150ms, 5초마다 절단) | 고장 주입은 가짜 폰 전용 — 해당 없음 | 폰 화면 끄기/핫스팟 재접속 후 복구 확인 | 후진 기어 전환 후 복구 확인 |
+| **fMP4 먹서** | `./gradlew :mux:test` + (선택) ffmpeg로 디코드 | 해당 없음 | 해당 없음 | 해당 없음 |
+| **VpnService 가짜 IP (가정 1)** | 불가 | 불가 — `adb forward`로 붙으므로 이 경로가 없다 | **핵심.** 노트북을 폰 핫스팟에 붙이고 `curl http://100.99.9.9:3333/api/status` | 차에서 `/diag` 열림 여부 |
+| **사설 IP 차단 (가정 2)** | Playwright가 192.168.*/10.* 접속을 DNS 실패로 흉내; `/diag`가 서버의 주소 목록을 자동 프로브 | 불가 | 불가 | `/diag`의 "사설 주소 차단 확인"이 핫스팟 주소를 `차단됨`으로 보고하는지 |
+| **핫스팟 대역폭** | 불가 | 불가 | 5GHz 핫스팟에서 720p30이 끊김 없이 10분 | 동일 |
+| **ADB 페어링·shell 서버 (M3)** | 프로토콜 단위 테스트만 | 서버가 `uid=2000`으로 뜨는지까지. 페어링·TCP 모드는 불가 | **핵심.** 앱에서 페어링 → `uid=2000` 표시 | 해당 없음 |
+| **가상 디스플레이·앱 실행 (M4)** | 불가 | **핵심.** `npm run device`가 `source=display`·앱 실행·M4-b 앱 충돌까지 확인 | **핵심.** 삼성 One UI 동작은 여기서만 | 차에서 앱 조작 |
+| **오디오 (M6)** | 오디오 SourceBuffer 진행 여부 | 미구현 | 폰 스피커 무음/출력 선택 확인 | 차 스피커로 재생, 첫 터치 후 소리 |
+| **화면 OFF·발열·배터리 (M7)** | 불가 | `/api/screen` 요청·상태까지. 실제 소등·발열·배터리는 불가 | 화면 끄고 30분 연속 스트리밍 | 동일 |
 
 ---
 
@@ -95,6 +98,31 @@ npm run fake-phone              # http://localhost:3333/
 고장 주입 옵션: `node tools/fake-phone/server.mjs --ws-reject 0.5 --delay-ms 200 --ws-drop-every 5`
 
 실패했을 때 보는 곳: `tests/e2e/test-results/` 안의 trace.zip을 `npx playwright show-trace <파일>` 로 열면 화면 녹화와 콘솔이 나온다.
+
+### A+. 가상 폰 (Android 에뮬레이터)
+
+폰 쪽 코드(`shell-server/`, `core/`)를 고쳤는데 폰이 손에 없을 때. 에뮬레이터에 APK 를 깔고 **앱이 하는 것과
+똑같은 명령으로 같은 dex 를 shell uid 로** 띄운다. 다른 것은 접속 경로뿐이다 — 차/노트북은 VPN 주소로 오지만
+여기서는 `adb forward` 로 온다.
+
+```bash
+tools/virtual-phone/vphone.sh sdk     # 최초 1회 (cmdline-tools + emulator + 시스템 이미지, 약 2GB)
+./gradlew :app:assembleDebug
+tools/virtual-phone/vphone.sh up      # 부팅 → 설치 → 서버 기동 → http://127.0.0.1:3333
+
+npm run device                        # 기기 검사: source=display, 앱 실행, M4-b 충돌, 입력 주입, 화면 OFF
+cd tests/e2e && CHROME_PATH=$(find .cache -name chrome -type f | head -1) \
+  BASE_URL=http://127.0.0.1:3333 npx playwright test --project=model-y-2026.26
+
+tools/virtual-phone/vphone.sh logs    # 서버 로그 (기동 로그 + /api/log)
+tools/virtual-phone/vphone.sh down    # 킬 스위치 → 에뮬레이터 종료
+```
+
+`/dev/kvm` 이 있어야 한다(리눅스). CI 는 `.github/workflows/emulator.yml` 이 같은 순서를 돈다.
+
+**여기서 통과했다고 B 를 건너뛰지 않는다.** 에뮬레이터는 AOSP 이고 폰은 One UI 다 — INJECT_EVENTS 정책,
+화면 OFF 동작, 도즈, cgroup/SELinux 는 서로 다르게 굴 수 있다. 바뀌는 것은 **순서**다: 폰에 올리기 전에
+여기서 먼저 깨진다. 한계 전체는 [tools/virtual-phone/README.md](../tools/virtual-phone/README.md).
 
 ### B. 폰(S26U) + 노트북
 
@@ -210,7 +238,7 @@ adb shell "echo hi | nc -l -p 3334"    # shell uid로 직접 listen: 이게 되�
 | 차에서만 | 왜 |
 |---|---|
 | 차 Wi-Fi 경로(안테나·칩셋, 주차↔주행 전환, 차 절전 시 끊김) | 노트북은 같은 핫스팟이어도 다른 무선 클라이언트 |
-| 브라우저 바깥 동작: 후진 기어에 화면이 가려질 때 WS 유지, 내비 팝업으로 백그라운드 전환, 탭이 메모리로 죽는지, 전체화면·키보드 | Chrome for Testing에 없는 테슬라 UI 동작 |
+| 브라우저 바깥 동작: 후진 기어에 화면이 가려질 때 WS 유지, 내비 팝업으로 백그라운드 전환, 탭이 메모리로 죽는지, 전체화면·키보드 | Chrome for Testing에 없는 테슬라 UI 동작. 노트북에서 탭을 **진짜로** 백그라운드로 보낼 방법이 없다: 헤드리스 탭은 언제나 `visible`이고, CDP `Page.setWebLifecycleState(frozen)`은 무시되며, xvfb에는 창 관리자가 없어 `bringToFront`로도 가려지지 않는다 (2026-09-11 실측) |
 | 소리(M6): 차 스피커 출력, 오디오 자동재생 정책 | 미구현. 구현 후 실차 필수 |
 | 30분 이상 장시간: 폰 발열(햇빛), 핫스팟 유지 | 환경 |
 | 펌웨어 업데이트 후 `/diag` 1회 | UA·DPR·코덱 변화 추적 |
@@ -253,7 +281,8 @@ curl http://100.99.9.9:3333/api/reports | python -m json.tool     # 노트북을
 | 웹 기능 하나 완성 | `npm run e2e:quick` |
 | 먹서/프로토콜 수정 | `./gradlew :mux:test` |
 | 커밋/푸시 | `npm run e2e` (CI가 `web.yml`로 다시 돈다) |
-| 안드로이드 코드 수정 | 푸시하면 CI가 APK 빌드. 로컬 빌드는 폰에 올릴 때만 |
+| 안드로이드 코드 수정 | 푸시하면 CI가 APK 빌드. 로컬 빌드는 폰/가상 폰에 올릴 때만 |
+| shell-server/ · core/ 수정 | `vphone.sh up && npm run device` (CI는 `emulator.yml`이 자동으로) |
 | 폰에 올릴 때 | APK 아티팩트 다운로드 → B 절차 |
 | 렌더러/전송 코드 수정 뒤 | `SOAK_MINUTES=10 BASE_URL=… npx playwright test tests/soak.spec.ts --project=model-y-2026.26` (폰 화면 정지 구간 포함) |
 | 펌웨어 업데이트 / 큰 마일스톤 | C 절차 |
