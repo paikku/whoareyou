@@ -208,6 +208,96 @@ export const CAR_ACTIONS: Action[] = [
     },
   },
   {
+    id: 'car.drag',
+    side: 'car',
+    title: '차 화면을 끌어 스크롤한다',
+    async run({ page }) {
+      const box = await page.locator('#stage').boundingBox();
+      if (!box) return;
+      const x = box.x + box.width / 2;
+      await page.mouse.move(x, box.y + box.height * 0.7);
+      await page.mouse.down();
+      for (let i = 1; i <= 8; i++) await page.mouse.move(x, box.y + box.height * (0.7 - 0.05 * i));
+      await page.mouse.up();
+      await sleep(600);
+    },
+  },
+  {
+    id: 'car.long-press',
+    side: 'car',
+    title: '차 화면을 길게 누른다',
+    async run({ page }) {
+      const box = await page.locator('#stage').boundingBox();
+      if (!box) return;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await sleep(900);
+      await page.mouse.up();
+      await sleep(500);
+    },
+  },
+  {
+    id: 'car.two-finger',
+    side: 'car',
+    title: '두 손가락으로 벌린다 (멀티터치)',
+    // 차 화면은 멀티터치다. 슬롯 배분이 틀리면 여기서 유령 손가락이 남는다.
+    async run({ page }) {
+      const box = await page.locator('#stage').boundingBox();
+      if (!box) return;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      const a = await page.context().newCDPSession(page);
+      const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd', points: { x: number; y: number }[]) =>
+        a.send('Input.dispatchTouchEvent', { type, touchPoints: points.map((p) => ({ ...p, id: points.indexOf(p) })) });
+      await touch('touchStart', [{ x: cx - 20, y: cy }, { x: cx + 20, y: cy }]);
+      for (let i = 1; i <= 6; i++) {
+        await touch('touchMove', [{ x: cx - 20 - i * 12, y: cy }, { x: cx + 20 + i * 12, y: cy }]);
+      }
+      await touch('touchEnd', []);
+      await a.detach();
+      await sleep(600);
+    },
+  },
+  {
+    id: 'car.nav-back',
+    side: 'car',
+    title: '차의 ◀ (뒤로)',
+    async run({ page }) { await page.locator('#bar button[data-key=back]').click(); await sleep(600); },
+  },
+  {
+    id: 'car.nav-home',
+    side: 'car',
+    title: '차의 ● (홈)',
+    async run({ page }) { await page.locator('#bar button[data-key=home]').click(); await sleep(800); },
+  },
+  {
+    id: 'car.type-text',
+    side: 'car',
+    title: '차의 키보드로 글자를 보낸다',
+    async run({ page }) {
+      await page.locator('#btn-keyboard').click();
+      await page.locator('#kbd').fill('carcast');
+      await sleep(600);
+    },
+  },
+  {
+    id: 'car.touch-while-socket-dies',
+    side: 'car',
+    title: '손가락을 댄 채 제어 소켓이 죽는다',
+    // UP 이 영영 안 오는 상황. 서버가 제스처를 취소하지 않으면 그 손가락은 영원히 눌린 채로 남는다.
+    async run({ page }) {
+      const box = await page.locator('#stage').boundingBox();
+      if (!box) return;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await sleep(300);
+      await page.evaluate(() => (window as any).__carcast.restartControl());
+      await sleep(1200);
+      await page.mouse.up();
+      await sleep(800);
+    },
+  },
+  {
     id: 'car.drop-video-ws',
     side: 'car',
     title: '영상 소켓이 끊긴다 (차 Wi-Fi 가 튄다)',

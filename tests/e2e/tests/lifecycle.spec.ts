@@ -123,6 +123,34 @@ test('폰 생애주기: CarCast 앱을 죽여도, 도즈에 들어가도 서버�
   if (THROUGHPUT) expect(steps[0]!.recoveryMs, 'UI 를 죽였더니 영상이 멈췄다 (분리 실행이 아니다)').not.toBeNull();
 });
 
+test('터치: 끌기·길게 누르기·멀티터치·키보드가 폰까지 가고, 손가락이 남지 않는다', async ({ page }) => {
+  const ctx = await context(page);
+  await open(page);
+  await reset(ctx);
+  const before = await probe(page, BASE);
+
+  const steps = await scenario(page, '터치 상호작용', [
+    'car.tap',
+    'car.drag',
+    'car.long-press',
+    'car.two-finger',
+    'car.nav-back',
+    'car.type-text',
+    'car.touch-while-socket-dies',   // 제스처 도중 소켓이 죽는다
+    'car.tap',                        // 그 다음 탭이 멀쩡한 한 손가락 탭이어야 한다
+  ]);
+
+  for (const s of steps) {
+    expect(s.after.serverAlive, `${s.title} 뒤 서버가 죽었다`).toBe(true);
+    // 어떤 제스처도 손가락을 남기면 안 된다. 남으면 다음 탭이 유령 손가락과의 멀티터치가 된다.
+    expect(s.after.pointersDown, `${s.title} 뒤 손가락이 ${s.after.pointersDown}개 눌린 채 남았다`).toBe(0);
+  }
+  const last = steps[steps.length - 1]!;
+  expect(last.after.injected!, '제스처가 폰까지 가지 않았다').toBeGreaterThan(before.injected!);
+  expect(last.after.injectFailed, 'INJECT_EVENTS 가 막혀 있다 (삼성: USB 디버깅(보안 설정))')
+    .toBe(before.injectFailed);
+});
+
 test('전원 버튼 × 📵: 폰 화면과 차 화면이 서로를 끌고 가는가', async ({ page }) => {
   const ctx = await context(page);
   await open(page);
@@ -153,6 +181,12 @@ test('전원 버튼 × 📵: 폰 화면과 차 화면이 서로를 끌고 가는
   // 📵 로 꺼 둔 사이에 전원 버튼을 누르면 패널은 켜진다. 그때 서버가 계속 "꺼짐"이라고 우기면
   // 차의 📵 버튼은 그 뒤로 계속 뒤집힌 채로 남는다 — 실 사용에서 제일 짜증나는 종류의 버그다.
   // ScreenPower 의 감시자가 기기 쪽을 믿고 장부를 버리는지 본다.
+  // 전원 버튼으로 폰이 잠든 뒤 차에서 📵 를 다시 누르면 화면이 돌아와야 한다. 안 돌아오면 운전자는
+  // 차에서 빠져나갈 방법이 없다 (2026-09-11 시나리오가 잡은 상태).
+  const screenOn = steps[2]!;
+  expect(screenOn.after.screenOn, '📵 해제를 눌렀는데 폰 화면이 켜지지 않았다 — 차에서 되돌릴 방법이 없다')
+    .toBe(true);
+
   const afterPower = steps[1]!;
   report.push(
     `\n전원 버튼 직후 — 서버: screenOn=\`${afterPower.after.screenOn}\` forcedOff=\`${afterPower.after.forcedOff}\`, ` +

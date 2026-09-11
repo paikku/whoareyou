@@ -19,6 +19,7 @@ export interface Probe {
   powerReconciled: number | null; // 전원 버튼이 우리 장부와 어긋나 되돌린 횟수
   injected: number | null;
   injectFailed: number | null;
+  pointersDown: number | null;  // 폰이 눌려 있다고 믿는 손가락 수
   /** 차 쪽 (브라우저) */
   pageAlive: boolean;
   framesDecoded: number;
@@ -63,6 +64,7 @@ export async function probe(page: Page, base: string): Promise<Probe> {
     powerReconciled: s?.powerReconciled ?? null,
     injected: s?.injected ?? null,
     injectFailed: s?.injectFailed ?? null,
+    pointersDown: s?.pointersDown ?? null,
     pageAlive: !!c,
     framesDecoded: c?.framesDecoded ?? -1,
     fps: c?.fps ?? -1,
@@ -79,9 +81,9 @@ export async function probe(page: Page, base: string): Promise<Probe> {
 export function disagreements(p: Probe): string[] {
   const out: string[] = [];
   if (p.serverAlive && p.source !== 'display') out.push(`source=${p.source}`);
-  if (p.serverAlive && p.appOnPhone && p.framesDecoded >= 0 && p.fps > 5) {
-    out.push('앱은 폰에 있는데 차에 프레임이 흐른다');
-  }
+  // (전에 있던 "앱은 폰에 있는데 프레임이 흐른다" 검사는 뺐다: 측정 중에 하네스가 직접 화면을 움직이므로
+  //  그 프레임은 우리가 만든 것이고, 더 이상 어긋남의 증거가 아니다.)
+  if (p.pointersDown) out.push(`눌린 채 남은 손가락 ${p.pointersDown}개`);
   if (p.lastError) out.push(`err=${p.lastError}`);
   if (p.injectFailed) out.push(`injectFailed=${p.injectFailed}`);
   // 서버가 "화면 꺼짐"이라고 하는데 기기는 패널이 켜져 있다고 하면, 차의 📵 버튼이 뒤집힌 상태다.

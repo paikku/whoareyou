@@ -11,6 +11,7 @@ import com.genymobile.scrcpy.wrappers.SurfaceControl;
 
 import android.os.Build;
 import android.os.IBinder;
+import android.view.KeyEvent;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -129,6 +130,15 @@ final class ScreenPower {
                 Ln.i("the phone woke on its own (power button) while we thought the panel was off — dropping our flag");
             }
             lastInteractive = now;
+            if (now) {
+                // Waking redraws everything. Ask for an IDR now instead of letting the car wait out the GOP:
+                // measured 2.4 s of stale picture after a wake before this (lifecycle "전원 버튼 × 📵" row 5).
+                try {
+                    onWake.run();
+                } catch (Throwable t) {
+                    Ln.w("onWake failed: " + t);
+                }
+            }
         }
         if (forcedOff) {
             panelState = readPanelState();
@@ -148,16 +158,44 @@ final class ScreenPower {
         try {
             String out = Command.execReadOutput("dumpsys", "power");
             Matcher m = DISPLAY_POWER.matcher(out);
-            return m.find() ? m.group(1) : null;
+            if (m.find()) {
+                return m.group(1);
+            }
+            // Android 16 (and the emulator) do not print that line; wakefulness is the next best record.
+            Matcher w = WAKEFULNESS.matcher(out);
+            return w.find() ? "wakefulness=" + w.group(1) : null;
         } catch (Exception e) {
             return null;
         }
     }
 
     private static final Pattern DISPLAY_POWER = Pattern.compile("Display Power: state=([A-Z_]+)");
+    private static final Pattern WAKEFULNESS = Pattern.compile("mWakefulness=([A-Za-z]+)");
+
+    /** Called when the phone wakes on its own, so the car can resync its picture without waiting for a GOP. */
+    private Runnable onWake = () -> { };
+
+    void setOnWake(Runnable r) {
+        onWake = r;
+    }
 
     boolean setMainScreen(boolean on) {
         try {
+            // Turning the panel on while the device is asleep does nothing the driver can see: the display
+            // controller keeps it dark until the device is interactive again. That left 📵 dead after the
+            // phone had been put to sleep with its own power button — press it and nothing happens, with no
+            // way out from the car (lifecycle scenario "전원 버튼 × 📵" row 3, 2026-09-11).
+            // The driver asked for the screen, so wake the phone first. This is not fighting the user:
+            // it only ever happens on an explicit press of 📵.
+            if (on && !interactive()) {
+                Ln.i("phone is asleep and the car asked for its screen: waking it first");
+                try {
+                    Command.execReadOutput("input", "keyevent", String.valueOf(KeyEvent.KEYCODE_WAKEUP));
+                    Thread.sleep(300);
+                } catch (Exception e) {
+                    Ln.w("could not wake the phone: " + e);
+                }
+            }
             boolean ok = setPhysicalDisplaysPower(on);
             Ln.i("physical display power " + (on ? "on" : "off") + ": " + ok);
             if (ok) {

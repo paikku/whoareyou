@@ -121,7 +121,11 @@ public final class Server {
             if (!"false".equals(raw.get("stay_awake"))) {
                 screen.stayAwake();
             }
-            // The power button moves the same panel 📵 does; watch for it so our bookkeeping never lies.
+            // The power button moves the same panel 📵 does; watch for it so our bookkeeping never lies,
+            // and resync the car's picture the moment the phone comes back.
+            if (source != null) {
+                screen.setOnWake(source::requestKeyframe);
+            }
             screen.startWatching();
             if ("true".equals(raw.get("screen_off"))) {
                 screen.setMainScreen(false);
