@@ -101,6 +101,9 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
   떨어진다(실측). `NO_THROUGHPUT=1` 이 그 검사들을 건너뛰게 한다. 숫자가 필요하면 A(가짜 폰)나 B(실기기)로 간다.
 - **기기마다 갈리는 것은 단언하지 않는다.** 전원·패널·인코더 속도는 에뮬레이터(AOSP)와 S26U(One UI)가 다르다.
   기록만 하고, 어디서나 성립해야 하는 것(서버 생존, 앱 위치, 되돌아올 수 있는가)만 단언한다.
+- **CI 에서 탐색을 한 번 돌리려면** `tools/virtual-phone/explore.steps` 의 숫자를 바꿔 푸시하고, 아티팩트
+  `virtual-phone-logs` 의 `out/lifecycle/explore.md` 를 읽은 뒤 **다시 0 으로 되돌린다**. 매 푸시마다 돌리면
+  CI 가 5~8분 길어진다. (Actions 의 "Run workflow" 로 `explore_steps` 를 줘도 된다.)
 - **탐색에서 나온 문제는 씨앗으로 재현한다.** 보고서 맨 위의 `EXPLORE_SEED` 를 그대로 넣으면 같은 순서가 나온다.
 - **고친 뒤에는 A+ 를 다시 돌린다.** CI 라면 푸시하고 `emulator` 워크플로가 녹색이 될 때까지 따라간다.
   로그에서 볼 것: `uid=2000`, `source=display`, `injectFailed:0`, 시나리오 표의 "어긋남" 칸.

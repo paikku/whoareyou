@@ -42,7 +42,11 @@ BASE_URL=http://127.0.0.1:3333 NO_THROUGHPUT=1 \
   timeout 1200 npm run lifecycle --workspace tests/e2e
 echo "::endgroup::"
 
-# 무작위 탐색은 기본으로 돌지 않는다. Actions 에서 "Run workflow" 의 explore_steps 로 켠다.
+# 무작위 탐색은 기본으로 돌지 않는다. 켜는 길은 둘: Actions 의 "Run workflow" 에 explore_steps 를 주거나,
+# tools/virtual-phone/explore.steps 의 숫자를 바꿔 푸시하거나(권한 없이 CI 에서 한 번 돌려 볼 때).
+if [ "${EXPLORE_STEPS:-0}" = "0" ] && [ -f tools/virtual-phone/explore.steps ]; then
+  EXPLORE_STEPS="$(grep -v '^#' tools/virtual-phone/explore.steps | tr -d '[:space:]')"
+fi
 if [ "${EXPLORE_STEPS:-0}" -gt 0 ] 2>/dev/null; then
   echo "::group::무작위 탐색 ($EXPLORE_STEPS 단계)"
   CHROME_PATH="$PWD/$(find tests/e2e/.cache -name chrome -type f | head -1)" \
