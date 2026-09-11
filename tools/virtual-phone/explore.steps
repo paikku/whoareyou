@@ -1,0 +1,4 @@
+# 무작위 탐색을 몇 단계 돌릴지. 0 이면 돌지 않는다.
+# CI 에서 한 번 돌려 보고 싶을 때 숫자로 바꿔 푸시하고, 보고서를 읽은 뒤 다시 0 으로 되돌린다
+# (Actions 의 "Run workflow" 권한이 없어도 되는 길). 보고서: 아티팩트 virtual-phone-logs 의 out/lifecycle/explore.md
+0

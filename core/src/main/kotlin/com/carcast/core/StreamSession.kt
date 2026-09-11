@@ -66,6 +66,12 @@ class StreamSession(
     /** Receives parsed car → phone control messages (touch/key/text); the shell process injects them. */
     var controlHandler: ((ControlMessage) -> Unit)? = null
 
+    /**
+     * The last control client went away. The host uses it to let go of anything that client left held —
+     * a finger that was down when the socket died would otherwise stay down forever (InputInjector.cancelAll).
+     */
+    var onControlGone: () -> Unit = {}
+
     /** Extra /api endpoints from the host process (e.g. /api/screen); return JSON or null for "not mine". */
     var extraApi: ((method: String, path: String, query: Map<String, String>) -> String?)? = null
 
@@ -132,7 +138,13 @@ class StreamSession(
                 conn.listener = object : WebSocketConnection.Listener {
                     override fun onBinary(conn: WebSocketConnection, data: ByteArray) { onControl(data) }
                     override fun onText(conn: WebSocketConnection, text: String) {}
-                    override fun onClose(conn: WebSocketConnection) { controlClients.remove(conn) }
+                    override fun onClose(conn: WebSocketConnection) {
+                        controlClients.remove(conn)
+                        if (controlClients.isEmpty()) {
+                            event("control 클라이언트 끊김 — 눌린 채 남은 터치를 취소")
+                            runCatching { onControlGone() }.onFailure { Log.w(TAG, "onControlGone failed: $it") }
+                        }
+                    }
                 }
                 conn.sendText(statusJson())
                 true

@@ -2,6 +2,8 @@ import type { Page } from '@playwright/test';
 
 export interface ClientStats {
   renderer: string;
+  /** 화면에 떠 있는 상태 패널: '' | 'app-on-phone' | 'no-app' | 'no-phone' */
+  state: string;
   framesDecoded: number;
   fps: number;
   latencyMs: number;

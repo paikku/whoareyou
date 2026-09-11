@@ -59,12 +59,16 @@ object ServerMain {
         videoSource: VideoSource? = null,
         startApp: ((String, String) -> Map<String, Any?>)? = null,
         control: ((ControlMessage) -> Unit)? = null,
+        onControlGone: (() -> Unit)? = null,
         extraApi: ((String, String, Map<String, String>) -> String?)? = null,
         onStopped: () -> Unit = {},
+        onReady: ((StreamSession) -> Unit)? = null,
     ) {
         val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource)
         session.onStartApp = startApp
         session.controlHandler = control
+        onControlGone?.let { session.onControlGone = it }
+        onReady?.invoke(session)
         session.extraApi = extraApi
         val stopped = java.util.concurrent.CountDownLatch(1)
         session.onStopRequest = { stopped.countDown() }

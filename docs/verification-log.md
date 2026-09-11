@@ -77,6 +77,52 @@
 이 층에서 잡은 문제와 수정: 클립 루프 시 `tfdt`가 원래 pts로 남아 MSE 타임라인이 되감기던 10초 정지(재스탬프),
 재연결 후 새 MediaSource가 일시정지 상태로 남던 문제(`wantPlay` + `play()`), AbortError 무시, 백오프 상한 2초.
 
+### 2.4 A+층: 가상 폰 (Android 16 / API 36 에뮬레이터, GitHub 러너)
+
+`tools/virtual-phone` 이 에뮬레이터에 APK 를 깔고 **폰에서와 같은 명령으로 같은 dex 를 shell uid 로** 띄운다.
+첫 실행(빌드 `f2c9af1`, 2026-09-11)에서 확인된 것 — 지금까지 전부 B층(실기기)에서만 볼 수 있던 것들이다:
+
+| | 결과 |
+|---|---|
+| 프로세스 | `process=shell`, `uid=2000`, `build=f2c9af1` |
+| 가상 디스플레이 (M4) | `source=display`, `displayId=2`, 1280x720/160, 인코더 `c2.android.avc.encoder` |
+| 앱 실행 | `start app com.android.settings/.Settings on display 2 (started, was on display null)` |
+| **앱 충돌 (M4-b)** | 폰이 `am start --display 0` 으로 가져감 → 감시자가 `폰이 앱 … 을 가져감 (display 0)` 기록, `appOnPhone:true`. 차에서 다시 ▶ → `(restarted, was on display 0, restart=auto)`, `appOnPhone:false` |
+| 입력 주입 (M5) | `injected:8`, `injectFailed:0` — `am stack list` 파서도 이 ROM 에서 동작 |
+| 화면 전원 (M7) | `physical display power off: true` / `on: true` — SurfaceControl 경로가 에뮬레이터에서도 먹는다 |
+| cgroup 탈출 | 실기기와 같이 전 경로 `EACCES` (§3.5 와 동일) |
+
+**여기서 나온 새 사실 — 빈 가상 디스플레이는 한 장도 내지 않는다.**
+앱을 하나도 띄우지 않은 가상 디스플레이에 붙으면 8초 동안 패킷이 **0개**였고(`frames=0, keyframes=0`),
+앱을 띄운 직후부터 흐르기 시작했다(13초에 88프레임). 합성할 내용이 없으면 인코더에 들어갈 버퍼도 없고,
+`REPEAT_PREVIOUS_FRAME_AFTER` 는 **직전 프레임이 있어야** 반복하기 때문이다. 결과적으로 차에서 페이지를 열면
+▶ 를 누르기 전까지는 init 세그먼트조차 받지 못한다 — 차 화면의 "폰 무응답"이 이 상태다.
+
+**A+ 는 처리량을 물을 수 있는 자리가 아니다 — 가상 디스플레이는 픽셀이 바뀔 때만 낸다.**
+빌드 `fa2e6bd` 실행에서 정지 화면 7분 동안 총 129프레임(**0.3fps**)이었고, 앱이 떠 있어도 화면이 멈추면
+8초에 한 조각까지 떨어졌다. 처음에 잰 프레임 간격(p50 83ms)은 **앱 실행 애니메이션이 측정 창에 걸쳐 있던
+값**이라 바닥을 보여 주지 못했다 — `REPEAT_PREVIOUS_FRAME_AFTER`(100ms)가 이 인코더에서 바닥을 만들지
+않는다는 뜻이다. 그래서 기기 검사는 이제 `/ws/control` 로 화면을 흔들면서 본다(`lib.mjs` 의 `wiggle`):
+그래야 "가상 디스플레이 → 인코더 → fMP4 → 클라이언트" 경로가 결정적으로 확인된다.
+차 클라이언트는 정지 화면 상태에서 `video 1f 0fps` 로 멈추므로 **디코드 처리량 검사는 A+ 에서 건너뛴다**
+(`NO_THROUGHPUT=1`; 처리량은 A 의 가짜 폰과 B 의 실기기에서 본다). A+ 가 보는 것은 경로와 상태다.
+실기기의 하드웨어 인코더가 정지 화면에서 바닥을 지키는지는 B 에서 `MAX_GAP_MS=500 npm run device` 로 확인할 것 —
+2026-09-10 실차 멈춤의 원인이었던 항목이다.
+
+**전원 버튼 장부 되돌리기 확인:** 같은 실행의 최종 상태에 `powerReconciled: 1`, `panelState: "ON"`,
+`forcedOff: false` — 📵 로 끈 뒤 전원 버튼이 패널을 켠 것을 감시자가 잡아 장부를 버렸다는 뜻이다.
+
+**곁가지로 확인한 것 — 늦게 접속해도 재생된다.** 라이브 인코더는 자기 시계로 pts 를 찍으므로 서버가 한참
+돌고 난 뒤 차가 붙으면 타임라인이 0 이 아니라 그만큼 뒤에서 시작한다(실측 131초). 클립(pts≈0)으로는 절대
+안 나오던 상황이라 새로 재현해 봤고(`tools/fake-phone --pts-base`), 차 클라이언트는 `lag 32ms`로 정상
+재생했다. 회귀 검사로 `tests/e2e/tests/pts-base.spec.ts` 에 남겼다.
+
+**여전히 A+ 에서 못 보는 것:** 가정 1(VpnService 주소 배달, 여기서는 `adb forward` 로 붙는다), 핫스팟,
+무선 디버깅 페어링·TCP 모드, One UI 전용 동작(INJECT_EVENTS 정책, 패널 동작, 도즈 세부), 발열·배터리.
+전체 목록: [tools/virtual-phone/README.md](../tools/virtual-phone/README.md).
+
+---
+
 ---
 
 ## 3. B층: Galaxy S26 Ultra (SM-S948N, Android 16 / One UI 8) + 노트북
@@ -198,6 +244,49 @@ adbd가 계속 살아 있으므로 §3.5의 cgroup SIGKILL(=USB 디버깅 토글
 - "서버 종료" 킬 스위치, 재부팅 후 Wi-Fi에서 "시작" 한 번으로 복구, 하룻밤 방치 후 유지.
 - `BASE_URL=http://100.99.9.9:3333 npx playwright test`를 노트북에서 폰에 대고 실행(자동화된 fps·지연 수치).
 - 5GHz 핫스팟에서 720p30 10분 연속(대역폭), 세로 고정 앱에서의 회전 동작.
+
+---
+
+### 3.9 실차 리포트 #26 (2026-09-11): 전원 버튼을 누르면 차가 무응답
+
+주행 중 폰의 전원 버튼을 누르자 차 화면이 멈췄다. 리포트가 그대로 말해 준다:
+`0fps lag 5ms frames 2763 packets 3194`, `idleMs 6940`, `appOnPhone false`, 소켓은 둘 다 열려 있고
+`lastError` 는 비어 있다. 즉 **앱도 서버도 소켓도 멀쩡한데 프레임만 끊겼다.**
+
+원인은 알려진 것이다: 전원 버튼은 기기를 통째로 재우고, 잠든 기기는 **모든** 디스플레이의 합성을 멈춘다 —
+가상 디스플레이도 같이. 📵 가 SurfaceControl 로 물리 패널만 끄는 이유가 이것이다(§M0).
+
+리포트에서 더 나쁜 사실 하나: `state: ""` — 차가 아무 설명도 하지 않았다. 상태 패널은 "앱이 없음"과
+"폰이 가져감"만 알았지 "폰이 잠듦"은 몰랐다.
+
+**고친 것(빌드 이후):**
+- 차가 보고 있는 동안 폰이 잠들면 서버가 깨워서 **📵 상태로 바꾼다** — 운전자가 전원 버튼으로 원한 것이
+  "어두운 폰"이지 "멈춘 차 화면"은 아니기 때문이다. 전원 버튼을 10초 안에 세 번 누르면 복구를 60초 멈추고
+  폰을 켠 채로 돌려준다(폰을 정말 쓰려는 경우의 탈출구). `sleep_recovery=false` 로 끌 수 있고,
+  `/api/status` 에 `sleepRecoveries`·`recoveryPausedMs` 가 실린다.
+- 그래도 잠든 채로 남는 경우(탈출구를 쓴 뒤)를 위해 차에 `phone-asleep` 상태 패널을 넣었다 — 이유와
+  "폰 깨우기" 버튼, 그리고 "전원 버튼 대신 📵 를 쓰라"는 안내.
+- 가상 폰에서 확인: `폰을 재운 뒤 — interactive=true screenOn=false 되살린 횟수=2`, 그동안 차 화면은 끊기지 않음.
+
+### 3.10 리포트 #27 과 상류 조사 (2026-09-11): 문제가 우리만의 것이 아니었다
+
+#26 을 고친 뒤 받은 #27 은 `30fps lag 144ms idleMs 8 재접속 0 복구 0` 으로 **멀쩡해 보이는데** 사용자는
+여전히 이상하다고 했다. 가릴 수 없었다 — 세션 리포트에 폰 쪽 상태가 한 줄도 없었기 때문이다. 기기가
+잠든 것인지, 패널만 꺼진 것인지, 되살리기가 돌았는지가 원인을 가르는 정보인데 전부 빠져 있었다.
+**→ 💾 가 `/api/status` 를 통째로 싣도록 고쳤고, 요약 줄에도
+`폰 build=… 잠듦/깨어있음 화면ON/OFF 되살림N 활성유지N idleN` 이 들어간다.**
+
+상류(scrcpy)를 뒤져 보니 **같은 문제가 열려 있다** — [scrcpy#6787](https://github.com/Genymobile/scrcpy/issues/6787):
+물리 화면이 꺼지면 약 10초 뒤 가상 디스플레이 크기의 불투명한 검은 면이 덮이고, 그 아래에서 앱은 계속
+그려진다. 회피책은 `stay_on_while_plugged_in`(충전 중에만, 우리도 이미 켬)과 주기적 `userActivity`(scrcpy 의
+`--keep-active`) 둘뿐이다. 자세한 조사는 [prior-art.md](prior-art.md).
+
+**→ 가져온 것:** 차가 보고 있는 동안 5초마다 **가상 디스플레이의 id 로** `userActivity` 를 보낸다
+(`keep_active=false` 로 끔). 그 디스플레이는 자기 display group 을 가지므로 폰 본체를 깨우지 않는다.
+`/api/status` 의 `keptActive` 로 센다.
+
+**다음에 확인할 것 (실기기):** 전원 버튼을 눌러 차 화면이 멈춘 직후 💾 를 누르고 요약 줄을 본다.
+`keptActive` 가 오르는데도 검어지면 이 경로가 One UI 8 에서 듣지 않는 것이고, 그때는 다른 길을 찾아야 한다.
 
 ---
 

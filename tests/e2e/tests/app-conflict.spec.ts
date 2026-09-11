@@ -23,15 +23,48 @@ test('▶ reports what the phone did with the app, and the car notices when the 
   await page.evaluate(async () => (await fetch('/api/fake/app-on-phone?on=1')).json());
   await expect(page.locator('#stats')).toContainText('폰이 앱을 가져갔습니다', { timeout: 10_000 });
   expect((await stats(page)).appOnPhone).toBe(true);
+  // 얼어붙은 그림만 남기지 않는다: 왜 멈췄는지와 한 번에 되찾는 버튼이 그 자리에 떠야 한다.
+  await expect(page.locator('#state')).toBeVisible();
+  await expect(page.locator('#state-title')).toContainText('폰에서 그 앱을 쓰는 중');
+  expect((await stats(page)).state).toBe('app-on-phone');
   expect((await events()).join('\n')).toContain('phone took com.example.app (display 0)');
   // …and after the notice, the regular stats line carries the marker as long as it lasts.
   await expect(page.locator('#stats')).toContainText('📱폰이 앱을 가져감', { timeout: 15_000 });
 
-  // ▶ again: the phone force-stops its copy and starts a fresh one on the car (action "restarted").
+  // 그 버튼이 실제로 되찾는다 — 패키지명을 다시 타이핑하지 않아도 된다(차에서 키보드를 여는 일 자체가 부담이다).
+  await page.locator('#state-action').click();
+  await expect(page.locator('#stats')).toContainText('폰에서 쓰던 앱을 종료하고 차 화면에 새로 띄움');
+  expect((await stats(page)).appOnPhone).toBe(false);
+  await expect(page.locator('#state')).toBeHidden();
+
+  // ▶ 로도 같은 일이 된다 (예전 경로).
+  await page.evaluate(async () => (await fetch('/api/fake/app-on-phone?on=1')).json());
+  await expect(page.locator('#state')).toBeVisible({ timeout: 10_000 });
   page.once('dialog', (d) => d.accept('com.example.app'));
   await page.locator('#btn-app').click();
   await expect(page.locator('#stats')).toContainText('폰에서 쓰던 앱을 종료하고 차 화면에 새로 띄움');
   expect((await stats(page)).appOnPhone).toBe(false);
   expect((await events()).join('\n')).toContain('app com.example.app: restarted (from display 0)');
   await expect(page.locator('#stats')).not.toContainText('폰이 앱을 가져감', { timeout: 15_000 });
+});
+
+// 쓰던 앱이 닫히면(스와이프, 강제 종료, 앱 자신의 종료) 가상 화면에 그릴 것이 없어 마지막 프레임이
+// 얼어붙는다. 고장과 구분되지 않으므로 차는 그 자리에서 이유와 다음 행동을 말해 줘야 한다.
+// 무작위 탐색(seed 501398062)에서 앱이 사라진 뒤 12단계 동안 아무 설명 없이 죽은 화면이 이어졌다 —
+// 누적 프레임 수를 "아직 아무것도 안 나왔다"로 읽고 있어서 패널이 뜨지 못했다.
+test('쓰던 앱이 닫히면 차가 이유를 말하고 다시 띄울 길을 준다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 5, null, { timeout: 30_000 });
+  await expect(page.locator('#state')).toBeHidden();
+
+  await page.evaluate(async () => (await fetch('/api/fake/no-app')).json());
+  await expect(page.locator('#state')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('#state-title')).toContainText('띄운 앱이 없습니다');
+  expect((await stats(page)).state).toBe('no-app');
+
+  // 그 버튼이 ▶ 와 같은 길로 이어진다.
+  page.once('dialog', (d) => d.accept('com.example.app'));
+  await page.locator('#state-action').click();
+  await expect(page.locator('#stats')).toContainText('앱');
 });

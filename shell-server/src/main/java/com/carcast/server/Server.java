@@ -11,7 +11,7 @@ import java.util.Map;
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [decorations=false] [app=com.google.android.youtube] [source=clip]
- *     [stay_awake=true] [screen_off=false]
+ *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
  * </pre>
  * Extra endpoints: {@code POST /api/screen?on=0|1} turns only the phone's main display off/on (the virtual
  * display keeps running); {@code GET /api/screen} reports it.
@@ -121,6 +121,17 @@ public final class Server {
             if (!"false".equals(raw.get("stay_awake"))) {
                 screen.stayAwake();
             }
+            // The power button moves the same panel 📵 does; watch for it so our bookkeeping never lies,
+            // and resync the car's picture the moment the phone comes back.
+            if (source != null) {
+                screen.setOnWake(source::requestKeyframe);
+            }
+            screen.setSleepRecovery(!"false".equals(raw.get("sleep_recovery")));
+            screen.setKeepActive(!"false".equals(raw.get("keep_active")));
+            if (source != null) {
+                screen.setKeepActiveDisplay(source::displayId);
+            }
+            screen.startWatching();
             if ("true".equals(raw.get("screen_off"))) {
                 screen.setMainScreen(false);
             }
@@ -146,10 +157,11 @@ public final class Server {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("uid", uid);
             extra.put("build", BuildConfig.SERVER_BUILD_ID);
-            extra.put("screenOn", screen.isMainScreenOn());
+            extra.putAll(screen.info());
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());
+                extra.put("pointersDown", injector.pointersDown());
             }
             return extra;
         }, !opts.getDaemon(), source, source == null ? null : (name, restart) -> {
@@ -160,6 +172,10 @@ public final class Server {
             }
         }, injector == null ? null : msg -> {
             injector.handle(msg);
+            return kotlin.Unit.INSTANCE;
+        }, injector == null ? null : () -> {
+            // The car's socket died: let go of anything it was holding, or the next tap is a phantom pinch.
+            injector.cancelAll();
             return kotlin.Unit.INSTANCE;
         }, (method, path, query) -> {
             if (!"/api/screen".equals(path)) {
@@ -173,6 +189,10 @@ public final class Server {
             return "{\"screenOn\":" + screen.isMainScreenOn() + "}";
         }, () -> {
             screen.restore();
+            return kotlin.Unit.INSTANCE;
+        }, session -> {
+            // Only undo a sleep while someone is actually watching from the car.
+            screen.setCarWatching(() -> session.getVideoClients() > 0);
             return kotlin.Unit.INSTANCE;
         });
     }

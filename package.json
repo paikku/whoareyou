@@ -4,13 +4,19 @@
   "workspaces": [
     "web",
     "tools/fake-phone",
-    "tests/e2e"
+    "tests/e2e",
+    "tests/device"
   ],
   "scripts": {
     "build": "npm run build --workspace web",
     "typecheck": "npm run typecheck --workspace web",
     "fake-phone": "npm start --workspace tools/fake-phone",
     "e2e": "npm test --workspace tests/e2e",
-    "e2e:quick": "npm run test:quick --workspace tests/e2e"
+    "e2e:quick": "npm run test:quick --workspace tests/e2e",
+    "vphone": "tools/virtual-phone/vphone.sh up",
+    "vphone:down": "tools/virtual-phone/vphone.sh down",
+    "device": "npm test --workspace tests/device",
+    "lifecycle": "npm run lifecycle --workspace tests/e2e",
+    "explore": "npm run explore --workspace tests/e2e"
   }
 }

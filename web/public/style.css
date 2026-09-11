@@ -22,3 +22,13 @@ body.diag pre { background: #111; padding: 8px; max-height: 40vh; overflow: auto
 body.diag .summary-box { margin: 8px 0 4px; padding: 10px 12px; border: 1px solid #345; border-radius: 8px; background: #0b1520; }
 body.diag #summary { font-size: 18px; font-weight: 600; line-height: 1.4; word-break: break-word; }
 body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
+
+/* 상태 패널: 영상이 멈춘 이유와 한 번에 누를 수 있는 조치. 반투명이라 뒤의 마지막 프레임이 비친다. */
+.state { background: rgba(0,0,0,.82); }
+.state .overlay-card { max-width: 80vw; }
+#state-msg { margin-top: 8px; color: #bbb; font-size: 16px; line-height: 1.5; }
+.state-action { margin-top: 16px; min-height: 52px; padding: 0 24px; border: 1px solid #4a7; border-radius: 8px; background: #1b3a2b; color: #dfe; font-size: 18px; }
+.state-action:active { background: #2c5a42; }
+.state-action[hidden] { display: none; }
+/* 폰 화면이 꺼져 있는 동안 📵 버튼이 그 사실을 들고 있게 한다 (전원 버튼으로 바뀌어도 서버 상태를 따른다). */
+#btn-screen.off { border-color: #a63; background: #3a2a18; }

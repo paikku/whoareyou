@@ -1,0 +1,138 @@
+name: emulator
+
+# 가상 폰: 에뮬레이터 위에서 폰과 같은 shell uid 서버를 띄우고, 기기 검사(tests/device)와
+# 차 쪽 클라이언트(tests/e2e)를 그 서버에 대고 돌린다. 지금까지 실기기에서만 보던 M4·M4-b·M5·M7 경로가
+# 여기서 걸린다. 여전히 실기기 몫인 것: VPN 주소 배달(가정 1), 핫스팟, 무선 디버깅 페어링, 발열/배터리.
+# 배경과 한계: tools/virtual-phone/README.md
+on:
+  workflow_dispatch:
+    inputs:
+      explore_steps:
+        description: '무작위 탐색 단계 수 (0이면 돌지 않음). 폰·차 동작을 임의 순서로 걸어 보고 보고서를 남긴다.'
+        required: false
+        default: '0'
+  push:
+    branches: ['**']
+    paths:
+      - 'app/**'
+      - 'adb/**'
+      - 'shell-server/**'
+      - 'core/**'
+      - 'mux/**'
+      - 'web/**'
+      - 'tools/virtual-phone/**'
+      - 'tools/clips/assets/**'
+      - 'tests/device/**'
+      - 'tests/e2e/**'
+      - '*.gradle.kts'
+      - '.github/workflows/emulator.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'adb/**'
+      - 'shell-server/**'
+      - 'core/**'
+      - 'mux/**'
+      - 'web/**'
+      - 'tools/virtual-phone/**'
+      - 'tools/clips/assets/**'
+      - 'tests/device/**'
+      - 'tests/e2e/**'
+      - '*.gradle.kts'
+      - '.github/workflows/emulator.yml'
+
+concurrency:
+  group: emulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  virtual-phone:
+    name: 가상 폰 (Android ${{ matrix.api-level }} 에뮬레이터)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [36]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install web toolchain
+        run: npm ci --no-audit --no-fund
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      # 차와 같은 엔진(Chrome 148). 번들 Chromium 은 H.264 를 못 풀어 영상 테스트가 무의미하다.
+      - name: Chrome for Testing 148
+        working-directory: tests/e2e
+        run: npm run install-chrome
+
+      # APK 빌드와 Chrome 내려받기가 끝나면 러너에 7GB 밖에 안 남는다. 에뮬레이터는 userdata 파티션에
+      # 7372MB 를 요구하며, 모자라면 `FATAL | Not enough space to create userdata partition` 을 찍고
+      # **즉시 죽는다** — 그러면 액션은 10분 동안 붙지 않는 adb 를 폴링하다 타임아웃 난다(첫 실행에서 실측).
+      # 여기서 쓰지 않는 선설치 툴체인을 지워 자리를 만든다.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android/sdk/ndk /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      # 공개 러너에는 중첩 가상화가 있지만 /dev/kvm 권한이 닫혀 있다. 이 규칙이 없으면 부팅이 몇 배 느려진다.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cache AVD
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-carcast-${{ matrix.api-level }}
+
+      - name: Virtual phone → device checks → car client
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          EXPLORE_STEPS: ${{ inputs.explore_steps || '0' }}
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          avd-name: carcast-vphone
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save -camera-back none -camera-front none
+          disable-animations: true
+          # 기본 userdata 는 6GB 다. 여기서 쓰는 것은 APK 하나와 로그 몇 개뿐이라 4GB 로 줄여
+          # 위의 정리와 함께 자리를 확실히 만든다.
+          pre-emulator-launch-script: |
+            printf 'disk.dataPartition.size=4096M\n' >> "$HOME/.android/avd/carcast-vphone.avd/config.ini"
+          script: bash tools/virtual-phone/ci.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: virtual-phone-logs
+          path: |
+            out/vphone/**
+            out/lifecycle/**
+            tests/e2e/playwright-report/**
+            tests/e2e/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14

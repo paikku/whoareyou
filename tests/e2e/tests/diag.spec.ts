@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
 
+// 가상 폰(에뮬레이터)에서는 건너뛴다: 소프트웨어 인코더가 정지 화면에서 초당 0.3프레임까지 떨어져
+// (2026-09-11 실측) 디코드 처리량을 물을 수 없다. 처리량은 A(가짜 폰)와 B(실기기)에서 본다 —
+// A+ 는 경로가 이어지는지를 보는 자리다. docs/agent-runbook.md
+test.skip(!!process.env.NO_THROUGHPUT, '가상 폰에서는 디코드 처리량을 물을 수 없다');
+
 test('diag page reports environment, API support, WS success and decode', async ({ page }) => {
   await page.goto('/diag');
   const ua = await page.evaluate(() => navigator.userAgent);

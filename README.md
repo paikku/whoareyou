@@ -7,10 +7,12 @@
 - **핫스팟 전용으로 가는 길(Wi-Fi 요구 제거 계획): [docs/hotspot-only.md](docs/hotspot-only.md)**
 - **남들은 어떻게 하나(Tesor·TeslaMirror·TeslaDisplay·Castla 조사): [docs/prior-art.md](docs/prior-art.md)**
 - **테스트 가이드(어디서 무엇을): [docs/testing-guide.md](docs/testing-guide.md)**
+- **가상 폰(폰 없이 폰 쪽 코드 돌려보기): [tools/virtual-phone/README.md](tools/virtual-phone/README.md)**
+- **작업 지침(이런 요청이 오면 어디서 어떻게): [docs/agent-runbook.md](docs/agent-runbook.md)**
 - **검증 기록(무엇을 어떤 테스트로 확인했나, 가정별 상태): [docs/verification-log.md](docs/verification-log.md)**
 - 실차/실기기 원본 표: [docs/car-tests/](docs/car-tests/)
 
-## 현재 상태 (2026-09-05: M1~M5 폰에서 검증 완료, M7 수정 후 검증 대기, M6 오디오 미착수)
+## 현재 상태 (2026-09-11: M1~M5 폰에서 검증 완료, M7 전원/화면 경로 수정 후 실기기 검증 대기, M6 오디오 미착수)
 
 앱은 VpnService로 `100.99.9.9`를 폰에 붙인다. `http://100.99.9.9:3333`의 웹 클라이언트와 스트림은
 **shell uid 프로세스**(`com.carcast.server.Server`, `app_process`로 기동)가 서빙한다. Android 14+는 VPN 주소로
@@ -19,7 +21,10 @@
 VD를 못 만들면 번들된 테스트 클립으로 대체한다. 안드로이드는 앱마다 task가 하나라 폰에서 쓰던 앱을 차에서 띄우면 **옮겨지지 복사되지 않으므로**,
 `/api/app`은 그 앱의 task가 다른 디스플레이에 있으면 기본으로 강제 종료 후 새로 띄우고(`restart=auto|always|never`), 폰이 앱을 도로 가져가면
 `/api/status`의 `appOnPhone`과 차 화면 상태줄에 표시한다(docs/testing-guide.md "M4-b"). 브라우저 터치·키·텍스트는 그 VD에 주입되고(`/ws/control`),
-📵 버튼은 폰 화면만 끈다(`/api/screen`). 차에서 `/diag`를 열면 브라우저 환경·API
+📵 버튼은 폰 화면만 끈다(`/api/screen`). 폰이 잠들거나 화면이 꺼지면 안드로이드가 가상 디스플레이까지 유휴로 보고
+덮어 버리므로(상류에도 열려 있는 문제: [docs/prior-art.md](docs/prior-art.md)), 서버는 차가 보는 동안
+가상 디스플레이에 주기적으로 사용자 활동을 알리고(`keep_active`) 잠들면 깨워서 📵 상태로 되돌린다(`sleep_recovery`).
+차에서 `/diag`를 열면 브라우저 환경·API
 지원·WS 성공률·디코드 fps·사설 주소 차단 여부를 측정해 폰 서버에 저장한다(`/api/reports`, 앱의 공유 버튼). M3부터 앱이 폰 자신의 무선 디버깅에 페어링(Kadb, 알림에 코드 입력)해 이 서버를 **분리 실행**한다. 무선 디버깅은
 Wi-Fi 연결 중에만 켜지므로 집 Wi-Fi에서 띄우고, 서버는 재부팅 전까지(차에서도) 유지된다. 끄기는 앱의 "서버 종료".
 
@@ -71,3 +76,15 @@ BASE_URL=http://127.0.0.1:3399 CHROME_PATH=... npx playwright test
 ```
 
 테스트 클립 재생성: `./gradlew :mux:installDist && mux/build/install/mux/bin/mux tools/clips/test-720p30.h264 tools/clips/assets/clips/test-720p30.cmp4 30`
+
+폰이 없을 때는 **가상 폰**(에뮬레이터)에 같은 서버를 띄워 같은 테스트를 돌린다. 가상 디스플레이·앱 실행·앱 충돌·
+터치 주입·킬 스위치가 여기서 걸린다 (VPN 주소 배달·핫스팟·무선 디버깅 페어링은 그대로 실기기 몫):
+
+```bash
+tools/virtual-phone/vphone.sh sdk    # 최초 1회
+./gradlew :app:assembleDebug && tools/virtual-phone/vphone.sh up
+npm run device                       # 기기 검사
+tools/virtual-phone/vphone.sh down
+```
+
+GitHub Actions(`emulator.yml`)가 푸시마다 같은 순서를 돈다. 자세히: [tools/virtual-phone/README.md](tools/virtual-phone/README.md)
