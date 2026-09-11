@@ -52,6 +52,9 @@ export class TouchInput {
   }
 
   private onDown = (e: PointerEvent) => {
+    // 스테이지 위에 겹쳐 놓은 차 쪽 UI(상태 패널의 버튼 등)는 폰으로 보내지 않는다. 보내면 안 되기도 하지만,
+    // 아래의 setPointerCapture 가 클릭을 통째로 삼켜 그 버튼이 눌리지 않는다.
+    if ((e.target as Element | null)?.closest?.('[data-ui]')) return;
     const p = this.normalise(e.clientX, e.clientY);
     if (!p) return;
     this.stage.setPointerCapture(e.pointerId);

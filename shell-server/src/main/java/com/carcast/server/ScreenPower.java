@@ -2,6 +2,7 @@ package com.carcast.server;
 
 import com.genymobile.scrcpy.AndroidVersions;
 import com.genymobile.scrcpy.util.Ln;
+import com.genymobile.scrcpy.util.Command;
 import com.genymobile.scrcpy.util.Settings;
 import com.genymobile.scrcpy.util.SettingsException;
 import com.genymobile.scrcpy.wrappers.DisplayControl;
@@ -10,6 +11,11 @@ import com.genymobile.scrcpy.wrappers.SurfaceControl;
 
 import android.os.Build;
 import android.os.IBinder;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * "Phone screen off, virtual display on" — what scrcpy's --turn-screen-off --stay-awake does and what M0
@@ -25,15 +31,28 @@ import android.os.IBinder;
 final class ScreenPower {
     private static final String STAY_ON = "stay_on_while_plugged_in";
     private static final String STAY_ON_ALL = "7"; // AC | USB | wireless
+    private static final long WATCH_INTERVAL_MS = 1000;
 
     private String previousStayOn;
     /** PowerManager keeps reporting the display as interactive after a SurfaceControl power-off, so track it here. */
-    private boolean forcedOff;
+    private volatile boolean forcedOff;
+    /** What `dumpsys display` last said the panel is doing: ON / OFF / DOZE / null when unread. */
+    private volatile String panelState;
+    /** How many times the user's power button contradicted our bookkeeping (see the watcher). */
+    private volatile int reconciled;
+    private volatile boolean lastInteractive = true;
+    private volatile String lastTransition = "";
+    private Thread watcher;
 
     boolean isMainScreenOn() {
         if (forcedOff) {
             return false;
         }
+        return interactive();
+    }
+
+    /** PowerManager's view: false while the device is asleep. Stays true after a SurfaceControl power-off. */
+    boolean interactive() {
         try {
             return ServiceManager.getPowerManager().isScreenOn(0);
         } catch (Throwable t) {
@@ -41,6 +60,93 @@ final class ScreenPower {
             return true;
         }
     }
+
+    /** Fields for /api/status: what the car (and the lifecycle harness) needs to see the two views disagree. */
+    Map<String, Object> info() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("screenOn", isMainScreenOn());
+        m.put("interactive", lastInteractive);
+        m.put("forcedOff", forcedOff);
+        m.put("panelState", panelState);
+        m.put("powerReconciled", reconciled);
+        if (!lastTransition.isEmpty()) {
+            m.put("lastPowerEvent", lastTransition);
+        }
+        return m;
+    }
+
+    /**
+     * The phone's power button is not ours to intercept, and it moves the same panel 📵 does. Without this
+     * watcher the two views drift apart: 📵 turns the panel off (forcedOff = true), the user presses power,
+     * the panel comes back on — and we keep telling the car the screen is off, so the next 📵 press does
+     * nothing visible and the button reads inverted from then on.
+     *
+     * So: sample the device's own view, and whenever it contradicts our flag, believe the device.
+     * Only reports and reconciles — it never presses anything back, which would be a fight with the user.
+     */
+    synchronized void startWatching() {
+        if (watcher != null) {
+            return;
+        }
+        watcher = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    Thread.sleep(WATCH_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                try {
+                    sample();
+                } catch (Throwable t) {
+                    Ln.w("power watch failed: " + t);
+                }
+            }
+        }, "screen-power-watch");
+        watcher.setDaemon(true);
+        watcher.start();
+    }
+
+    void stopWatching() {
+        Thread t = watcher;
+        watcher = null;
+        if (t != null) {
+            t.interrupt();
+        }
+    }
+
+    private void sample() {
+        boolean now = interactive();
+        if (now != lastInteractive) {
+            lastTransition = (now ? "awake" : "asleep") + "@" + System.currentTimeMillis();
+            Ln.i("phone went " + (now ? "awake" : "asleep") + " (forcedOff=" + forcedOff + ")");
+            lastInteractive = now;
+        }
+        // The ambiguous window is "we turned the panel off": only then does the panel's real state tell us
+        // something we do not already know, so only then pay for a dumpsys.
+        if (!forcedOff) {
+            return;
+        }
+        String state = readPanelState();
+        panelState = state;
+        if ("ON".equals(state)) {
+            forcedOff = false;
+            reconciled++;
+            Ln.i("panel is on again while we thought it was off (power button?) — dropping our flag");
+        }
+    }
+
+    /** `dumpsys display` reports the display power controller's own state, which SurfaceControl changes move. */
+    private static String readPanelState() {
+        try {
+            String out = Command.execReadOutput("dumpsys", "display");
+            Matcher m = SCREEN_STATE.matcher(out);
+            return m.find() ? m.group(1) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static final Pattern SCREEN_STATE = Pattern.compile("mScreenState=([A-Z_]+)");
 
     boolean setMainScreen(boolean on) {
         try {
@@ -100,6 +206,7 @@ final class ScreenPower {
 
     /** On exit: never leave the phone dark, and put the setting back. */
     void restore() {
+        stopWatching();
         if (forcedOff) {
             setMainScreen(true);
         }

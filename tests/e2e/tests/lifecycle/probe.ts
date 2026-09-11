@@ -12,7 +12,11 @@ export interface Probe {
   frames: number | null;        // 인코더가 낸 누적 프레임
   appDisplay: number | null;    // 띄운 앱의 task 가 있는 디스플레이
   appOnPhone: boolean | null;
-  screenOn: boolean | null;     // 서버가 보는 폰 화면 전원
+  screenOn: boolean | null;     // 서버가 보는 폰 화면 전원 (📵 장부 + PowerManager)
+  interactive: boolean | null;  // PowerManager: 기기가 깨어 있는가
+  forcedOff: boolean | null;    // 우리가 📵 로 꺼 둔 상태인가
+  panelState: string | null;    // dumpsys display 가 말하는 패널 상태
+  powerReconciled: number | null; // 전원 버튼이 우리 장부와 어긋나 되돌린 횟수
   injected: number | null;
   injectFailed: number | null;
   /** 차 쪽 (브라우저) */
@@ -53,6 +57,10 @@ export async function probe(page: Page, base: string): Promise<Probe> {
     appDisplay: s?.appDisplay ?? null,
     appOnPhone: s?.appOnPhone ?? null,
     screenOn: s?.screenOn ?? null,
+    interactive: s?.interactive ?? null,
+    forcedOff: s?.forcedOff ?? null,
+    panelState: s?.panelState ?? null,
+    powerReconciled: s?.powerReconciled ?? null,
     injected: s?.injected ?? null,
     injectFailed: s?.injectFailed ?? null,
     pageAlive: !!c,
@@ -76,5 +84,7 @@ export function disagreements(p: Probe): string[] {
   }
   if (p.lastError) out.push(`err=${p.lastError}`);
   if (p.injectFailed) out.push(`injectFailed=${p.injectFailed}`);
+  // 서버가 "화면 꺼짐"이라고 하는데 기기는 패널이 켜져 있다고 하면, 차의 📵 버튼이 뒤집힌 상태다.
+  if (p.screenOn === false && p.panelState === 'ON') out.push('📵 장부와 패널이 어긋남');
   return out;
 }

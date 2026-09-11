@@ -37,6 +37,8 @@ public final class DisplayVideoSource implements VideoSource {
     private static final String TAG = "DisplayVideoSource";
     /** How often the watcher asks Android where the launched app's task is (one `am stack list` per tick). */
     private static final long APP_WATCH_INTERVAL_MS = 5_000;
+    /** While the picture is frozen (empty display), look much sooner — that is when the driver is waiting. */
+    private static final long APP_WATCH_BUSY_INTERVAL_MS = 1_000;
     private static final int APP_WATCH_MAX_FAILURES = 3;
 
     private final DisplayCapture display;
@@ -174,6 +176,10 @@ public final class DisplayVideoSource implements VideoSource {
         lastPackage = pkg;
         appDisplay = id;
         startAppWatcher();
+        // The picture is about to change completely. Without this the car waits up to I_FRAME_INTERVAL (2 s)
+        // for the next IDR and shows the *previous* app's last frame meanwhile — the "app switch is slow"
+        // feeling. Asking for a sync frame now cuts that to one frame time.
+        requestKeyframe();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("result", result);
         m.put("action", action);
@@ -207,6 +213,12 @@ public final class DisplayVideoSource implements VideoSource {
      * Polls where the launched app's task is and logs each change, so "the car went black" reads as "the phone
      * took the app" in the server log and in {@code /api/status} (appDisplay / appOnPhone). It only reports —
      * pulling the task back on its own would just fight the user for the app.
+     *
+     * The poll is adaptive, because the delay here is what the driver feels: the phone taking the app is the
+     * moment the picture dies, and a fixed 5 s poll means up to 5 s of a frozen frame before the car can say
+     * why. An empty virtual display has nothing to compose, so the encoder's frame counter stops dead — that
+     * is a free, precise hint. When it stops advancing we check every second; otherwise we stay lazy, because
+     * `am stack list` is a process spawn and this runs for the whole drive.
      */
     private synchronized void startAppWatcher() {
         if (appWatcher != null && appWatcher.isAlive()) {
@@ -214,9 +226,13 @@ public final class DisplayVideoSource implements VideoSource {
         }
         Thread t = new Thread(() -> {
             int failures = 0;
+            long lastFrames = -1;
             while (!Thread.currentThread().isInterrupted()) {
+                long frames = sink != null ? sink.getFrames() : 0;
+                boolean stalled = frames == lastFrames;
+                lastFrames = frames;
                 try {
-                    Thread.sleep(APP_WATCH_INTERVAL_MS);
+                    Thread.sleep(stalled ? APP_WATCH_BUSY_INTERVAL_MS : APP_WATCH_INTERVAL_MS);
                 } catch (InterruptedException e) {
                     return;
                 }

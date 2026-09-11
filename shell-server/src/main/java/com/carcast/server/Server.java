@@ -121,6 +121,8 @@ public final class Server {
             if (!"false".equals(raw.get("stay_awake"))) {
                 screen.stayAwake();
             }
+            // The power button moves the same panel 📵 does; watch for it so our bookkeeping never lies.
+            screen.startWatching();
             if ("true".equals(raw.get("screen_off"))) {
                 screen.setMainScreen(false);
             }
@@ -146,7 +148,7 @@ public final class Server {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("uid", uid);
             extra.put("build", BuildConfig.SERVER_BUILD_ID);
-            extra.put("screenOn", screen.isMainScreenOn());
+            extra.putAll(screen.info());
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());

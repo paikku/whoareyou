@@ -82,7 +82,8 @@ export function table(steps: Step[]): string {
   const rows = steps.map((s, i) => {
     const rec = s.recoveryMs === null ? '**안 돌아옴**' : s.uninterrupted ? '끊김 없음' : `${(s.recoveryMs / 1000).toFixed(1)}s`;
     const app = s.after.appOnPhone === null ? '-' : s.after.appOnPhone ? '📱폰' : `차(${s.after.appDisplay})`;
-    const screen = s.after.screenOn === null ? '-' : s.after.screenOn ? '켜짐' : '꺼짐';
+    const screen = s.after.screenOn === null ? '-'
+      : `${s.after.screenOn ? '켜짐' : '꺼짐'}${s.after.panelState ? `/${s.after.panelState}` : ''}`;
     return `| ${i + 1} | ${s.side === 'phone' ? '📱' : '🚗'} ${s.title} | ${rec} | ${s.reconnects} | ${app} | ${screen} | ${s.after.fps} | ${s.notes.join(', ') || '-'} |`;
   });
   return [

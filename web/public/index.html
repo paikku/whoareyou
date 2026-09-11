@@ -16,6 +16,14 @@
       <div id="overlay-msg">화면을 터치하면 시작합니다</div>
     </div>
   </div>
+  <!-- 그림이 멈췄을 때 "왜"와 "그래서 뭘 누르면 되는지"를 그 자리에 보여 준다. 얼어붙은 화면만 남기지 않는다. -->
+  <div id="state" class="overlay state" data-ui hidden>
+    <div class="overlay-card">
+      <div id="state-title" class="overlay-title"></div>
+      <div id="state-msg"></div>
+      <button id="state-action" class="state-action" hidden></button>
+    </div>
+  </div>
 </div>
 <nav id="bar">
   <button data-key="back" title="뒤로">◀</button>

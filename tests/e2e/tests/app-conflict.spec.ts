@@ -23,11 +23,23 @@ test('▶ reports what the phone did with the app, and the car notices when the 
   await page.evaluate(async () => (await fetch('/api/fake/app-on-phone?on=1')).json());
   await expect(page.locator('#stats')).toContainText('폰이 앱을 가져갔습니다', { timeout: 10_000 });
   expect((await stats(page)).appOnPhone).toBe(true);
+  // 얼어붙은 그림만 남기지 않는다: 왜 멈췄는지와 한 번에 되찾는 버튼이 그 자리에 떠야 한다.
+  await expect(page.locator('#state')).toBeVisible();
+  await expect(page.locator('#state-title')).toContainText('폰에서 그 앱을 쓰는 중');
+  expect((await stats(page)).state).toBe('app-on-phone');
   expect((await events()).join('\n')).toContain('phone took com.example.app (display 0)');
   // …and after the notice, the regular stats line carries the marker as long as it lasts.
   await expect(page.locator('#stats')).toContainText('📱폰이 앱을 가져감', { timeout: 15_000 });
 
-  // ▶ again: the phone force-stops its copy and starts a fresh one on the car (action "restarted").
+  // 그 버튼이 실제로 되찾는다 — 패키지명을 다시 타이핑하지 않아도 된다(차에서 키보드를 여는 일 자체가 부담이다).
+  await page.locator('#state-action').click();
+  await expect(page.locator('#stats')).toContainText('폰에서 쓰던 앱을 종료하고 차 화면에 새로 띄움');
+  expect((await stats(page)).appOnPhone).toBe(false);
+  await expect(page.locator('#state')).toBeHidden();
+
+  // ▶ 로도 같은 일이 된다 (예전 경로).
+  await page.evaluate(async () => (await fetch('/api/fake/app-on-phone?on=1')).json());
+  await expect(page.locator('#state')).toBeVisible({ timeout: 10_000 });
   page.once('dialog', (d) => d.accept('com.example.app'));
   await page.locator('#btn-app').click();
   await expect(page.locator('#stats')).toContainText('폰에서 쓰던 앱을 종료하고 차 화면에 새로 띄움');

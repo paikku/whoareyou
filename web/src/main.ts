@@ -144,19 +144,30 @@ const ACTION_TEXT: Record<string, string> = {
   moved: '폰에서 쓰던 앱을 차 화면으로 옮김',
   front: '이미 차 화면에 있던 앱을 앞으로',
 };
-$('btn-app').addEventListener('click', async () => {
-  const name = window.prompt('실행할 앱 패키지명', localStorage.getItem('carcast.app') || 'com.google.android.youtube');
-  if (!name) return;
+/** 폰이 마지막으로 들고 있던 앱(= /api/status.app 의 패키지). ▶ 의 기본값이자 "차로 가져오기"의 대상. */
+let lastPackage = '';
+
+async function launch(name: string): Promise<boolean> {
   try {
-    const r = await (await fetch(`/api/app?name=${encodeURIComponent(name.trim())}`, { method: 'POST' })).json();
-    if (r.ok) {
-      localStorage.setItem('carcast.app', name.trim());
-      appOnPhone = false;
-      appEpoch++; // a status poll that was already in flight describes the world before this launch
-      note(`app ${r.package ?? name.trim()}: ${r.action ?? '?'} (from display ${r.fromDisplay ?? '-'})`);
-      notice(ACTION_TEXT[r.action] ?? '앱 실행');
-    } else window.alert(`앱 실행 실패: ${r.error}`);
-  } catch (e) { window.alert(`앱 실행 요청 실패: ${String(e)}`); }
+    const r = await (await fetch(`/api/app?name=${encodeURIComponent(name)}`, { method: 'POST' })).json();
+    if (!r.ok) { window.alert(`앱 실행 실패: ${r.error}`); return false; }
+    localStorage.setItem('carcast.app', name);
+    lastPackage = r.package ?? name;
+    appOnPhone = false;
+    appEpoch++; // a status poll that was already in flight describes the world before this launch
+    note(`app ${r.package ?? name}: ${r.action ?? '?'} (from display ${r.fromDisplay ?? '-'})`);
+    notice(ACTION_TEXT[r.action] ?? '앱 실행');
+    return true;
+  } catch (e) {
+    window.alert(`앱 실행 요청 실패: ${String(e)}`);
+    return false;
+  }
+}
+
+$('btn-app').addEventListener('click', async () => {
+  const suggested = lastPackage || localStorage.getItem('carcast.app') || 'com.google.android.youtube';
+  const name = window.prompt('실행할 앱 패키지명', suggested);
+  if (name) await launch(name.trim());
 });
 
 // The other direction cannot be prevented from here: tapping the app's icon on the phone moves its task back to
@@ -164,20 +175,94 @@ $('btn-app').addEventListener('click', async () => {
 // for that (/api/status.appOnPhone); poll it so the stats line says "폰이 가져감" instead of looking broken.
 let appOnPhone = false;
 let appEpoch = 0;
+let lastStatus: any = null;
+let statusFailedAt = 0;
 setInterval(async () => {
   if (document.hidden) return;
   try {
     const epoch = appEpoch;
     const st = await (await fetch('/api/status')).json();
     if (epoch !== appEpoch) return;
+    lastStatus = st;
+    statusFailedAt = 0;
+    if (typeof st.app === 'string' && st.app) lastPackage = st.app.split('/')[0]!;
     const now = st.appOnPhone === true;
     if (now !== appOnPhone) {
       appOnPhone = now;
       note(now ? `phone took ${st.app ?? 'the app'} (display ${st.appDisplay})` : 'app back on the car display');
-      if (now) notice('폰이 앱을 가져갔습니다 — ▶로 다시 띄우기', 8000);
+      if (now) notice('폰이 앱을 가져갔습니다 — 화면의 버튼으로 되찾기', 8000);
     }
-  } catch { /* the phone is away; the video socket's own reconnect covers it */ }
-}, 5000);
+    // 폰 화면 전원은 차의 📵 로도, 폰의 전원 버튼으로도 바뀐다. 버튼은 언제나 서버가 말하는 쪽을 따른다.
+    $('btn-screen').classList.toggle('off', st.screenOn === false);
+  } catch {
+    // 폰이 잠깐 없는 것: 영상 소켓의 재접속이 알아서 덮는다. 다만 오래가면 상태 패널이 말한다.
+    if (!statusFailedAt) statusFailedAt = Date.now();
+  }
+  updateStatePanel();
+}, 2000);
+
+// 그림이 멈췄을 때 얼어붙은 프레임만 남기지 않는다: 왜 멈췄는지와 한 번에 누를 조치를 그 자리에 띄운다.
+// 가상 디스플레이는 앱이 하나도 없으면 합성할 내용이 없어 인코더가 한 장도 내지 않는다 — 그래서 "앱이 없다"와
+// "폰이 가져갔다"는 둘 다 화면상으로는 똑같이 멈춘 그림으로 보인다. 그 둘을 갈라 주는 것이 이 패널이다.
+const statePanel = $('state');
+const stateTitle = $('state-title');
+const stateMsg = $('state-msg');
+const stateAction = $<HTMLButtonElement>('state-action');
+let stateAct: (() => void) | null = null;
+stateAction.addEventListener('click', () => stateAct?.());
+
+// 정지 화면에서 프레임이 드문 것은 **정상**이다(폰 화면이 안 움직이면 인코더도 쉰다 — sparse.spec).
+// 그래서 "프레임이 없다"만으로는 패널을 띄우지 않는다. 띄우는 것은 서버가 확실히 말해 주는 상태뿐이고,
+// 나머지는 지금처럼 상태줄에만 적는다. 차에서 멀쩡한 그림을 덮는 것이 제일 나쁘다.
+const NO_PHONE_MS = 6000;
+
+function showState(title: string, msg: string, action?: { label: string; run: () => void }): void {
+  stateTitle.textContent = title;
+  stateMsg.textContent = msg;
+  if (action) {
+    stateAction.textContent = action.label;
+    stateAction.hidden = false;
+    stateAct = action.run;
+  } else {
+    stateAction.hidden = true;
+    stateAct = null;
+  }
+  statePanel.hidden = false;
+}
+
+/** 지금 패널이 말하고 있는 것 (테스트와 세션 리포트가 읽는다). */
+let stateName = '';
+
+function updateStatePanel(): void {
+  if (!started) { statePanel.hidden = true; stateName = ''; return; } // 첫 터치 전에는 시작 오버레이가 나와 있다
+
+  if (statusFailedAt && Date.now() - statusFailedAt > NO_PHONE_MS) {
+    stateName = 'no-phone';
+    showState('폰에 연결되지 않습니다', '폰이 핫스팟을 켜고 있는지, CarCast 서버가 떠 있는지 확인하세요. 연결되면 저절로 돌아옵니다.');
+    return;
+  }
+  if (appOnPhone) {
+    stateName = 'app-on-phone';
+    const pkg = lastPackage || '그 앱';
+    showState('📱 폰에서 그 앱을 쓰는 중', `안드로이드는 앱마다 화면을 하나만 둡니다. ${pkg} 이(가) 폰으로 넘어가 차 화면은 비어 있습니다.`, {
+      label: '차로 가져오기',
+      run: () => { if (lastPackage) void launch(lastPackage); },
+    });
+    return;
+  }
+  // 앱을 아직 하나도 안 띄운 상태. 빈 가상 디스플레이는 합성할 것이 없어 인코더가 한 장도 내지 않으므로
+  // (2026-09-11 가상 폰 실측) 차에는 아무것도 안 나온다 — 고장이 아니라 "고를 차례"라고 말해 준다.
+  if (lastStatus && lastStatus.source === 'display' && lastStatus.appDisplay === null && !lastStatus.frames) {
+    stateName = 'no-app';
+    showState('아직 띄운 앱이 없습니다', '차 화면에 띄울 앱을 고르세요. 빈 화면은 그릴 것이 없어 영상도 나오지 않습니다.', {
+      label: '앱 띄우기',
+      run: () => $('btn-app').click(),
+    });
+    return;
+  }
+  stateName = '';
+  statePanel.hidden = true;
+}
 
 // Phone screen off/on (M7): only the phone's own display; the virtual display and audio keep running.
 $('btn-screen').addEventListener('click', async () => {
@@ -196,6 +281,7 @@ $('btn-fullscreen').addEventListener('click', () => {
 // Stats line + a hook for the Playwright tests.
 const stats = () => ({
   renderer: renderer.name,
+  state: stateName,
   ...renderer.stats(),
   packets,
   idleMs: lastPacketAt ? Date.now() - lastPacketAt : -1,

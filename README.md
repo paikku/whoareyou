@@ -8,6 +8,7 @@
 - **남들은 어떻게 하나(Tesor·TeslaMirror·TeslaDisplay·Castla 조사): [docs/prior-art.md](docs/prior-art.md)**
 - **테스트 가이드(어디서 무엇을): [docs/testing-guide.md](docs/testing-guide.md)**
 - **가상 폰(폰 없이 폰 쪽 코드 돌려보기): [tools/virtual-phone/README.md](tools/virtual-phone/README.md)**
+- **작업 지침(이런 요청이 오면 어디서 어떻게): [docs/agent-runbook.md](docs/agent-runbook.md)**
 - **검증 기록(무엇을 어떤 테스트로 확인했나, 가정별 상태): [docs/verification-log.md](docs/verification-log.md)**
 - 실차/실기기 원본 표: [docs/car-tests/](docs/car-tests/)
 

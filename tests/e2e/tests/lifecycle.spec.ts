@@ -136,10 +136,22 @@ test('전원 버튼 × 📵: 폰 화면과 차 화면이 서로를 끌고 가는
   expect(screenOff.recoveryMs, '📵 를 눌렀더니 차 영상까지 멈췄다').not.toBeNull();
   expect(screenOff.after.screenOn).toBe(false);
 
-  // 그 뒤 전원 버튼을 누른 결과는 기기마다 다르다 — 단언하지 않고, 서버가 말하는 상태와
-  // 실제 디스플레이 상태가 어긋나면 표에 남긴다.
+  // 📵 로 꺼 둔 사이에 전원 버튼을 누르면 패널은 켜진다. 그때 서버가 계속 "꺼짐"이라고 우기면
+  // 차의 📵 버튼은 그 뒤로 계속 뒤집힌 채로 남는다 — 실 사용에서 제일 짜증나는 종류의 버그다.
+  // ScreenPower 의 감시자가 기기 쪽을 믿고 장부를 버리는지 본다.
   const afterPower = steps[1]!;
-  const real = (await import('./lifecycle/actions')).adbShell('dumpsys display | grep -m1 -o "mScreenState=[A-Z]*"');
-  report.push(`\n전원 버튼 직후 — 서버가 보는 폰 화면: \`${afterPower.after.screenOn}\`, 기기가 말하는 상태: \`${real || '읽지 못함'}\`\n`);
+  report.push(
+    `\n전원 버튼 직후 — 서버: screenOn=\`${afterPower.after.screenOn}\` forcedOff=\`${afterPower.after.forcedOff}\`, ` +
+    `기기: panelState=\`${afterPower.after.panelState}\` interactive=\`${afterPower.after.interactive}\`, ` +
+    `되돌린 횟수=\`${afterPower.after.powerReconciled}\`\n`,
+  );
+  if (afterPower.after.panelState === null) {
+    test.info().annotations.push({ type: 'note', description: 'dumpsys display 에서 패널 상태를 읽지 못해 대조를 건너뛴다' });
+  } else {
+    expect(
+      afterPower.after.screenOn === false && afterPower.after.panelState === 'ON',
+      '패널은 켜졌는데 서버는 아직 꺼졌다고 한다 — 📵 버튼이 뒤집힌 채로 남는다',
+    ).toBe(false);
+  }
   void sleep; void probe; void clientStats;
 });
