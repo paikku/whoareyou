@@ -107,3 +107,34 @@
   `.../shizuku/{ShizukuSetup,PrivilegedService}.kt`, `.../input/TouchInjector.kt`, `.../service/MirrorForegroundService.kt`,
   `app/src/main/assets/web/js/{decoder,mse-decoder}.js`, `shizuku-install-guide.md`
 - 테슬라 사설 IP 차단: [TMC](https://teslamotorsclub.com/tmc/threads/cant-access-private-websites-on-wifi.44134/) · Shizuku 재부팅 제약: [공식 가이드](https://shizuku.rikka.app/guide/setup/)
+
+## 전원/화면 끄기와 가상 디스플레이 — 남들도 못 푼 문제 (2026-09-11 조사)
+
+실차 리포트 #26 의 "전원 버튼을 누르면 차가 무응답"을 두고 상류를 뒤졌다. scrcpy 에 **열려 있는 같은 문제**가 있다.
+
+**[Genymobile/scrcpy#6787](https://github.com/Genymobile/scrcpy/issues/6787)** — *"Virtual displays go black after being
+idle for 10sec when screen is off"*. 보고자의 묘사가 우리 증상과 정확히 같다: 가상 디스플레이 크기의 **불투명한
+검은 면**이 덮이고, 그 아래에서 앱은 계속 그려진다. 화면이 변하지 않으니 인코더가 멈추고 차에는 얼어붙은
+그림만 남는다. **카운트다운은 물리 화면이 꺼진 뒤에 시작된다.**
+
+그쪽에서 찾은 회피책도 둘뿐이다:
+- `--stay-awake` — `stay_on_while_plugged_in` 을 건드리므로 **충전 중에만** 듣는다(안드로이드 동작).
+  우리도 이미 켠다(`ScreenPower.stayAwake`).
+- 물리 화면을 깨어 있게 유지 — 손으로 만지거나 Caffeinate 같은 도구로.
+
+그리고 scrcpy 가 그 "깨어 있게 유지"를 옵션으로 만든 것이 **`--keep-active`**: 주기적으로
+`PowerManager.userActivity()` 를 보내 유휴 타임아웃을 되돌린다(`Device.keepActive` → `userActivity(displayId)`).
+
+**우리가 가져온 것:** 차가 보고 있는 동안 5초마다 **가상 디스플레이의 id 로** `userActivity` 를 보낸다
+(`keep_active=false` 로 끌 수 있다). 그 디스플레이는 자기 display group 을 가지므로 폰 본체를 깨우지 않는다.
+
+**가져오지 않은 것과 이유:**
+- scrcpy 의 `keepDisplayPowerOff` 는 **자기가 주입한** POWER/WAKEUP 키 뒤에 200ms 지연으로 패널을 다시 끄는
+  장치다(`Controller.scheduleDisplayPowerOff`). 사용자가 **직접 누른** 물리 전원 버튼에는 닿지 않으므로
+  우리 경우에는 그대로 쓸 수 없다. 대신 잠든 것을 감지해 되살리는 쪽을 택했다(§verification-log 3.9).
+- 가상 디스플레이 플래그는 scrcpy 최신(`NewDisplayCapture`)과 **한 글자도 다르지 않다** — 빠진 플래그 때문이
+  아니라는 뜻이다.
+
+**남은 불확실성:** #6787 은 아직 열려 있다. 즉 상류에도 확실한 해법이 없다. 우리 쪽에서 `userActivity` 가
+One UI 8 에서 실제로 유휴 시계를 되돌리는지는 실기기에서만 답이 나온다 — `/api/status` 의 `keptActive` 가
+올라가는데도 화면이 검어지면 이 경로는 그 ROM 에서 듣지 않는 것이다.

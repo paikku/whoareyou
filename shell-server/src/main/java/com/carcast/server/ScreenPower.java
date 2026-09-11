@@ -57,6 +57,32 @@ final class ScreenPower {
     private int pressIndex;
     private java.util.function.BooleanSupplier carWatching = () -> false;
 
+    // ---- 가상 디스플레이를 깨어 있게 두기 (scrcpy --keep-active) -----------------------------------
+    /**
+     * 물리 화면이 꺼지면 안드로이드는 **가상 디스플레이도** 유휴로 보고 약 10초 뒤 검은 면으로 덮는다.
+     * 앱은 그 아래에서 계속 그려지지만 화면이 변하지 않으니 인코더가 멈추고, 차에는 얼어붙은 그림만 남는다.
+     * scrcpy 에도 열려 있는 문제이며(Genymobile/scrcpy#6787), 거기서도 확실한 회피는 두 가지뿐이다:
+     * 충전 중에만 듣는 stay_on_while_plugged_in, 그리고 주기적으로 사용자 활동을 알리는 --keep-active.
+     *
+     * 여기서는 **가상 디스플레이의 id 로** userActivity 를 보낸다. 그 디스플레이는 자기 display group 을
+     * 가지므로(OWN_DISPLAY_GROUP / DEVICE_DISPLAY_GROUP) 폰 본체를 깨우지 않고 그 그룹의 유휴 시계만 되돌린다.
+     * 차가 보고 있는 동안에만 보낸다 — 아무도 안 보는데 폰을 붙잡고 있을 이유가 없다.
+     */
+    private volatile boolean keepActive = true;
+    private volatile int keptActive;
+    private java.util.function.IntSupplier keepActiveDisplayId = () -> -1;
+    private long lastKeepActiveMs;
+
+    private static final long KEEP_ACTIVE_INTERVAL_MS = 5_000;
+
+    void setKeepActive(boolean on) {
+        keepActive = on;
+    }
+
+    void setKeepActiveDisplay(java.util.function.IntSupplier displayId) {
+        keepActiveDisplayId = displayId;
+    }
+
     private static final int ESCAPE_PRESSES = 3;
     private static final long ESCAPE_WINDOW_MS = 10_000;
     private static final long ESCAPE_PAUSE_MS = 60_000;
@@ -96,6 +122,7 @@ final class ScreenPower {
         m.put("panelState", panelState);
         m.put("powerReconciled", reconciled);
         m.put("sleepRecoveries", sleepRecoveries);
+        m.put("keptActive", keptActive);
         long paused = recoveryPausedUntilMs - System.currentTimeMillis();
         m.put("recoveryPausedMs", paused > 0 ? paused : 0);
         if (!lastTransition.isEmpty()) {
@@ -173,6 +200,30 @@ final class ScreenPower {
         }
         if (forcedOff) {
             panelState = readPanelState();
+        }
+        pokeVirtualDisplay();
+    }
+
+    /** 가상 디스플레이의 유휴 시계를 되돌린다 (위 keepActive 주석). */
+    private void pokeVirtualDisplay() {
+        if (!keepActive || !carWatching.getAsBoolean()) {
+            return;
+        }
+        int id = keepActiveDisplayId.getAsInt();
+        if (id <= 0) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastKeepActiveMs < KEEP_ACTIVE_INTERVAL_MS) {
+            return;
+        }
+        lastKeepActiveMs = now;
+        try {
+            ServiceManager.getPowerManager().userActivity(id);
+            keptActive++;
+        } catch (Throwable t) {
+            Ln.w("userActivity(" + id + ") failed: " + t);
+            keepActive = false; // 이 ROM 에서 안 되면 매초 실패 로그를 남기지 않는다
         }
     }
 

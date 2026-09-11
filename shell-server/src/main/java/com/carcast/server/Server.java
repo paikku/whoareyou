@@ -11,7 +11,7 @@ import java.util.Map;
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [decorations=false] [app=com.google.android.youtube] [source=clip]
- *     [stay_awake=true] [screen_off=false] [sleep_recovery=true]
+ *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
  * </pre>
  * Extra endpoints: {@code POST /api/screen?on=0|1} turns only the phone's main display off/on (the virtual
  * display keeps running); {@code GET /api/screen} reports it.
@@ -127,6 +127,10 @@ public final class Server {
                 screen.setOnWake(source::requestKeyframe);
             }
             screen.setSleepRecovery(!"false".equals(raw.get("sleep_recovery")));
+            screen.setKeepActive(!"false".equals(raw.get("keep_active")));
+            if (source != null) {
+                screen.setKeepActiveDisplay(source::displayId);
+            }
             screen.startWatching();
             if ("true".equals(raw.get("screen_off"))) {
                 screen.setMainScreen(false);
