@@ -220,6 +220,8 @@ stateAction.addEventListener('click', () => stateAct?.());
 // 그래서 "프레임이 없다"만으로는 패널을 띄우지 않는다. 띄우는 것은 서버가 확실히 말해 주는 상태뿐이고,
 // 나머지는 지금처럼 상태줄에만 적는다. 차에서 멀쩡한 그림을 덮는 것이 제일 나쁘다.
 const NO_PHONE_MS = 6000;
+// 폰이 잠든 것은 서버가 확실히 말해 주지만, 잠깐 조는 것까지 패널을 띄우면 시끄럽다.
+const ASLEEP_MS = 3000;
 
 function showState(title: string, msg: string, action?: { label: string; run: () => void }): void {
   stateTitle.textContent = title;
@@ -264,6 +266,18 @@ function updateStatePanel(): void {
     showState('차 화면에 띄운 앱이 없습니다', '앱을 고르면 바로 나옵니다. 그릴 것이 없는 동안에는 영상도 멈춰 있습니다.', {
       label: '앱 띄우기',
       run: () => $('btn-app').click(),
+    });
+    return;
+  }
+  // 폰이 잠들면 가상 디스플레이까지 합성이 멈춘다 — 앱은 멀쩡한데 그림만 얼어붙는다. 실차 리포트 #26 이
+  // 정확히 이 상태였고, 그때 차는 아무 말도 하지 않았다(state=""). 서버가 폰을 다시 재우지 못한 경우
+  // (세 번 연속 전원 누르기로 복구를 멈춰 둔 경우 등)에만 여기까지 온다.
+  const idle = lastPacketAt ? Date.now() - lastPacketAt : 0;
+  if (lastStatus && lastStatus.interactive === false && idle > ASLEEP_MS) {
+    stateName = 'phone-asleep';
+    showState('📱 폰이 잠들었습니다', '잠든 폰은 차 화면까지 멈춥니다. 폰 화면만 끄고 싶다면 전원 버튼 대신 📵 를 쓰세요.', {
+      label: '폰 깨우기',
+      run: () => { void fetch('/api/screen?on=1', { method: 'POST' }); },
     });
     return;
   }

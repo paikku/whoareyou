@@ -17,6 +17,7 @@ export interface Probe {
   forcedOff: boolean | null;    // 우리가 📵 로 꺼 둔 상태인가
   panelState: string | null;    // dumpsys display 가 말하는 패널 상태
   powerReconciled: number | null; // 전원 버튼이 우리 장부와 어긋나 되돌린 횟수
+  sleepRecoveries: number | null;  // 차가 보는 동안 잠든 폰을 되살린 횟수
   injected: number | null;
   injectFailed: number | null;
   pointersDown: number | null;  // 폰이 눌려 있다고 믿는 손가락 수
@@ -62,6 +63,7 @@ export async function probe(page: Page, base: string): Promise<Probe> {
     forcedOff: s?.forcedOff ?? null,
     panelState: s?.panelState ?? null,
     powerReconciled: s?.powerReconciled ?? null,
+    sleepRecoveries: s?.sleepRecoveries ?? null,
     injected: s?.injected ?? null,
     injectFailed: s?.injectFailed ?? null,
     pointersDown: s?.pointersDown ?? null,
@@ -88,5 +90,7 @@ export function disagreements(p: Probe): string[] {
   if (p.injectFailed) out.push(`injectFailed=${p.injectFailed}`);
   // 서버가 "화면 꺼짐"이라고 하는데 기기는 패널이 켜져 있다고 하면, 차의 📵 버튼이 뒤집힌 상태다.
   if (p.screenOn === false && p.panelState === 'ON') out.push('📵 장부와 패널이 어긋남');
+  // 차가 보고 있는데 폰이 잠든 채로 남아 있으면 가상 디스플레이도 멈춘 상태다.
+  if (p.interactive === false) out.push('폰이 잠들어 있음');
   return out;
 }

@@ -45,6 +45,31 @@ final class ScreenPower {
     private volatile String lastTransition = "";
     private Thread watcher;
 
+    // ---- 차가 보는 동안 폰이 잠들었을 때 ----------------------------------------------------------
+    /** Off with `sleep_recovery=false`. */
+    private volatile boolean sleepRecovery = true;
+    private volatile int sleepRecoveries;
+    /** While this is in the future, a power press is left alone (the driver asked for the phone back). */
+    private volatile long recoveryPausedUntilMs;
+    /** Our own wake, so the watcher does not read it as the user pressing power. */
+    private volatile boolean selfWaking;
+    private final long[] recentPresses = new long[ESCAPE_PRESSES];
+    private int pressIndex;
+    private java.util.function.BooleanSupplier carWatching = () -> false;
+
+    private static final int ESCAPE_PRESSES = 3;
+    private static final long ESCAPE_WINDOW_MS = 10_000;
+    private static final long ESCAPE_PAUSE_MS = 60_000;
+
+    void setSleepRecovery(boolean on) {
+        sleepRecovery = on;
+    }
+
+    /** True while a car client is attached: only then is a sleep worth undoing. */
+    void setCarWatching(java.util.function.BooleanSupplier s) {
+        carWatching = s;
+    }
+
     boolean isMainScreenOn() {
         if (forcedOff) {
             return false;
@@ -70,6 +95,9 @@ final class ScreenPower {
         m.put("forcedOff", forcedOff);
         m.put("panelState", panelState);
         m.put("powerReconciled", reconciled);
+        m.put("sleepRecoveries", sleepRecoveries);
+        long paused = recoveryPausedUntilMs - System.currentTimeMillis();
+        m.put("recoveryPausedMs", paused > 0 ? paused : 0);
         if (!lastTransition.isEmpty()) {
             m.put("lastPowerEvent", lastTransition);
         }
@@ -123,8 +151,9 @@ final class ScreenPower {
             // Waking is the moment our bookkeeping goes stale: the system lights the panel itself, so a
             // forced-off flag from an earlier 📵 is now a lie. 📵 alone never moves this flag (PowerManager
             // keeps reporting interactive after a SurfaceControl power-off), which is what makes the
-            // transition — not the absolute state — the safe signal to key on.
-            if (now && forcedOff) {
+            // transition — not the absolute state — the safe signal to key on. Our own wake during a sleep
+            // recovery is not the user, so it must not clear the flag.
+            if (now && forcedOff && !selfWaking) {
                 forcedOff = false;
                 reconciled++;
                 Ln.i("the phone woke on its own (power button) while we thought the panel was off — dropping our flag");
@@ -138,10 +167,79 @@ final class ScreenPower {
                 } catch (Throwable t) {
                     Ln.w("onWake failed: " + t);
                 }
+            } else {
+                onWentToSleep();
             }
         }
         if (forcedOff) {
             panelState = readPanelState();
+        }
+    }
+
+    /**
+     * The phone just went to sleep. If the car is watching, that kills the picture: a sleeping device stops
+     * composing every display, the virtual one included, so the encoder goes silent and the car is left with
+     * a frozen frame and no idea why (real-car session report #26, 2026-09-11: idle 6.9 s, 0 fps, no error).
+     *
+     * Almost always the driver pressed power meaning "darken my phone", which is what 📵 does — they just
+     * used the button they always use. So turn the press into 📵: wake the device back up and switch the
+     * panel off through SurfaceControl, which leaves the car untouched.
+     *
+     * The one reading this must not steal: someone who really wants the phone back presses power again and
+     * again. {@link #ESCAPE_PRESSES} presses inside {@link #ESCAPE_WINDOW_MS} stop the recovery for a minute
+     * and leave the phone lit — after that the phone is theirs and the car says why it is dark.
+     */
+    private void onWentToSleep() {
+        if (!sleepRecovery) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        recentPresses[pressIndex] = now;
+        pressIndex = (pressIndex + 1) % ESCAPE_PRESSES;
+        long oldest = Long.MAX_VALUE;
+        for (long t : recentPresses) {
+            oldest = Math.min(oldest, t);
+        }
+        boolean escaping = oldest > 0 && now - oldest < ESCAPE_WINDOW_MS;
+        if (escaping) {
+            recoveryPausedUntilMs = now + ESCAPE_PAUSE_MS;
+            java.util.Arrays.fill(recentPresses, 0);
+            Ln.i("power pressed " + ESCAPE_PRESSES + " times quickly — the phone is yours; pausing recovery for "
+                    + (ESCAPE_PAUSE_MS / 1000) + "s");
+            wake(false); // 화면을 켠 채로 돌려준다
+            return;
+        }
+        if (now < recoveryPausedUntilMs) {
+            return; // 방금 escape 했다: 손대지 않는다
+        }
+        if (!carWatching.getAsBoolean()) {
+            return; // 아무도 안 보고 있으면 그냥 자게 둔다
+        }
+        sleepRecoveries++;
+        Ln.i("the phone went to sleep while the car was watching — waking it and darkening the panel instead");
+        wake(true);
+    }
+
+    /** Wake the device; with {@code darken}, immediately put the panel back off (the 📵 state). */
+    private void wake(boolean darken) {
+        selfWaking = darken;
+        try {
+            Command.execReadOutput("input", "keyevent", String.valueOf(KeyEvent.KEYCODE_WAKEUP));
+            for (int i = 0; i < 20 && !interactive(); i++) {
+                Thread.sleep(50);
+            }
+            if (darken) {
+                if (setPhysicalDisplaysPower(false)) {
+                    forcedOff = true;
+                }
+            } else {
+                forcedOff = false;
+            }
+            lastInteractive = interactive();
+        } catch (Exception e) {
+            Ln.w("wake failed: " + e);
+        } finally {
+            selfWaking = false;
         }
     }
 

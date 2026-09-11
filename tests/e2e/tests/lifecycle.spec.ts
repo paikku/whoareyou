@@ -171,6 +171,15 @@ test('전원 버튼 × 📵: 폰 화면과 차 화면이 서로를 끌고 가는
   if (THROUGHPUT) expect(screenOff.recoveryMs, '📵 를 눌렀더니 차 영상까지 멈췄다').not.toBeNull();
   expect(screenOff.after.screenOn, '📵 를 눌렀는데 서버가 화면이 켜져 있다고 한다').toBe(false);
 
+  // 실차 리포트 #26: 운전 중 전원 버튼을 누르면 기기가 통째로 자고 가상 디스플레이도 멈춘다 — 앱은
+  // 멀쩡한데 차 화면만 얼어붙는다. 운전자가 원한 것은 📵 였으므로 서버가 그렇게 되돌려 놓아야 한다.
+  const slept = steps[3]!;
+  expect(slept.after.serverAlive).toBe(true);
+  report.push(`\n폰을 재운 뒤 — interactive=\`${slept.after.interactive}\` screenOn=\`${slept.after.screenOn}\` ` +
+    `되살린 횟수=\`${slept.after.sleepRecoveries ?? '-'}\`\n`);
+  expect(slept.after.interactive, '폰이 잠든 채로 남았다 — 차 화면이 멈춘다 (sleep recovery)').toBe(true);
+  expect(slept.after.screenOn, '되살리면서 폰 화면까지 켜 버렸다 — 운전자가 원한 것은 어두운 폰이다').toBe(false);
+
   // 📵 로 꺼 둔 사이에 전원 버튼을 누르면 패널은 켜진다. 그때 서버가 계속 "꺼짐"이라고 우기면
   // 차의 📵 버튼은 그 뒤로 계속 뒤집힌 채로 남는다 — 실 사용에서 제일 짜증나는 종류의 버그다.
   // ScreenPower 의 감시자가 기기 쪽을 믿고 장부를 버리는지 본다.
