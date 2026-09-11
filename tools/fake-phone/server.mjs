@@ -5,6 +5,9 @@
 //                   [--ws-reject 0.5]   reject this fraction of WS handshakes (Tesla flakiness)
 //                   [--ws-drop-every 5] close every media/control socket every N seconds (tests reconnect)
 //                   [--delay-ms 200]    add latency to every media frame
+//                   [--pts-base 131]    start the timeline this many seconds in, like a phone whose server
+//                                       has been running a while before the car connects (the live encoder
+//                                       stamps absolute time, the clip starts at 0 — see below)
 //                   [--pts-stretch 4]   space frames N× further apart (pts and pacing) while each fragment
 //                                       keeps its 33 ms duration: the gappy timeline a static phone screen
 //                                       produces, which stalled MSE in the car
@@ -38,6 +41,9 @@ const WS_DROP_EVERY = Number(args['ws-drop-every'] ?? 0);
 const DELAY_MS = Number(args['delay-ms'] ?? 0);
 const VIDEO_SILENT = args['video-silent'] === 'true';
 const PTS_STRETCH = Number(args['pts-stretch'] ?? 1);
+// The phone's shell server stamps frames with the encoder's own clock, so a car that connects an hour after
+// the server started sees a timeline that begins an hour in — never 0, which is where the clip starts.
+const PTS_BASE_US = Math.round(Number(args['pts-base'] ?? 0) * 1_000_000);
 const VIDEO_FREEZE = args['video-freeze'] === 'true';
 const FREEZE_PTS_US = 180_214_950_000; // what the car saw: buffered=180214.95-180214.98
 const ADDRESSES = (args.addresses ?? 'swlan0=192.168.43.1').split(',').filter(Boolean);
@@ -209,8 +215,11 @@ let idx = 0;
 const t0 = process.hrtime.bigint();
 function tick() {
   const f = frames[idx];
-  const pts = loop * clipDurationUs + f.pts;
-  const dueNs = BigInt(pts) * 1000n;
+  // 송출 시각은 클립 시작 기준, 타임라인에 찍는 pts 는 거기에 PTS_BASE_US 를 더한 값 — 둘을 섞으면
+  // 시작하자마자 그만큼 기다려 버린다(실수로 한 번 그랬다).
+  const elapsedUs = loop * clipDurationUs + f.pts;
+  const pts = PTS_BASE_US + elapsedUs;
+  const dueNs = BigInt(elapsedUs) * 1000n;
   const nowNs = process.hrtime.bigint() - t0;
   if (nowNs < dueNs) {
     setTimeout(tick, Number((dueNs - nowNs) / 1_000_000n));

@@ -5,9 +5,12 @@ import type { Page } from '@playwright/test';
 import { Action, Ctx } from './actions';
 import { Probe, clientStats, disagreements, probe, sleep } from './probe';
 
-/** 이만큼 프레임이 더 디코드되면 "돌아왔다"고 본다 (한 장은 우연일 수 있다). */
-const RECOVERED_FRAMES = 5;
-const RECOVER_TIMEOUT_MS = Number(process.env.RECOVER_TIMEOUT_MS ?? 25_000);
+// 이만큼 프레임이 더 디코드되면 "돌아왔다"고 본다 (한 장은 우연일 수 있다).
+// 가상 폰에서는 정지 화면에서 초당 0.3프레임까지 떨어지므로 한 장이라도 오면 살아난 것으로 센다 —
+// 거기서는 복구 "시간"이 아니라 복구 "여부"가 읽을 수 있는 전부다.
+const NO_THROUGHPUT = !!process.env.NO_THROUGHPUT;
+const RECOVERED_FRAMES = NO_THROUGHPUT ? 1 : 5;
+const RECOVER_TIMEOUT_MS = Number(process.env.RECOVER_TIMEOUT_MS ?? (NO_THROUGHPUT ? 40_000 : 25_000));
 
 export interface Step {
   action: string;

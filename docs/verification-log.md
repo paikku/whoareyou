@@ -98,6 +98,22 @@
 `REPEAT_PREVIOUS_FRAME_AFTER` 는 **직전 프레임이 있어야** 반복하기 때문이다. 결과적으로 차에서 페이지를 열면
 ▶ 를 누르기 전까지는 init 세그먼트조차 받지 못한다 — 차 화면의 "폰 무응답"이 이 상태다.
 
+**두 번째 실행(빌드 `fa2e6bd`)에서 나온 수치 — A+ 는 처리량을 물을 수 있는 자리가 아니다.**
+정지 화면에서 프레임 간격 **p50 83ms / p90 337ms / 최대 4725ms**, 그리고 7분 동안 총 129프레임(**0.3fps**).
+중앙값은 `REPEAT_PREVIOUS_FRAME_AFTER`(100ms)와 맞지만 꼬리가 몇 초씩 벌어지고, 화면이 완전히 멈추면
+사실상 아무것도 내지 않는다. 차 클라이언트는 그 상태에서 `video 1f 0fps` 로 멈춘다.
+에뮬레이터의 소프트웨어 인코더(`c2.android.avc.encoder`, 720p, 2코어)의 한계이므로 **디코드 처리량 검사는
+A+ 에서 건너뛴다**(`NO_THROUGHPUT=1`; 처리량은 A 의 가짜 폰과 B 의 실기기에서 본다). A+ 가 보는 것은
+경로와 상태다. 실기기의 하드웨어 인코더가 같은 꼬리를 갖는지는 B 에서 `MAX_GAP_MS=500 npm run device` 로 확인할 것.
+
+**전원 버튼 장부 되돌리기 확인:** 같은 실행의 최종 상태에 `powerReconciled: 1`, `panelState: "ON"`,
+`forcedOff: false` — 📵 로 끈 뒤 전원 버튼이 패널을 켠 것을 감시자가 잡아 장부를 버렸다는 뜻이다.
+
+**곁가지로 확인한 것 — 늦게 접속해도 재생된다.** 라이브 인코더는 자기 시계로 pts 를 찍으므로 서버가 한참
+돌고 난 뒤 차가 붙으면 타임라인이 0 이 아니라 그만큼 뒤에서 시작한다(실측 131초). 클립(pts≈0)으로는 절대
+안 나오던 상황이라 새로 재현해 봤고(`tools/fake-phone --pts-base`), 차 클라이언트는 `lag 32ms`로 정상
+재생했다. 회귀 검사로 `tests/e2e/tests/pts-base.spec.ts` 에 남겼다.
+
 **여전히 A+ 에서 못 보는 것:** 가정 1(VpnService 주소 배달, 여기서는 `adb forward` 로 붙는다), 핫스팟,
 무선 디버깅 페어링·TCP 모드, One UI 전용 동작(INJECT_EVENTS 정책, 패널 동작, 도즈 세부), 발열·배터리.
 전체 목록: [tools/virtual-phone/README.md](../tools/virtual-phone/README.md).
