@@ -6,6 +6,11 @@ name: emulator
 # 배경과 한계: tools/virtual-phone/README.md
 on:
   workflow_dispatch:
+    inputs:
+      explore_steps:
+        description: '무작위 탐색 단계 수 (0이면 돌지 않음). 폰·차 동작을 임의 순서로 걸어 보고 보고서를 남긴다.'
+        required: false
+        default: '0'
   push:
     branches: ['**']
     paths:
@@ -104,6 +109,8 @@ jobs:
 
       - name: Virtual phone → device checks → car client
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          EXPLORE_STEPS: ${{ inputs.explore_steps || '0' }}
         with:
           api-level: ${{ matrix.api-level }}
           target: google_apis
@@ -124,6 +131,7 @@ jobs:
           name: virtual-phone-logs
           path: |
             out/vphone/**
+            out/lifecycle/**
             tests/e2e/playwright-report/**
             tests/e2e/test-results/**
           if-no-files-found: ignore

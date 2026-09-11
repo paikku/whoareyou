@@ -20,6 +20,20 @@ export const status = () => api('/api/status');
 export const startApp = (name, restart) =>
   api(`/api/app?name=${encodeURIComponent(name)}${restart ? `&restart=${restart}` : ''}`, { method: 'POST' });
 
+/**
+ * 가상 화면에 무엇이든 띄워 둔다. 인코더는 **화면에 그려진 것이 있어야** 프레임을 낸다:
+ * 앱이 하나도 없는 가상 디스플레이는 합성할 내용이 없어 한 장도 나오지 않는다(2026-09-11 가상 폰에서 실측).
+ * 그래서 영상을 보는 검사는 먼저 이걸 부른다.
+ */
+export async function ensureApp() {
+  const s = await status();
+  if (s.appDisplay !== null && s.appDisplay === s.displayId) return s;
+  const pkg = adbAvailable ? pickLauncherApp() : (process.env.TEST_APP ?? 'com.android.settings');
+  await startApp(pkg);
+  await sleep(2000);
+  return status();
+}
+
 /** 서버 로그(폰 앱의 "로그"와 같은 목록). 실패를 설명할 때 붙인다. */
 export async function serverLog(lines = 30) {
   try { return (await api('/api/log')).slice(-lines).join('\n'); } catch { return '(로그를 읽지 못함)'; }

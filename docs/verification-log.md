@@ -77,6 +77,33 @@
 이 층에서 잡은 문제와 수정: 클립 루프 시 `tfdt`가 원래 pts로 남아 MSE 타임라인이 되감기던 10초 정지(재스탬프),
 재연결 후 새 MediaSource가 일시정지 상태로 남던 문제(`wantPlay` + `play()`), AbortError 무시, 백오프 상한 2초.
 
+### 2.4 A+층: 가상 폰 (Android 16 / API 36 에뮬레이터, GitHub 러너)
+
+`tools/virtual-phone` 이 에뮬레이터에 APK 를 깔고 **폰에서와 같은 명령으로 같은 dex 를 shell uid 로** 띄운다.
+첫 실행(빌드 `f2c9af1`, 2026-09-11)에서 확인된 것 — 지금까지 전부 B층(실기기)에서만 볼 수 있던 것들이다:
+
+| | 결과 |
+|---|---|
+| 프로세스 | `process=shell`, `uid=2000`, `build=f2c9af1` |
+| 가상 디스플레이 (M4) | `source=display`, `displayId=2`, 1280x720/160, 인코더 `c2.android.avc.encoder` |
+| 앱 실행 | `start app com.android.settings/.Settings on display 2 (started, was on display null)` |
+| **앱 충돌 (M4-b)** | 폰이 `am start --display 0` 으로 가져감 → 감시자가 `폰이 앱 … 을 가져감 (display 0)` 기록, `appOnPhone:true`. 차에서 다시 ▶ → `(restarted, was on display 0, restart=auto)`, `appOnPhone:false` |
+| 입력 주입 (M5) | `injected:8`, `injectFailed:0` — `am stack list` 파서도 이 ROM 에서 동작 |
+| 화면 전원 (M7) | `physical display power off: true` / `on: true` — SurfaceControl 경로가 에뮬레이터에서도 먹는다 |
+| cgroup 탈출 | 실기기와 같이 전 경로 `EACCES` (§3.5 와 동일) |
+
+**여기서 나온 새 사실 — 빈 가상 디스플레이는 한 장도 내지 않는다.**
+앱을 하나도 띄우지 않은 가상 디스플레이에 붙으면 8초 동안 패킷이 **0개**였고(`frames=0, keyframes=0`),
+앱을 띄운 직후부터 흐르기 시작했다(13초에 88프레임). 합성할 내용이 없으면 인코더에 들어갈 버퍼도 없고,
+`REPEAT_PREVIOUS_FRAME_AFTER` 는 **직전 프레임이 있어야** 반복하기 때문이다. 결과적으로 차에서 페이지를 열면
+▶ 를 누르기 전까지는 init 세그먼트조차 받지 못한다 — 차 화면의 "폰 무응답"이 이 상태다.
+
+**여전히 A+ 에서 못 보는 것:** 가정 1(VpnService 주소 배달, 여기서는 `adb forward` 로 붙는다), 핫스팟,
+무선 디버깅 페어링·TCP 모드, One UI 전용 동작(INJECT_EVENTS 정책, 패널 동작, 도즈 세부), 발열·배터리.
+전체 목록: [tools/virtual-phone/README.md](../tools/virtual-phone/README.md).
+
+---
+
 ---
 
 ## 3. B층: Galaxy S26 Ultra (SM-S948N, Android 16 / One UI 8) + 노트북

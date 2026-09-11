@@ -15,6 +15,8 @@
     "e2e:quick": "npm run test:quick --workspace tests/e2e",
     "vphone": "tools/virtual-phone/vphone.sh up",
     "vphone:down": "tools/virtual-phone/vphone.sh down",
-    "device": "npm test --workspace tests/device"
+    "device": "npm test --workspace tests/device",
+    "lifecycle": "npm run lifecycle --workspace tests/e2e",
+    "explore": "npm run explore --workspace tests/e2e"
   }
 }

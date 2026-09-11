@@ -11,6 +11,8 @@ collect() {
   echo "::group::가상 폰 로그"
   tools/virtual-phone/vphone.sh logs 2>&1 | tee out/vphone/server.log || true
   tools/virtual-phone/vphone.sh status 2>&1 | tee out/vphone/status.json || true
+  [ -f out/lifecycle/report.md ] && cat out/lifecycle/report.md || true
+  [ -f out/lifecycle/explore.md ] && cat out/lifecycle/explore.md || true
   "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/platform-tools/adb" logcat -d -t 500 > out/vphone/logcat.txt 2>&1 || true
   echo "::endgroup::"
   return $code
@@ -32,6 +34,22 @@ CHROME_PATH="$PWD/$(find tests/e2e/.cache -name chrome -type f | head -1)" \
 BASE_URL=http://127.0.0.1:3333 \
   timeout 1200 npm test --workspace tests/e2e -- --project=model-y-2026.26
 echo "::endgroup::"
+
+# 폰 생애주기 × 웹 생애주기: 앱 전환·전원·도즈·새로고침을 순서대로 걸고 복구 시간을 표로 남긴다.
+echo "::group::생애주기 시나리오"
+CHROME_PATH="$PWD/$(find tests/e2e/.cache -name chrome -type f | head -1)" \
+BASE_URL=http://127.0.0.1:3333 \
+  timeout 1200 npm run lifecycle --workspace tests/e2e
+echo "::endgroup::"
+
+# 무작위 탐색은 기본으로 돌지 않는다. Actions 에서 "Run workflow" 의 explore_steps 로 켠다.
+if [ "${EXPLORE_STEPS:-0}" -gt 0 ] 2>/dev/null; then
+  echo "::group::무작위 탐색 ($EXPLORE_STEPS 단계)"
+  CHROME_PATH="$PWD/$(find tests/e2e/.cache -name chrome -type f | head -1)" \
+  BASE_URL=http://127.0.0.1:3333 EXPLORE_STEPS="$EXPLORE_STEPS" \
+    timeout 2400 npm run explore --workspace tests/e2e || echo "탐색이 실패로 끝났다 — 보고서를 본다"
+  echo "::endgroup::"
+fi
 
 echo "::group::킬 스위치 (마지막: 서버를 죽인다)"
 timeout 300 npm run test:kill-switch --workspace tests/device

@@ -64,7 +64,7 @@ export CHROME_PATH=$(find ~/경로/Tesla/tests/e2e/.cache -name chrome -type f |
 | **ADB 페어링·shell 서버 (M3)** | 프로토콜 단위 테스트만 | 서버가 `uid=2000`으로 뜨는지까지. 페어링·TCP 모드는 불가 | **핵심.** 앱에서 페어링 → `uid=2000` 표시 | 해당 없음 |
 | **가상 디스플레이·앱 실행 (M4)** | 불가 | **핵심.** `npm run device`가 `source=display`·앱 실행·M4-b 앱 충돌까지 확인 | **핵심.** 삼성 One UI 동작은 여기서만 | 차에서 앱 조작 |
 | **오디오 (M6)** | 오디오 SourceBuffer 진행 여부 | 미구현 | 폰 스피커 무음/출력 선택 확인 | 차 스피커로 재생, 첫 터치 후 소리 |
-| **화면 OFF·발열·배터리 (M7)** | 불가 | `/api/screen` 요청·상태까지. 실제 소등·발열·배터리는 불가 | 화면 끄고 30분 연속 스트리밍 | 동일 |
+| **화면 OFF·발열·배터리 (M7)** | 불가 | `/api/screen` 요청·상태 + 전원 버튼과의 상호작용(`npm run lifecycle`). SurfaceControl 전원 전환이 에뮬레이터에서도 먹는다(2026-09-11 실측). 발열·배터리는 불가 | 화면 끄고 30분 연속 스트리밍 | 동일 |
 
 ---
 
@@ -110,15 +110,25 @@ tools/virtual-phone/vphone.sh sdk     # 최초 1회 (cmdline-tools + emulator + 
 ./gradlew :app:assembleDebug
 tools/virtual-phone/vphone.sh up      # 부팅 → 설치 → 서버 기동 → http://127.0.0.1:3333
 
+export BASE_URL=http://127.0.0.1:3333
+export CHROME_PATH=$(find tests/e2e/.cache -name chrome -type f | head -1)
 npm run device                        # 기기 검사: source=display, 앱 실행, M4-b 충돌, 입력 주입, 화면 OFF
-cd tests/e2e && CHROME_PATH=$(find .cache -name chrome -type f | head -1) \
-  BASE_URL=http://127.0.0.1:3333 npx playwright test --project=model-y-2026.26
+npm run lifecycle                     # 폰↔웹 생애주기 시나리오 (앱 전환 / 전원 × 📵 / 도즈 / 새로고침)
+EXPLORE_STEPS=40 npm run explore      # 무작위 순서로 스스로 돌아다니며 어긋나는 자리를 찾는다
+cd tests/e2e && npx playwright test --project=model-y-2026.26
 
 tools/virtual-phone/vphone.sh logs    # 서버 로그 (기동 로그 + /api/log)
 tools/virtual-phone/vphone.sh down    # 킬 스위치 → 에뮬레이터 종료
 ```
 
-`/dev/kvm` 이 있어야 한다(리눅스). CI 는 `.github/workflows/emulator.yml` 이 같은 순서를 돈다.
+`/dev/kvm` 이 있어야 한다(리눅스). CI 는 `.github/workflows/emulator.yml` 이 같은 순서를 돈다
+(무작위 탐색은 Actions → `emulator` → **Run workflow** 의 `explore_steps` 로 켠다).
+
+**생애주기 하네스가 왜 따로 있나.** 실차에서 겪은 문제들 — 전원 버튼을 누르니 차가 얼어붙음, 폰이 앱을 도로
+가져가 검은 화면, 새로고침 뒤 안 돌아옴 — 은 기능 하나가 틀려서가 아니라 **폰 생애주기와 웹 생애주기가 겹칠 때**
+났다. 그래서 시나리오는 동작을 순서대로 걸고 매 단계마다 양쪽 상태(`/api/status` 와 브라우저의 `__carcast.stats()`)와
+**차 화면 복구 시간**을 표로 남긴다. 보고서: `out/lifecycle/report.md`, `out/lifecycle/explore.md`.
+기기마다 갈리는 것(전원·패널)은 기록만 하고, 어디서나 성립해야 하는 것(서버 생존, 앱 위치, 되돌아올 수 있는가)만 단언한다.
 
 **여기서 통과했다고 B 를 건너뛰지 않는다.** 에뮬레이터는 AOSP 이고 폰은 One UI 다 — INJECT_EVENTS 정책,
 화면 OFF 동작, 도즈, cgroup/SELinux 는 서로 다르게 굴 수 있다. 바뀌는 것은 **순서**다: 폰에 올리기 전에
@@ -283,6 +293,7 @@ curl http://100.99.9.9:3333/api/reports | python -m json.tool     # 노트북을
 | 커밋/푸시 | `npm run e2e` (CI가 `web.yml`로 다시 돈다) |
 | 안드로이드 코드 수정 | 푸시하면 CI가 APK 빌드. 로컬 빌드는 폰/가상 폰에 올릴 때만 |
 | shell-server/ · core/ 수정 | `vphone.sh up && npm run device` (CI는 `emulator.yml`이 자동으로) |
+| 상태·복구·전원·앱 전환을 건드렸을 때 | `npm run lifecycle`, 그리고 `EXPLORE_STEPS=40 npm run explore` 로 한 바퀴 |
 | 폰에 올릴 때 | APK 아티팩트 다운로드 → B 절차 |
 | 렌더러/전송 코드 수정 뒤 | `SOAK_MINUTES=10 BASE_URL=… npx playwright test tests/soak.spec.ts --project=model-y-2026.26` (폰 화면 정지 구간 포함) |
 | 펌웨어 업데이트 / 큰 마일스톤 | C 절차 |
