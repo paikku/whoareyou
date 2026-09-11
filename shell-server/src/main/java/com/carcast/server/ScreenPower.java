@@ -119,34 +119,42 @@ final class ScreenPower {
         if (now != lastInteractive) {
             lastTransition = (now ? "awake" : "asleep") + "@" + System.currentTimeMillis();
             Ln.i("phone went " + (now ? "awake" : "asleep") + " (forcedOff=" + forcedOff + ")");
+            // Waking is the moment our bookkeeping goes stale: the system lights the panel itself, so a
+            // forced-off flag from an earlier 📵 is now a lie. 📵 alone never moves this flag (PowerManager
+            // keeps reporting interactive after a SurfaceControl power-off), which is what makes the
+            // transition — not the absolute state — the safe signal to key on.
+            if (now && forcedOff) {
+                forcedOff = false;
+                reconciled++;
+                Ln.i("the phone woke on its own (power button) while we thought the panel was off — dropping our flag");
+            }
             lastInteractive = now;
         }
-        // The ambiguous window is "we turned the panel off": only then does the panel's real state tell us
-        // something we do not already know, so only then pay for a dumpsys.
-        if (!forcedOff) {
-            return;
-        }
-        String state = readPanelState();
-        panelState = state;
-        if ("ON".equals(state)) {
-            forcedOff = false;
-            reconciled++;
-            Ln.i("panel is on again while we thought it was off (power button?) — dropping our flag");
+        if (forcedOff) {
+            panelState = readPanelState();
         }
     }
 
-    /** `dumpsys display` reports the display power controller's own state, which SurfaceControl changes move. */
+    /**
+     * The built-in panel's power state, for the record only — never to decide anything.
+     *
+     * `dumpsys display` was the first try and it was wrong: its first `mScreenState=` belongs to whichever
+     * display is printed first, which on a phone streaming to a virtual display is not the built-in one. That
+     * made the watcher clear the 📵 flag the instant it was set (caught by the lifecycle scenario, 2026-09-11).
+     * `dumpsys power` prints one "Display Power: state=" line for the device's own panel, which is the thing
+     * 📵 and the power button both move.
+     */
     private static String readPanelState() {
         try {
-            String out = Command.execReadOutput("dumpsys", "display");
-            Matcher m = SCREEN_STATE.matcher(out);
+            String out = Command.execReadOutput("dumpsys", "power");
+            Matcher m = DISPLAY_POWER.matcher(out);
             return m.find() ? m.group(1) : null;
         } catch (Exception e) {
             return null;
         }
     }
 
-    private static final Pattern SCREEN_STATE = Pattern.compile("mScreenState=([A-Z_]+)");
+    private static final Pattern DISPLAY_POWER = Pattern.compile("Display Power: state=([A-Z_]+)");
 
     boolean setMainScreen(boolean on) {
         try {

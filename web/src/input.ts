@@ -15,7 +15,27 @@ export class TouchInput {
     stage.addEventListener('pointermove', this.onMove);
     stage.addEventListener('pointerup', this.onUp);
     stage.addEventListener('pointercancel', this.onCancel);
+    // Losing capture (another element grabs the pointer, the tab is hidden mid-drag) is a cancel too:
+    // without this the finger stays down on the phone until the next touch.
+    stage.addEventListener('lostpointercapture', this.onLostCapture);
     stage.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  /**
+   * Let go of every finger. The phone cancels its own side when the control socket dies
+   * (InputInjector.cancelAll); this keeps our slot bookkeeping from leaking across a reconnect, so the
+   * next touch starts at slot 0 instead of piling up phantom fingers.
+   */
+  cancelAll(send = true): void {
+    for (const slot of this.ids.values()) {
+      if (send) this.sink.send(encodeTouch(TouchAction.Cancel, slot, 0, 0, 0));
+    }
+    this.ids.clear();
+  }
+
+  /** Fingers this client believes are down (the tests read it). */
+  get activePointers(): number {
+    return this.ids.size;
   }
 
   setVideoSize(w: number, h: number): void {
@@ -75,6 +95,13 @@ export class TouchInput {
     if (s < 0) return;
     const p = this.normalise(e.clientX, e.clientY) ?? { x: 0, y: 0 };
     this.sink.send(encodeTouch(TouchAction.Up, s, p.x, p.y, 0));
+    this.ids.delete(e.pointerId);
+  };
+
+  private onLostCapture = (e: PointerEvent) => {
+    const s = this.slot(e.pointerId, false);
+    if (s < 0) return;
+    this.sink.send(encodeTouch(TouchAction.Cancel, s, 0, 0, 0));
     this.ids.delete(e.pointerId);
   };
 

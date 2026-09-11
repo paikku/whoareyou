@@ -152,6 +152,7 @@ public final class Server {
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());
+                extra.put("pointersDown", injector.pointersDown());
             }
             return extra;
         }, !opts.getDaemon(), source, source == null ? null : (name, restart) -> {
@@ -162,6 +163,10 @@ public final class Server {
             }
         }, injector == null ? null : msg -> {
             injector.handle(msg);
+            return kotlin.Unit.INSTANCE;
+        }, injector == null ? null : () -> {
+            // The car's socket died: let go of anything it was holding, or the next tap is a phantom pinch.
+            injector.cancelAll();
             return kotlin.Unit.INSTANCE;
         }, (method, path, query) -> {
             if (!"/api/screen".equals(path)) {

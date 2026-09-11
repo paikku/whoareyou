@@ -71,6 +71,57 @@ final class InputInjector {
         return failed;
     }
 
+    /** How many fingers this injector currently believes are down on the virtual display. */
+    synchronized int pointersDown() {
+        int n = 0;
+        for (boolean d : down) {
+            if (d) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * Let go of every finger, as one cancelled gesture.
+     *
+     * The car's control socket dies mid-gesture more often than anywhere else — Tesla's browser drops
+     * WebSockets, the driver reverses, the hotspot stutters. The UP that would have ended the touch never
+     * arrives, so Android keeps that finger down forever: the next tap becomes a two-finger gesture with a
+     * phantom finger somewhere else on the screen, and the app starts pinching instead of tapping. Nothing
+     * recovers from that on its own, and to the driver it reads as "the car screen went crazy".
+     *
+     * So when the control socket goes away, the gesture goes away with it. CANCEL rather than UP: an UP at
+     * the last known point would be a click the driver never made (on a "delete" button, say).
+     */
+    synchronized boolean cancelAll() {
+        if (pointersDown() == 0) {
+            return true;
+        }
+        long now = SystemClock.uptimeMillis();
+        int count = 0;
+        for (int s = 0; s < MAX_POINTERS; s++) {
+            if (!down[s]) {
+                continue;
+            }
+            props[count].id = s;
+            props[count].toolType = MotionEvent.TOOL_TYPE_FINGER;
+            MotionEvent.PointerCoords c = coords[count];
+            c.clear();
+            c.x = lastX[s];
+            c.y = lastY[s];
+            c.pressure = 0f;
+            c.size = 1f;
+            count++;
+        }
+        java.util.Arrays.fill(down, false);
+        MotionEvent event = MotionEvent.obtain(lastTouchDown, now, MotionEvent.ACTION_CANCEL, count, props, coords,
+                0, 0, 1f, 1f, DEFAULT_DEVICE_ID, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
+        boolean ok = inject(event);
+        Ln.i("control socket gone: cancelled " + count + " stuck finger(s) -> " + ok);
+        return ok;
+    }
+
     void handle(ControlMessage msg) {
         boolean ok;
         if (msg instanceof ControlMessage.Touch) {

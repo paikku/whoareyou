@@ -27,7 +27,11 @@ let renderer = pickRenderer();
 renderer.attach(stage);
 overlayMsg.textContent = `화면을 터치하면 시작합니다 (${renderer.name})`;
 
+let touchRef: TouchInput | null = null;
 const control = new ReconnectingWs(wsUrl('/ws/control'), {
+  // A socket that dies mid-gesture leaves a finger down on the phone; the phone cancels its side, we
+  // drop ours so the next touch does not reuse a slot the phone has already let go of.
+  onClose: () => touchRef?.cancelAll(false),
   onMessage: (data) => {
     if (typeof data !== 'string') return;
     try {
@@ -39,6 +43,7 @@ const control = new ReconnectingWs(wsUrl('/ws/control'), {
 control.start();
 
 const touch = new TouchInput(stage, control);
+touchRef = touch;
 
 // Session log: what happened and when, kept for the 💾 button (no devtools in the car).
 const t0 = Date.now();
@@ -282,6 +287,7 @@ $('btn-fullscreen').addEventListener('click', () => {
 const stats = () => ({
   renderer: renderer.name,
   state: stateName,
+  activePointers: touch.activePointers,
   ...renderer.stats(),
   packets,
   idleMs: lastPacketAt ? Date.now() - lastPacketAt : -1,
@@ -291,7 +297,13 @@ const stats = () => ({
   controlWs: { ...control.stats, open: control.open },
   started,
 });
-(window as any).__carcast = { stats, start, events, restartVideo: () => videoWs.restart() };
+(window as any).__carcast = {
+  stats, start, events,
+  restartVideo: () => videoWs.restart(),
+  // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
+  restartControl: () => control.restart(),
+  activePointers: () => touch.activePointers,
+};
 // fps · lag · socket · then only what is abnormal: reconnects, stall recoveries, dropped frames, idle encoder.
 setInterval(() => {
   const s = stats();

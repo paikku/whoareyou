@@ -38,6 +38,33 @@ export interface Action {
   settle?(ctx: Ctx): Promise<number | null>;
 }
 
+/**
+ * 측정 중에 가상 화면을 계속 움직여 둔다(자체 control 소켓으로). 가상 디스플레이는 픽셀이 바뀔 때만
+ * 버퍼를 올리므로, 정지 화면에서는 "영상이 돌아왔는지"를 물을 수 없다. 차 페이지의 소켓과 별개의
+ * 연결이라 페이지 쪽 터치 상태를 건드리지 않는다.
+ */
+export async function wiggle(base: string): Promise<() => void> {
+  // Node 22 의 전역 WebSocket (ws 패키지 타입을 끌어오지 않으려고).
+  const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/ws/control`);
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => resolve(), { once: true });
+    ws.addEventListener('error', () => reject(new Error('control ws 실패')), { once: true });
+  });
+  const u16 = (v: number) => Math.max(0, Math.min(65535, Math.round(v * 65535)));
+  const send = (action: number, y: number, pressure: number) => {
+    const b = Buffer.alloc(9);
+    b.writeUInt8(1, 0); b.writeUInt8(action, 1); b.writeUInt8(0, 2);
+    b.writeUInt16BE(u16(0.5), 3); b.writeUInt16BE(u16(y), 5); b.writeUInt16BE(u16(pressure), 7);
+    try { ws.send(b); } catch { /* 닫혔다 */ }
+  };
+  let y = 0.3;
+  const timer = setInterval(() => {
+    y = y > 0.7 ? 0.3 : y + 0.1;
+    send(0, y, 1); send(2, y + 0.05, 1); send(1, y + 0.05, 0);
+  }, 250);
+  return () => { clearInterval(timer); try { ws.close(); } catch { /* 이미 닫힘 */ } };
+}
+
 /** cond() 가 참이 될 때까지의 ms. 시간 안에 안 되면 null. */
 export async function until(cond: () => Promise<boolean>, timeoutMs = 15_000): Promise<number | null> {
   const t0 = Date.now();

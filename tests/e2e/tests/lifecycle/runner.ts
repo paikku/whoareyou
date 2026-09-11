@@ -2,7 +2,7 @@
 // "쾌적한가"는 결국 이 숫자다: 폰에서 무슨 일이 일어난 뒤 차 화면이 몇 초 만에 다시 살아나는가,
 // 아니면 아예 안 살아나는가.
 import type { Page } from '@playwright/test';
-import { Action, Ctx } from './actions';
+import { Action, Ctx, wiggle } from './actions';
 import { Probe, clientStats, disagreements, probe, sleep } from './probe';
 
 // 이만큼 프레임이 더 디코드되면 "돌아왔다"고 본다 (한 장은 우연일 수 있다).
@@ -38,6 +38,9 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
 
   // 동작 직후를 기준점으로 삼는다. 새로고침처럼 카운터가 0으로 돌아가는 동작이 있어서
   // before 가 아니라 여기서 다시 읽어야 한다.
+  // 가상 디스플레이는 픽셀이 바뀔 때만 프레임을 낸다. 복구 시간을 재는 동안에는 화면을 움직여 줘야
+  // "돌아왔는가"가 측정 가능한 질문이 된다 — 그러지 않으면 정지 화면에서는 전부 "안 돌아옴"으로 보인다.
+  const stopWiggle = await wiggle(base).catch(() => null);
   const t0 = Date.now();
   const startFrames = (await clientStats(page))?.framesDecoded ?? 0;
   let recoveryMs: number | null = null;
@@ -54,6 +57,7 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
     await sleep(250);
   }
 
+  stopWiggle?.();
   const noticeMs = settling ? await settling : undefined;
   const after = await probe(page, base);
   const notes = disagreements(after);
