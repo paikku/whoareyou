@@ -105,14 +105,15 @@ boot_emulator() {
 install_apk() {
   [ -f "$APK" ] || die "APK 가 없다: $APK  (./gradlew :app:assembleDebug)"
   say "설치: $(basename "$APK")"
-  adb install -r -g "$APK" >/dev/null
+  timeout 300 "$ANDROID_HOME/platform-tools/adb" install -r -g "$APK" >/dev/null \
+    || die "설치 실패/타임아웃"
 }
 
 # APK 안의 SERVER_BUILD_ID. 서버는 인자로 받은 build id 가 다르면 거부하고 기대값을 stderr 에 적으므로,
 # 일부러 틀린 값으로 한 번 찔러 그 값을 읽는다. 작업트리가 빌드 이후에 바뀌었어도 항상 맞는다.
 server_build_id() {
   local out
-  out="$(adb shell "CLASSPATH=\$(pm path $PKG | cut -d: -f2) app_process / com.carcast.server.Server __probe__" 2>&1 || true)"
+  out="$(timeout 120 "$ANDROID_HOME/platform-tools/adb" shell "CLASSPATH=\$(pm path $PKG | cut -d: -f2) app_process / com.carcast.server.Server __probe__" 2>&1 || true)"
   local id; id="$(printf '%s' "$out" | sed -n 's/.*build id mismatch, expected \([0-9a-z]*\).*/\1/p' | head -1)"
   [ -n "$id" ] || die "서버 build id 를 읽지 못했다. app_process 출력: $out"
   printf '%s' "$id"
@@ -123,7 +124,11 @@ start_server() {
   adb shell "mkdir -p $(dirname $DEVICE_LOG)" >/dev/null 2>&1 || true
   # 폰에서 앱이 하는 것과 같은 분리 실행. daemon=true 는 stdin EOF 로 죽지 않는다는 뜻이고,
   # 종료는 loopback 의 POST /api/stop(킬 스위치) 또는 pkill 이다.
-  adb shell "CLASSPATH=\$(pm path $PKG | cut -d: -f2) setsid nohup app_process / com.carcast.server.Server $id port=$PORT daemon=true >$DEVICE_LOG 2>&1 &" >/dev/null
+  # stdin 까지 /dev/null 로 떼어 놓는다 — 세 fd 중 하나라도 adb 파이프에 남아 있으면
+  # `adb shell "... &"` 가 원격 셸이 끝난 뒤에도 돌아오지 않는다(CI 에서 여기서 멈췄다).
+  timeout 60 "$ANDROID_HOME/platform-tools/adb" shell \
+    "CLASSPATH=\$(pm path $PKG | cut -d: -f2) setsid nohup app_process / com.carcast.server.Server $id port=$PORT daemon=true >$DEVICE_LOG 2>&1 </dev/null &" \
+    >/dev/null || die "서버 기동 명령이 돌아오지 않았다"
   adb forward --remove tcp:$PORT >/dev/null 2>&1 || true
   adb forward tcp:$PORT tcp:$PORT >/dev/null
   local waited=0
@@ -139,10 +144,13 @@ start_server() {
 
 cmd_up() {
   boot_emulator
+  say "기기: $(adb devices | sed -n 2p)"
   install_apk
+  say "build id 읽는 중"
   local id; id="$(server_build_id)"
   say "build id: $id"
   stop_server_quietly
+  say "서버 기동"
   start_server "$id"
   local status; status="$(curl -fsS "http://127.0.0.1:$PORT/api/status")"
   local uid source; uid="$(json_field "$status" uid)"; source="$(json_field "$status" source)"
