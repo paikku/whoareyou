@@ -295,6 +295,33 @@ logcat 의 `Ignoring call to PowerManager.userActivity()` 유무로 해야 하�
 키가드(보조 디스플레이 가리기)도 넣어야 한다 —
 [prior-art.md §"전원·화면 끄고 켜기 — 2차 조사"](prior-art.md#전원화면-끄고-켜기--2차-조사-2026-09-12).
 
+### 3.11 전원 손잡이들을 재는 눈을 달고, 가상 폰에서 한 번에 확인 (2026-09-12, run #20 / `cb9c8f9`)
+
+§3.10 이 남긴 숙제("`keptActive` 가 오르는데도 검어지면…")가 잘못된 판정 기준이었다는 것을 알고
+([prior-art.md §2.1](prior-art.md#21-우리-keptactive-는-먹혔다-는-증거가-아니다--고칠-것)) 계측부터 고쳤다.
+가상 폰(Android 16, `google_apis`) 15개 검사 **전부 통과, 건너뛴 것 0개**. 얻은 사실:
+
+| 물음 | 답 (가상 폰) |
+|---|---|
+| 가상 디스플레이가 플래그를 **받았나** | `displayFlags=0x4f88` — PRESENTATION · TRUSTED · OWN_DISPLAY_GROUP · **ALWAYS_UNLOCKED** · TOUCH_FEEDBACK_DISABLED · OWN_FOCUS · ROTATES_WITH_CONTENT. 요청한 것이 다 붙었다 |
+| `userActivity` 가 **먹히나** | `keepActiveEffective=true`. logcat 에 `Ignoring call to PowerManager.userActivity` 없음(서버 판정과 테스트의 바깥 확인이 일치). 셸에 `DEVICE_POWER` 가 있다는 뜻 |
+| 화면을 끈 채 1분 | 20초 구간별 프레임 **267 / 246 / 251** — 끊기지 않았다. `panelOffMethod=power-mode`, 폴백은 쓰이지 않았다 |
+| 폰이 자면 차 화면 그룹도 자나 | **아니다.** `lastSleepVdInteractive=true`, `vdWakes=0` — 그래서 그룹만 깨우는 새 경로는 **발동하지 않았고**, 기존 경로로 되살렸다(`sleepRecoveries 0→1`). AOSP 가 `goToSleep()` 을 기본 그룹에만 건다는 읽기와 일치한다 |
+| 유휴 타이머 | 600000 으로 걸리고, 킬 스위치 뒤 원래 값(2147483647)으로 **돌아왔다** |
+| 충전 중 `stay_on` | 가짜 충전(`dumpsys battery set ac 1`)에서 `mStayOn=true` — 이 손잡이가 처음으로 실제 검사됐다 |
+
+**중요 — 이 통과가 증명하지 않는 것:** 1분 검사가 통과했다는 것은 **가상 폰이 scrcpy#6787 을 재현하지
+못했다**는 뜻이다. 회귀 방지용 그물이지, 병을 고쳤다는 증거가 아니다. 실차 리포트 #26 의 증상은 여전히
+실기기에서만 확인된다.
+
+**그래서 다음 실험:** §4 가설이 말하는 유일한 방아쇠는 **잠금화면**인데, 지금까지 하네스는 그것을
+꺼 왔다(`vphone.sh` 와 생애주기의 '폰을 깨운다' 가 `wm dismiss-keyguard` 를 부르고, 에뮬레이터에는
+보안 잠금이 없다). 그래서 일부러 PIN 을 걸고 재운 뒤, **잠금화면이 실제로 떠 있는지 먼저 확인하고**
+프레임을 세는 검사를 넣었다. 안 떠 있으면 실패로 센다 — 재현되지 않은 검사를 통과로 세는 것이
+지금까지의 함정이었다.
+
+---
+
 ---
 
 ## 4. C층: 실차 (Model Y, 2026.26) — ✅ 2026-09-10 첫 방문에서 영상·터치 동작

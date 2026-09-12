@@ -9,6 +9,7 @@
 //   5. 유휴 타이머 손잡이(screen_off_timeout)가 걸렸는지
 //   6. 충전 중일 때 stay_on 손잡이가 실제로 발동하는지 (가짜 충전으로)
 //   7. 폰이 잠들었을 때 차가 되살아나는지, 그리고 그때 차 화면 그룹이 어떤 상태였는지
+//   8. **잠금화면이 떠 있는 동안에도** 차 화면이 덮이지 않는지 (§4 가설의 결정적 실험)
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { adb, adbAvailable, adbShell, api, collectVideo, ensureApp, sleep, status, wiggle } from '../lib.mjs';
@@ -162,6 +163,79 @@ test('폰이 잠들면 차 화면이 되살아난다', { timeout: 120_000 }, asy
   } finally {
     stop();
     await video.catch(() => {});
+    adbShell('input keyevent 224');
+    adbShell('wm dismiss-keyguard');
+    await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
+  }
+});
+
+/** `dumpsys window` 가 말하는 잠금화면 상태. 못 읽으면 null. */
+function keyguardShowing() {
+  for (const cmd of ['dumpsys window policy', 'dumpsys window']) {
+    let out = '';
+    try { out = adbShell(`${cmd} 2>/dev/null | grep -i keyguard | head -8 || true`); } catch { continue; }
+    if (!out) continue;
+    if (/(?:isKeyguardShowing|KeyguardShowing|showing)=true/i.test(out)) return { on: true, raw: out };
+    if (/(?:isKeyguardShowing|KeyguardShowing|showing)=false/i.test(out)) return { on: false, raw: out };
+  }
+  return { on: null, raw: '(잠금화면 상태를 읽지 못했다)' };
+}
+
+// §4 의 가설: 폰에 잠금화면이 뜨면 안드로이드가 **보조 디스플레이의 앱 내용을 가린다**
+// (AOSP RootWindowContainer.handleNotObscuredLocked). 면제는 하나뿐 — 그 디스플레이가
+// FLAG_ALWAYS_UNLOCKED 를 가진 경우다. 우리는 그 플래그를 받았으니(위 검사) 면제여야 한다.
+//
+// 지금까지 이 질문은 하네스에서 **물을 수조차 없었다**: vphone.sh 도, 생애주기의 '폰을 깨운다' 도
+// `wm dismiss-keyguard` 를 부르고, 에뮬레이터에는 보안 잠금이 아예 없다. 그래서 여기서는 일부러
+// PIN 을 걸고, 잠금화면이 **실제로 떠 있는지 먼저 확인한 뒤에** 프레임을 센다. 안 떴으면 실패시킨다 —
+// 재현되지 않은 검사를 통과로 세는 것이 지금까지의 함정이었다.
+test('잠금화면이 떠 있어도 차 화면이 덮이지 않는다', { timeout: 240_000 }, async (t) => {
+  if (!(await isDisplaySource())) return t.skip('클립 모드');
+  if (!adbAvailable) return t.skip('adb 없음');
+  const s0 = await status();
+  if (s0.displayAlwaysUnlocked !== true) {
+    t.diagnostic('이 디스플레이에는 ALWAYS_UNLOCKED 가 없다 — 덮이는 것이 정상이다');
+  }
+  await ensureApp();
+  let pinSet = false;
+  const stop = await wiggle();
+  const keep = collectVideo(120_000); // 차가 보고 있다는 신호를 검사 내내 유지한다
+  try {
+    try {
+      adbShell('locksettings set-pin 1234');
+      pinSet = true;
+    } catch (e) {
+      return t.skip(`이 기기에 PIN 을 걸 수 없다 (이미 잠금이 있거나 막혀 있다): ${e.message}`);
+    }
+    // 운전자가 실제로 하는 것: 전원 버튼. 기기가 잠들면서 잠금화면이 걸리고, 우리 되살리기가
+    // 깨워서 📵 상태로 바꾼다 — 그 뒤에도 잠금화면은 떠 있다.
+    adbShell('input keyevent 223');
+    await sleep(6000);
+    const kg = keyguardShowing();
+    t.diagnostic(`잠금화면: ${kg.on} | ${kg.raw.replace(/\s+/g, ' ').slice(0, 200)}`);
+    if (kg.on === null) return t.skip('잠금화면 상태를 읽지 못해 이 기기에서는 판정할 수 없다');
+    assert.equal(kg.on, true, 'PIN 을 걸고 재웠는데 잠금화면이 뜨지 않았다 — 이 검사는 아무것도 증명하지 못한다');
+
+    const windows = [];
+    for (let i = 0; i < 3; i++) {
+      const packets = await collectVideo(20_000);
+      windows.push(packets.filter((p) => p.type !== 0).length);
+    }
+    const s = await status();
+    t.diagnostic(`잠금화면이 뜬 채 20초 구간별 프레임 수: ${windows.join(' / ')}`);
+    t.diagnostic(`screenOn=${s.screenOn} interactive=${s.interactive} vdInteractive=${s.vdInteractive}`
+      + ` sleepRecoveries=${s.sleepRecoveries} vdWakes=${s.vdWakes}`);
+    assert.ok(windows[windows.length - 1] > 0,
+      `잠금화면이 뜬 뒤 40~60초 사이에 프레임이 끊겼다 (구간별 ${windows.join('/')})`
+      + ' — §4 가설대로 보조 디스플레이가 가려진 것이다. ALWAYS_UNLOCKED 면제가 듣지 않는다는 뜻');
+  } finally {
+    stop();
+    await keep.catch(() => {});
+    // 여기서 PIN 을 못 지우면 **이 실행의 나머지 검사가 전부 잠긴 폰 위에서 돈다.** 몇 번 더 시도한다.
+    for (let i = 0; pinSet && i < 3; i++) {
+      try { adbShell('locksettings clear --old 1234'); pinSet = false; } catch { await sleep(1000); }
+    }
+    if (pinSet) t.diagnostic('PIN 을 지우지 못했다 — 뒤따르는 검사가 잠긴 폰 위에서 돈다');
     adbShell('input keyevent 224');
     adbShell('wm dismiss-keyguard');
     await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
