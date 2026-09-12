@@ -83,13 +83,19 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 | 손잡이 | 끄는 법 | 상태 필드 |
 |---|---|---|
 | 충전 중 잠들지 않기 (`stay_on_while_plugged_in`) | `stay_awake=false` | — |
-| 5초마다 가상 디스플레이에 `userActivity` (scrcpy `--keep-active`) | `keep_active=false` | `keptActive` |
+| **유휴 타이머 밀어 두기 (`screen_off_timeout`)** — 충전과 무관하게 듣는 유일한 것 | `screen_off_timeout=` 를 빼면 안 건드린다 | `screenOffTimeout`, `screenOffTimeoutWas` |
+| 5초마다 가상 디스플레이에 `userActivity` (scrcpy `--keep-active`) | `keep_active=false` | `keptActive`, **`keepActiveEffective`** |
+| 위가 무시당하는 ROM 에서 VD 에 WAKEUP (Castla) — **기본 꺼짐** | `keep_active_fallback=true` 로 켠다 | `keptActiveFallback` |
 | 차가 볼 때 잠들면 깨워서 📵 상태로 되돌리기 | `sleep_recovery=false` | `sleepRecoveries`, `recoveryPausedMs` |
+| 폰이 차 화면 그룹까지 재웠을 때 **그 그룹만** 깨우기 (폰은 어두운 채로) | `vd_wake=false` | `vdWakes`, `lastSleepVdInteractive` |
 
-**손잡이는 셋보다 많다.** 남들(Castla·Extinguish·SecondScreen)과 AOSP 를 읽어 보니 `screen_off_timeout`,
-가상 디스플레이에 묶인 `FLAG_KEEP_SCREEN_ON` 창, 그룹 단위 `wakeUpWithDisplayId` 같은 길이 더 있고,
-**`keptActive` 가 오르는 것은 `userActivity` 가 먹혔다는 증거가 아니다**(권한이 없으면 예외 없이 무시된다).
-후보와 실험 순서: [prior-art.md §"전원·화면 끄고 켜기 — 2차 조사"](prior-art.md#전원화면-끄고-켜기--2차-조사-2026-09-12).
+**`keptActive` 를 증거로 읽지 마라.** `userActivity` 는 권한이 없으면 **예외 없이 조용히 버려진다** —
+숫자는 그래도 오른다. 서버가 logcat 에서 그 경고를 한 번 읽어 **`keepActiveEffective`** 로 답하니 그쪽을 본다
+(`false` = 이 ROM 에서는 이 경로가 죽어 있다). 마찬가지로 **`displayAlwaysUnlocked`** 는 플래그를
+*요청했다*가 아니라 *받았다*는 뜻이고, 이게 `false` 면 폰에 잠금화면이 뜨는 순간 차 화면이 덮인다.
+그리고 **`vdInteractive`** 가 "폰이 어두운 것"과 "차 그림이 죽은 것"을 가른다.
+
+조사와 아직 안 가져온 후보: [prior-art.md §"전원·화면 끄고 켜기 — 2차 조사"](prior-art.md#전원화면-끄고-켜기--2차-조사-2026-09-12).
 
 **증상이 오면 먼저 💾 세션 리포트의 요약 줄을 본다** — `폰 build=… 잠듦/깨어있음 화면ON/OFF 되살림N
 활성유지N idleN`. 이 한 줄이 "기기가 잠든 것 / 패널만 꺼진 것 / 유휴 블랭킹"을 가른다. 이 줄이 없으면

@@ -531,6 +531,8 @@ final class ScreenPower {
                 Ln.w("cmd display power failed: " + e);
             }
         }
+        // Turning it back on this way restores full brightness, not whatever the user had: there is no
+        // getter to read the old value first. Only ever reached when the real power switch was refused.
         if (setPhysicalDisplaysBrightness(on ? 1.0f : 0.0f)) {
             panelOffMethod = "brightness";
             return true;
