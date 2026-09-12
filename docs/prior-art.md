@@ -325,6 +325,48 @@ void goToSleepWithDisplayId(int displayId, long time, int reason, int flags);
 | 7 | 폴백들: `setDisplayBrightness(token,0)`, VD 위 가짜 터치, `cmd display power-off 0`(A15+) | ROM 이 갈리는 자리마다 하나씩 | — |
 | 8 | A+ 에서 `dumpsys battery set ac 1` 로 `stay_awake` 경로를 실제로 통과시켜 본다 | 지금은 에뮬레이터가 충전 중이 아니라 이 손잡이가 검사되지 않는다 | `tools/virtual-phone` |
 
+### 7.1 하네스가 판정할 수 있는 것과 없는 것
+
+§7 의 항목은 **자동으로 판정되는 것 / 재현부터 해야 하는 것 / 하네스 밖**으로 갈린다. A+ 는 API 36
+(Android 16) `google_apis` 에뮬레이터이고, 검사는 `adb`(`adb logcat -d` 포함)와 `/api/status` 와
+프레임 흐름을 볼 수 있다. **A+ 가 답하는 질문은 언제나 "AOSP 에서 되는가" 이지 "One UI 8 에서 되는가" 가 아니다.**
+
+**① 하네스가 판정까지 해 준다** — 단언을 쓸 수 있고 CI 가 지킨다.
+
+| 항목 | 어디에 | 단언 |
+|---|---|---|
+| #1 `userActivity` 가 먹히는지 | `tests/device/tests/05-screen.test.mjs` | 📵 뒤 `adb logcat -d` 에 `Ignoring call to PowerManager.userActivity()` 가 **없을 것** |
+| #1 VD 플래그 | 같은 곳 | `/api/status.displayFlags` 에 `FLAG_ALWAYS_UNLOCKED` 비트가 **있을 것** (요청했다가 아니라 받았다) |
+| #2 `screen_off_timeout` | 05-screen + `kill-switch.test.mjs` | 서버가 도는 동안 값이 바뀌어 있고, 킬 스위치 뒤 **원래 값으로 돌아올 것** |
+| #5 브로드캐스트 | `npm run lifecycle` "전원 버튼 × 📵" | `input keyevent 26` 뒤 `lastPowerEvent` 가 바뀌기까지의 ms — 폴링(최대 1000ms)과 숫자로 비교된다 |
+| #6 `wakeUpWithDisplayId` | 05-screen | 셸 uid 에서 `SecurityException` 없이 통하는지, 그리고 폰이 깨지 않은 채(`interactive=false`) 프레임이 이어지는지 |
+| #7 폴백들의 **호출 결과** | 05-screen | `setDisplayBrightness`·`cmd display power-off 0`(A15+)·VD 가짜 터치가 성공을 돌려주고 영상이 안 끊기는지 |
+| #8 가짜 충전 | `tools/virtual-phone` | `dumpsys battery set ac 1` 뒤 `stay_on_while_plugged_in` 경로가 실제로 발동하고, N 초 동안 기기가 안 잠드는지 |
+
+**② 재현부터 해야 한다** — 지금 하네스에서는 **문제 자체가 일어나지 않을 수 있다.** 단언을 쓰기 전에 실험이 먼저다.
+
+- **블랭킹이 A+ 에서 재현되는가.** 지금 `05-screen` 은 📵 뒤 **3초**만 본다. #6787 의 카운트다운은 10초다.
+  `wiggle()` 로 화면을 계속 흔들면서 30~60초를 보는 검사가 먼저 있어야 이 아래가 전부 성립한다.
+  (가상 디스플레이는 픽셀이 바뀔 때만 프레임을 내므로, 흔드는데도 프레임이 멈추면 그것이 덮인 증거다.)
+- **#3 잠금 지연 실험은 현재 설정에서 원천 봉쇄다.** `vphone.sh` 는 부팅 뒤
+  `wm dismiss-keyguard` 를 부르고, 생애주기의 `phone.wake` 동작도 같은 것을 부른다. 게다가 에뮬레이터에는
+  보안 잠금이 없다. **키가드가 아예 안 뜨는 자리에서 "키가드가 가리는가"를 물을 수는 없다.**
+  먼저 `locksettings set-pin` 으로 잠금을 켜고 `dismiss-keyguard` 를 뺀 전용 시나리오를 만들어야 한다.
+- **#4 오버레이의 효과** 는 ② 에 매달려 있다. "앱 uid 에서 VD 에 창이 붙는가"는 A+ 에서 바로 보이지만,
+  "그래서 안 검어지는가"는 블랭킹이 재현될 때만 판정된다.
+
+**③ 하네스 밖 (B/C 에서만)**
+
+- **패널이 실제로 어두워졌는지.** 에뮬레이터는 `setDisplayPowerMode` 가 성공을 돌려줬다는 것까지만 안다
+  (`05-screen` 주석이 이미 그렇게 적어 두었다). `setDisplayBrightness` 폴백도 마찬가지다.
+- **One UI 8 고유의 답들**: 셸에 `DEVICE_POWER` 가 실제로 있는지, `userActivity` 가 One UI 에서 듣는지,
+  AOD(dream)가 §4 의 스위치를 켜는지, 폴더블의 물리 디스플레이가 여럿일 때.
+- 발열·배터리·30분 연속, 물리 전원 버튼의 3연타 탈출구 체감, 그리고 차에서의 무응답 체감.
+
+**그리고 이 자리(원격 컨테이너)에서는 KVM 이 없어 A+ 를 직접 돌릴 수 없다.** ① 을 짜 넣더라도 판정은
+푸시 → `emulator` 워크플로 로그·아티팩트(`out/vphone/logcat.txt`, `out/lifecycle/report.md`)를 읽는 길뿐이고,
+한 번 도는 데 15~20분이 든다. 그러니 ① 은 **한 번에 모아서** 넣는 편이 싸다.
+
 **가져오지 않을 것:** sysfs 백라이트(SecondScreen — 루트 + 기기별 경로), `PowerManager.goToSleep()`·
 `DevicePolicyManager.lockNow()`(기기를 재워 VD 까지 죽인다 — 리포트 #26 의 원인 그 자체), 도메인/HTTPS 경로(§6 기존).
 
