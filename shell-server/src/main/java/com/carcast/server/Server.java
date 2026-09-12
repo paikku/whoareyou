@@ -14,8 +14,8 @@ import java.util.Map;
  *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
  *     [screen_off_timeout=&lt;ms&gt;] [keep_active_fallback=false] [vd_wake=true]
  * </pre>
- * Extra endpoints: {@code POST /api/screen?on=0|1} turns only the phone's main display off/on (the virtual
- * display keeps running); {@code GET /api/screen} reports it.
+ * Extra endpoints: {@code POST /api/screen?on=0|1[&via=power-mode|cmd-display|brightness]} turns only the
+ * phone's main display off/on (the virtual display keeps running); {@code GET /api/screen} reports it.
  * The video comes from a virtual display (scrcpy-style, M4) unless {@code source=clip} forces the bundled test clip.
  *
  * The build id is the git sha the APK was built from ({@link BuildConfig#SERVER_BUILD_ID}); a mismatch
@@ -189,8 +189,11 @@ public final class Server {
             }
             if ("POST".equals(method)) {
                 boolean on = !"0".equals(query.get("on")) && !"false".equals(query.get("on"));
-                boolean ok = screen.setMainScreen(on);
-                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + "}";
+                // ?via=power-mode|cmd-display|brightness forces one way, so a device can be asked which
+                // of them actually works on it instead of us guessing. Omitted: try them in order.
+                boolean ok = screen.setMainScreen(on, query.get("via"));
+                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn()
+                        + ",\"via\":\"" + screen.panelMethod() + "\"}";
             }
             return "{\"screenOn\":" + screen.isMainScreenOn() + "}";
         }, () -> {

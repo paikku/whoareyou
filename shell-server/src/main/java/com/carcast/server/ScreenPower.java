@@ -167,6 +167,11 @@ final class ScreenPower {
         }
     }
 
+    /** How the panel was last switched, for the car and for the device tests. */
+    String panelMethod() {
+        return panelOffMethod;
+    }
+
     /** PowerManager's view: false while the device is asleep. Stays true after a SurfaceControl power-off. */
     boolean interactive() {
         try {
@@ -478,6 +483,16 @@ final class ScreenPower {
     }
 
     boolean setMainScreen(boolean on) {
+        return setMainScreen(on, null);
+    }
+
+    /**
+     * @param via force one way of switching the panel: {@code power-mode}, {@code cmd-display} or
+     *     {@code brightness}; null tries them in that order. Forcing exists so the fallbacks can be
+     *     exercised on a device instead of sitting there as code nobody has ever run - a fallback that
+     *     has never worked once is worse than no fallback, because it hides the failure.
+     */
+    boolean setMainScreen(boolean on, String via) {
         try {
             // Turning the panel on while the device is asleep does nothing the driver can see: the display
             // controller keeps it dark until the device is interactive again. That left 📵 dead after the
@@ -494,12 +509,20 @@ final class ScreenPower {
                     Ln.w("could not wake the phone: " + e);
                 }
             }
-            boolean ok = setPhysicalDisplaysPower(on);
-            if (ok) {
-                panelOffMethod = "power-mode";
+            boolean ok;
+            if (via == null || "power-mode".equals(via)) {
+                ok = setPhysicalDisplaysPower(on);
+                if (ok) {
+                    panelOffMethod = "power-mode";
+                } else {
+                    panelOffFailures++;
+                    ok = via == null && fallbackDisplayPower(on);
+                }
             } else {
-                panelOffFailures++;
-                ok = fallbackDisplayPower(on);
+                ok = fallbackDisplayPower(on, via);
+                if (!ok) {
+                    panelOffFailures++;
+                }
             }
             Ln.i("physical display power " + (on ? "on" : "off") + ": " + ok + " via " + panelOffMethod);
             if (ok) {
@@ -519,7 +542,11 @@ final class ScreenPower {
      * a powered-off one, but it beats handing the driver a lit phone.
      */
     private boolean fallbackDisplayPower(boolean on) {
-        if (Build.VERSION.SDK_INT >= AndroidVersions.API_35_ANDROID_15) {
+        return fallbackDisplayPower(on, null);
+    }
+
+    private boolean fallbackDisplayPower(boolean on, String only) {
+        if (!"brightness".equals(only) && Build.VERSION.SDK_INT >= AndroidVersions.API_35_ANDROID_15) {
             try {
                 String out = Command.execReadOutput("cmd", "display", on ? "power-on" : "power-off", "0");
                 if (out == null || !out.toLowerCase(java.util.Locale.ROOT).contains("error")) {
@@ -533,7 +560,7 @@ final class ScreenPower {
         }
         // Turning it back on this way restores full brightness, not whatever the user had: there is no
         // getter to read the old value first. Only ever reached when the real power switch was refused.
-        if (setPhysicalDisplaysBrightness(on ? 1.0f : 0.0f)) {
+        if (!"cmd-display".equals(only) && setPhysicalDisplaysBrightness(on ? 1.0f : 0.0f)) {
             panelOffMethod = "brightness";
             return true;
         }

@@ -175,8 +175,10 @@ function keyguardShowing() {
     let out = '';
     try { out = adbShell(`${cmd} 2>/dev/null | grep -i keyguard | head -8 || true`); } catch { continue; }
     if (!out) continue;
-    if (/(?:isKeyguardShowing|KeyguardShowing|showing)=true/i.test(out)) return { on: true, raw: out };
-    if (/(?:isKeyguardShowing|KeyguardShowing|showing)=false/i.test(out)) return { on: false, raw: out };
+    // 무엇이 근거였는지를 로그에 남긴다. "떠 있다고 했는데 실은 아니었다"가 이 검사를 통째로
+    // 무의미하게 만드는 유일한 길이라, 근거가 되는 그 토큰을 그대로 적는다.
+    const hit = out.match(/\S*(?:isKeyguardShowing|KeyguardShowing|IsShowing|showing)=(?:true|false)/i);
+    if (hit) return { on: /=true$/i.test(hit[0]), raw: hit[0], all: out };
   }
   return { on: null, raw: '(잠금화면 상태를 읽지 못했다)' };
 }
@@ -212,7 +214,8 @@ test('잠금화면이 떠 있어도 차 화면이 덮이지 않는다', { timeou
     adbShell('input keyevent 223');
     await sleep(6000);
     const kg = keyguardShowing();
-    t.diagnostic(`잠금화면: ${kg.on} | ${kg.raw.replace(/\s+/g, ' ').slice(0, 200)}`);
+    t.diagnostic(`잠금화면: ${kg.on} — 근거 \`${kg.raw}\``);
+    t.diagnostic(`(dumpsys 원문) ${String(kg.all ?? '').replace(/\s+/g, ' ').slice(0, 300)}`);
     if (kg.on === null) return t.skip('잠금화면 상태를 읽지 못해 이 기기에서는 판정할 수 없다');
     assert.equal(kg.on, true, 'PIN 을 걸고 재웠는데 잠금화면이 뜨지 않았다 — 이 검사는 아무것도 증명하지 못한다');
 
@@ -236,6 +239,68 @@ test('잠금화면이 떠 있어도 차 화면이 덮이지 않는다', { timeou
       try { adbShell('locksettings clear --old 1234'); pinSet = false; } catch { await sleep(1000); }
     }
     if (pinSet) t.diagnostic('PIN 을 지우지 못했다 — 뒤따르는 검사가 잠긴 폰 위에서 돈다');
+    adbShell('input keyevent 224');
+    adbShell('wm dismiss-keyguard');
+    await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
+  }
+});
+
+// 폴백은 **한 번도 돌아 본 적 없으면 폴백이 아니다.** 평소에는 power-mode 가 성공하므로 나머지 둘은
+// 영영 안 돈다. `?via=` 로 하나씩 강제해서, 이 기기에서 무엇이 실제로 되는지 기록한다.
+// (되는 것이 하나뿐이어도 실패가 아니다 — 답을 아는 것이 목적이다. power-mode 가 죽는 것만 실패다.)
+test('패널을 끄는 세 가지 길 중 이 기기에서 무엇이 되나', { timeout: 120_000 }, async (t) => {
+  if (!(await isDisplaySource())) return t.skip('클립 모드');
+  const results = {};
+  try {
+    for (const via of ['power-mode', 'cmd-display', 'brightness']) {
+      const off = await api(`/api/screen?on=0&via=${via}`, { method: 'POST' });
+      let frames = 0;
+      if (off.ok) frames = (await collectVideo(3_000)).filter((p) => p.type !== 0).length;
+      await api(`/api/screen?on=1&via=${via}`, { method: 'POST' }).catch(() => {});
+      await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
+      results[via] = { ok: off.ok, via: off.via, frames };
+      t.diagnostic(`${via}: ok=${off.ok} (서버가 쓴 길=${off.via}) 끈 동안 프레임=${frames}`);
+    }
+    assert.equal(results['power-mode'].ok, true, '기본 경로(SurfaceControl)가 이 기기에서 안 된다');
+    for (const [via, r] of Object.entries(results)) {
+      if (r.ok) assert.ok(r.frames > 0, `${via} 로 껐더니 가상 디스플레이까지 멈췄다`);
+    }
+    const working = Object.entries(results).filter(([, r]) => r.ok).map(([v]) => v);
+    t.diagnostic(`이 기기에서 되는 길: ${working.join(', ')}`);
+  } finally {
+    await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
+  }
+});
+
+// 셸 프로세스는 ACTION_SCREEN_OFF 를 못 받으므로 서버는 **볼 때만** 안다. 차가 보고 있는 동안에는
+// 250ms 마다 보게 했고(전에는 1초), 그 차이가 곧 운전자가 멈춘 그림을 보는 시간이다. 숫자로 지킨다.
+test('폰이 잠든 것을 얼마나 빨리 알아채나', { timeout: 90_000 }, async (t) => {
+  if (!(await isDisplaySource())) return t.skip('클립 모드');
+  if (!adbAvailable) return t.skip('adb 없음');
+  await ensureApp();
+  const stop = await wiggle();
+  const keep = collectVideo(60_000); // "차가 보고 있다" = 250ms 주기가 켜지는 조건
+  try {
+    await sleep(1000);
+    const before = await status();
+    const t0 = Date.now();
+    adbShell('input keyevent 223');
+    let noticedMs = null;
+    while (Date.now() - t0 < 10_000) {
+      const s = await status();
+      if (s.lastPowerEvent !== before.lastPowerEvent || s.sleepRecoveries > before.sleepRecoveries) {
+        noticedMs = Date.now() - t0;
+        break;
+      }
+      await sleep(50);
+    }
+    t.diagnostic(`잠든 것을 알아채기까지: ${noticedMs}ms`);
+    assert.ok(noticedMs !== null, '10초가 지나도 폰이 잠든 것을 알아채지 못했다');
+    // 감시 주기 250ms + 상태를 묻는 왕복. 1초를 넘으면 옛 주기(1000ms)로 돌아간 것이다.
+    assert.ok(noticedMs < 1500, `알아채는 데 ${noticedMs}ms 걸렸다 — 감시 주기가 촘촘하지 않다`);
+  } finally {
+    stop();
+    await keep.catch(() => {});
     adbShell('input keyevent 224');
     adbShell('wm dismiss-keyguard');
     await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
