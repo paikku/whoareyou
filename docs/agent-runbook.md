@@ -86,6 +86,11 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 | 5초마다 가상 디스플레이에 `userActivity` (scrcpy `--keep-active`) | `keep_active=false` | `keptActive` |
 | 차가 볼 때 잠들면 깨워서 📵 상태로 되돌리기 | `sleep_recovery=false` | `sleepRecoveries`, `recoveryPausedMs` |
 
+**손잡이는 셋보다 많다.** 남들(Castla·Extinguish·SecondScreen)과 AOSP 를 읽어 보니 `screen_off_timeout`,
+가상 디스플레이에 묶인 `FLAG_KEEP_SCREEN_ON` 창, 그룹 단위 `wakeUpWithDisplayId` 같은 길이 더 있고,
+**`keptActive` 가 오르는 것은 `userActivity` 가 먹혔다는 증거가 아니다**(권한이 없으면 예외 없이 무시된다).
+후보와 실험 순서: [prior-art.md §"전원·화면 끄고 켜기 — 2차 조사"](prior-art.md#전원화면-끄고-켜기--2차-조사-2026-09-12).
+
 **증상이 오면 먼저 💾 세션 리포트의 요약 줄을 본다** — `폰 build=… 잠듦/깨어있음 화면ON/OFF 되살림N
 활성유지N idleN`. 이 한 줄이 "기기가 잠든 것 / 패널만 꺼진 것 / 유휴 블랭킹"을 가른다. 이 줄이 없으면
 옛 빌드이므로 먼저 APK 부터 올린다(리포트 #26·#27 을 그것 때문에 가리지 못했다).

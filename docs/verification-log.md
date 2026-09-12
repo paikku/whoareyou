@@ -288,6 +288,13 @@ adbd가 계속 살아 있으므로 §3.5의 cgroup SIGKILL(=USB 디버깅 토글
 **다음에 확인할 것 (실기기):** 전원 버튼을 눌러 차 화면이 멈춘 직후 💾 를 누르고 요약 줄을 본다.
 `keptActive` 가 오르는데도 검어지면 이 경로가 One UI 8 에서 듣지 않는 것이고, 그때는 다른 길을 찾아야 한다.
 
+**2026-09-12 정정 — 이 판정 기준은 반쪽이다.** AOSP `PowerManagerService.userActivity` 는 권한
+(`DEVICE_POWER`/`USER_ACTIVITY`)이 없으면 **예외 없이 조용히 무시하고 logcat 경고만 남긴다.**
+우리 `keptActive` 는 예외가 안 났을 때 올라가므로 **호출 횟수이지 효과의 증거가 아니다.** 판정은
+logcat 의 `Ignoring call to PowerManager.userActivity()` 유무로 해야 하고, 검어지는 원인 후보에는
+키가드(보조 디스플레이 가리기)도 넣어야 한다 —
+[prior-art.md §"전원·화면 끄고 켜기 — 2차 조사"](prior-art.md#전원화면-끄고-켜기--2차-조사-2026-09-12).
+
 ---
 
 ## 4. C층: 실차 (Model Y, 2026.26) — ✅ 2026-09-10 첫 방문에서 영상·터치 동작
