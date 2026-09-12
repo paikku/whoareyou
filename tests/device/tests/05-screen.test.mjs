@@ -251,11 +251,15 @@ test('잠금화면이 떠 있어도 차 화면이 덮이지 않는다', { timeou
 test('패널을 끄는 세 가지 길 중 이 기기에서 무엇이 되나', { timeout: 120_000 }, async (t) => {
   if (!(await isDisplaySource())) return t.skip('클립 모드');
   const results = {};
+  await ensureApp();
+  // 흔들지 않으면 정지 화면이라 3초에 한두 조각뿐이고, 그 숫자로는 "살아 있다"와 "거의 죽었다"를
+  // 가를 수 없다. 흔들면 수백 조각이 나오므로 끊긴 경우가 분명해진다.
+  const stop = await wiggle();
   try {
     for (const via of ['power-mode', 'cmd-display', 'brightness']) {
       const off = await api(`/api/screen?on=0&via=${via}`, { method: 'POST' });
       let frames = 0;
-      if (off.ok) frames = (await collectVideo(3_000)).filter((p) => p.type !== 0).length;
+      if (off.ok) frames = (await collectVideo(4_000)).filter((p) => p.type !== 0).length;
       await api(`/api/screen?on=1&via=${via}`, { method: 'POST' }).catch(() => {});
       await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
       results[via] = { ok: off.ok, via: off.via, frames };
@@ -263,11 +267,13 @@ test('패널을 끄는 세 가지 길 중 이 기기에서 무엇이 되나', { 
     }
     assert.equal(results['power-mode'].ok, true, '기본 경로(SurfaceControl)가 이 기기에서 안 된다');
     for (const [via, r] of Object.entries(results)) {
-      if (r.ok) assert.ok(r.frames > 0, `${via} 로 껐더니 가상 디스플레이까지 멈췄다`);
+      // 흔드는 중이므로 되는 길이라면 수십~수백 조각이 나온다. 한 자릿수면 사실상 멈춘 것이다.
+      if (r.ok) assert.ok(r.frames > 10, `${via} 로 껐더니 4초에 ${r.frames}조각 — 가상 디스플레이가 멈췄다`);
     }
     const working = Object.entries(results).filter(([, r]) => r.ok).map(([v]) => v);
     t.diagnostic(`이 기기에서 되는 길: ${working.join(', ')}`);
   } finally {
+    stop();
     await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
   }
 });

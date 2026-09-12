@@ -367,6 +367,25 @@ void goToSleepWithDisplayId(int displayId, long time, int reason, int flags);
 푸시 → `emulator` 워크플로 로그·아티팩트(`out/vphone/logcat.txt`, `out/lifecycle/report.md`)를 읽는 길뿐이고,
 한 번 도는 데 15~20분이 든다. 그러니 ① 은 **한 번에 모아서** 넣는 편이 싸다.
 
+### 7.2 여기까지 한 것 (2026-09-12, 가상 폰 run #20~#22)
+
+① 로 갈라 둔 것은 **전부 들어갔고 전부 통과했다**(18개 검사, 건너뛴 것 0개). 자세한 수치는
+[verification-log §3.11](verification-log.md). 요약하면:
+
+| # | 무엇 | 결과 |
+|---|---|---|
+| 1 | `keepActiveEffective` + VD 가 **받은** 플래그 | `true` / `0x4f88`(ALWAYS_UNLOCKED 포함) |
+| 2 | `screen_off_timeout` 손잡이와 복원 | 걸리고 되돌아온다 |
+| 3 | **잠금화면 실험** | `isKeyguardShowing=true` 인 채로 덮이지 않았다 — 면제가 듣는다 |
+| 5 | 알아채는 속도 (250ms 감시) | **60ms** |
+| 6 | `wakeUpWithDisplayId` | 넣었으나 **발동하지 않는다** — 폰이 자도 VD 그룹은 안 잔다(그것이 맞는 동작) |
+| 7 | 폴백 세 길 | `power-mode` · `cmd-display` · `brightness` **모두 동작**(`?via=` 로 강제해 확인) |
+| 8 | 가짜 충전으로 `stay_on` | 발동 확인 |
+
+**4번(가상 디스플레이에 `FLAG_KEEP_SCREEN_ON` 창)은 일부러 넣지 않았다.** 가상 폰에서 블랭킹이
+재현되지 않으므로 그 효과를 판정할 길이 없고, 판정할 수 없는 코드를 넣는 것은 §2.1 이 말한 실수를
+다시 저지르는 것이다. 실기기에서 블랭킹이 확인되면 그때 넣는다.
+
 **가져오지 않을 것:** sysfs 백라이트(SecondScreen — 루트 + 기기별 경로), `PowerManager.goToSleep()`·
 `DevicePolicyManager.lockNow()`(기기를 재워 VD 까지 죽인다 — 리포트 #26 의 원인 그 자체), 도메인/HTTPS 경로(§6 기존).
 
