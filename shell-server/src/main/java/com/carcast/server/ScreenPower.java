@@ -32,9 +32,20 @@ import java.util.regex.Pattern;
 final class ScreenPower {
     private static final String STAY_ON = "stay_on_while_plugged_in";
     private static final String STAY_ON_ALL = "7"; // AC | USB | wireless
-    private static final long WATCH_INTERVAL_MS = 1000;
+    private static final String SCREEN_OFF_TIMEOUT = "screen_off_timeout";
+    /** Nobody is watching: one sample a second is plenty and costs nothing. */
+    private static final long WATCH_IDLE_MS = 1000;
+    /**
+     * The car is watching: every sample is a second the driver may spend staring at a frozen picture,
+     * because we only learn the phone slept when we look. Until the shell process can receive
+     * ACTION_SCREEN_OFF (it has no Context that can registerReceiver - the upstream scrcpy tree does
+     * not do it either), looking more often is the whole fix.
+     */
+    private static final long WATCH_WATCHING_MS = 250;
 
     private String previousStayOn;
+    private String previousScreenOffTimeout;
+    private String screenOffTimeout;
     /** PowerManager keeps reporting the display as interactive after a SurfaceControl power-off, so track it here. */
     private volatile boolean forcedOff;
     /** What `dumpsys display` last said the panel is doing: ON / OFF / DOZE / null when unread. */
@@ -53,6 +64,14 @@ final class ScreenPower {
     private volatile long recoveryPausedUntilMs;
     /** Our own wake, so the watcher does not read it as the user pressing power. */
     private volatile boolean selfWaking;
+    /** Wake only the car's display group instead of the whole phone, when the phone took it down too. */
+    private volatile boolean vdWake = true;
+    private volatile int vdWakes;
+    /** What the car's display group was doing the last time the phone went to sleep (null: unknown). */
+    private volatile Boolean lastSleepVdInteractive;
+    /** How the panel was last switched (on or off): power-mode / cmd-display / brightness / none. */
+    private volatile String panelOffMethod = "";
+    private volatile int panelOffFailures;
     private final long[] recentPresses = new long[ESCAPE_PRESSES];
     private int pressIndex;
     private java.util.function.BooleanSupplier carWatching = () -> false;
@@ -70,13 +89,42 @@ final class ScreenPower {
      */
     private volatile boolean keepActive = true;
     private volatile int keptActive;
+    /**
+     * Whether those pokes are actually doing anything. They may not be: PowerManagerService drops
+     * userActivity() from a caller without DEVICE_POWER/USER_ACTIVITY *silently* - it logs a warning
+     * and returns, no exception. So a rising keptActive proves we called, not that it landed. Once,
+     * a couple of seconds after the first poke, read that warning back out of logcat and record the
+     * answer here: null = not looked yet, TRUE = no warning (it lands), FALSE = ignored.
+     */
+    private volatile Boolean keepActiveEffective;
+    private volatile long keepActiveCheckAtMs;
+    private volatile int keepActiveChecks;
+    /**
+     * When the pokes are ignored, Castla's fallback: send WAKEUP to the virtual display itself.
+     * Off by default because a ROM that ignores "input -d" would wake the whole phone every few
+     * seconds - exactly the flashing we are trying to avoid. Turn it on per device once the field
+     * above says the clean path does not work there.
+     */
+    private volatile boolean keepActiveFallback;
+    private volatile int keptActiveFallback;
     private java.util.function.IntSupplier keepActiveDisplayId = () -> -1;
     private long lastKeepActiveMs;
 
     private static final long KEEP_ACTIVE_INTERVAL_MS = 5_000;
+    private static final long KEEP_ACTIVE_CHECK_DELAY_MS = 3_000;
+    /** If logcat cannot be read, give up after a few tries instead of spawning a process forever. */
+    private static final int KEEP_ACTIVE_CHECK_TRIES = 3;
 
     void setKeepActive(boolean on) {
         keepActive = on;
+    }
+
+    void setKeepActiveFallback(boolean on) {
+        keepActiveFallback = on;
+    }
+
+    void setVdWake(boolean on) {
+        vdWake = on;
     }
 
     void setKeepActiveDisplay(java.util.function.IntSupplier displayId) {
@@ -103,6 +151,22 @@ final class ScreenPower {
         return interactive();
     }
 
+    /**
+     * Is the car's display group awake? Only Android 14+ can answer per display (isDisplayInteractive);
+     * before that the question does not exist and we return null rather than guess.
+     */
+    Boolean vdInteractive() {
+        int id = keepActiveDisplayId.getAsInt();
+        if (id <= 0 || Build.VERSION.SDK_INT < AndroidVersions.API_34_ANDROID_14) {
+            return null;
+        }
+        try {
+            return ServiceManager.getPowerManager().isScreenOn(id);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /** PowerManager's view: false while the device is asleep. Stays true after a SurfaceControl power-off. */
     boolean interactive() {
         try {
@@ -123,6 +187,20 @@ final class ScreenPower {
         m.put("powerReconciled", reconciled);
         m.put("sleepRecoveries", sleepRecoveries);
         m.put("keptActive", keptActive);
+        // Whether those pokes land. keptActive alone is a call counter, not evidence (see the field).
+        m.put("keepActiveEffective", keepActiveEffective);
+        m.put("keptActiveFallback", keptActiveFallback);
+        // The car's own display group: it can be awake while the phone is not, and that is the
+        // difference between "the phone is dark" and "the car's picture is dead".
+        m.put("vdInteractive", vdInteractive());
+        m.put("vdWakes", vdWakes);
+        m.put("lastSleepVdInteractive", lastSleepVdInteractive);
+        m.put("screenOffTimeout", screenOffTimeout);
+        m.put("screenOffTimeoutWas", previousScreenOffTimeout);
+        if (!panelOffMethod.isEmpty()) {
+            m.put("panelOffMethod", panelOffMethod);
+        }
+        m.put("panelOffFailures", panelOffFailures);
         long paused = recoveryPausedUntilMs - System.currentTimeMillis();
         m.put("recoveryPausedMs", paused > 0 ? paused : 0);
         if (!lastTransition.isEmpty()) {
@@ -147,7 +225,7 @@ final class ScreenPower {
         watcher = new Thread(() -> {
             while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    Thread.sleep(WATCH_INTERVAL_MS);
+                    Thread.sleep(carWatching.getAsBoolean() ? WATCH_WATCHING_MS : WATCH_IDLE_MS);
                 } catch (InterruptedException e) {
                     return;
                 }
@@ -202,6 +280,9 @@ final class ScreenPower {
             panelState = readPanelState();
         }
         pokeVirtualDisplay();
+        if (keepActiveCheckAtMs != 0 && System.currentTimeMillis() >= keepActiveCheckAtMs) {
+            checkKeepActiveEffective();
+        }
     }
 
     /** 가상 디스플레이의 유휴 시계를 되돌린다 (위 keepActive 주석). */
@@ -221,9 +302,51 @@ final class ScreenPower {
         try {
             ServiceManager.getPowerManager().userActivity(id);
             keptActive++;
+            if (keepActiveCheckAtMs == 0 && keepActiveEffective == null && keepActiveChecks < KEEP_ACTIVE_CHECK_TRIES) {
+                // Give the framework a moment to have written its warning, then read it back once.
+                keepActiveCheckAtMs = now + KEEP_ACTIVE_CHECK_DELAY_MS;
+            }
         } catch (Throwable t) {
             Ln.w("userActivity(" + id + ") failed: " + t);
             keepActive = false; // 이 ROM 에서 안 되면 매초 실패 로그를 남기지 않는다
+            keepActiveEffective = Boolean.FALSE;
+        }
+        if (Boolean.FALSE.equals(keepActiveEffective) && keepActiveFallback) {
+            // Castla's fallback: a WAKEUP aimed at the virtual display. See the field comment for why
+            // this is not the default.
+            try {
+                Command.execReadOutput("input", "-d", String.valueOf(id), "keyevent",
+                        String.valueOf(KeyEvent.KEYCODE_WAKEUP));
+                keptActiveFallback++;
+            } catch (Exception e) {
+                Ln.w("keep-active fallback failed: " + e);
+                keepActiveFallback = false;
+            }
+        }
+    }
+
+    /**
+     * Did our userActivity() calls actually land? PowerManagerService answers in logcat and nowhere
+     * else: without DEVICE_POWER/USER_ACTIVITY it logs "Ignoring call to PowerManager.userActivity()"
+     * with the caller's pid and returns normally. Read that back once and stop guessing.
+     */
+    private void checkKeepActiveEffective() {
+        keepActiveCheckAtMs = 0;
+        keepActiveChecks++;
+        try {
+            String out = Command.execReadOutput("logcat", "-d", "-t", "400", "PowerManagerService:W", "*:S");
+            // The warning names the caller, so a line about some other app is not about us. Note the
+            // framework rate-limits it to one every 5 minutes, so "no line" is good evidence but not
+            // proof - the device test cross-checks the same logcat from outside.
+            boolean ignored = out.contains("Ignoring call to PowerManager.userActivity")
+                    && out.contains("pid=" + android.os.Process.myPid());
+            keepActiveEffective = !ignored;
+            Ln.i("keep-active " + (ignored
+                    ? "is being IGNORED by PowerManagerService (no DEVICE_POWER/USER_ACTIVITY for this uid)"
+                    : "lands (no PowerManagerService warning for our pid)"));
+        } catch (Exception e) {
+            // Could not read logcat: leave it unknown rather than claim either answer.
+            Ln.w("could not check whether keep-active lands: " + e);
         }
     }
 
@@ -266,9 +389,35 @@ final class ScreenPower {
         if (!carWatching.getAsBoolean()) {
             return; // 아무도 안 보고 있으면 그냥 자게 둔다
         }
+        // Did the car's display group go down with the phone? On paper it should not - goToSleep()
+        // only sleeps the default group - so record the answer, and when it did go down, put just
+        // that group back up. That path never lights the panel, so there is no flash to undo.
+        Boolean vdBefore = vdInteractive();
+        lastSleepVdInteractive = vdBefore;
+        if (vdWake && Boolean.FALSE.equals(vdBefore)) {
+            int vd = keepActiveDisplayId.getAsInt();
+            if (vd > 0 && ServiceManager.getPowerManager().wakeUpDisplay(vd)
+                    && Boolean.TRUE.equals(vdInteractive())) {
+                sleepRecoveries++;
+                vdWakes++;
+                Ln.i("the phone slept and took the car's display group with it — woke only that group"
+                        + " (the phone stays dark)");
+                onWakeSafely();
+                return;
+            }
+        }
         sleepRecoveries++;
         Ln.i("the phone went to sleep while the car was watching — waking it and darkening the panel instead");
         wake(true);
+    }
+
+    /** The picture is coming back: ask for an IDR so the car does not wait out the GOP. */
+    private void onWakeSafely() {
+        try {
+            onWake.run();
+        } catch (Throwable t) {
+            Ln.w("onWake failed: " + t);
+        }
     }
 
     /** Wake the device; with {@code darken}, immediately put the panel back off (the 📵 state). */
@@ -346,7 +495,13 @@ final class ScreenPower {
                 }
             }
             boolean ok = setPhysicalDisplaysPower(on);
-            Ln.i("physical display power " + (on ? "on" : "off") + ": " + ok);
+            if (ok) {
+                panelOffMethod = "power-mode";
+            } else {
+                panelOffFailures++;
+                ok = fallbackDisplayPower(on);
+            }
+            Ln.i("physical display power " + (on ? "on" : "off") + ": " + ok + " via " + panelOffMethod);
             if (ok) {
                 forcedOff = !on;
             }
@@ -355,6 +510,51 @@ final class ScreenPower {
             Ln.e("display power change failed: " + t);
             return false;
         }
+    }
+
+    /**
+     * When SurfaceControl refuses (it does on some ROMs), try what the others try before giving up:
+     * the {@code cmd display power-off} shell command Android 15 added, then dropping the panel's
+     * brightness to zero (Extinguish's fallback). A dark panel that is still composing is worse than
+     * a powered-off one, but it beats handing the driver a lit phone.
+     */
+    private boolean fallbackDisplayPower(boolean on) {
+        if (Build.VERSION.SDK_INT >= AndroidVersions.API_35_ANDROID_15) {
+            try {
+                String out = Command.execReadOutput("cmd", "display", on ? "power-on" : "power-off", "0");
+                if (out == null || !out.toLowerCase(java.util.Locale.ROOT).contains("error")) {
+                    panelOffMethod = "cmd-display";
+                    return true;
+                }
+                Ln.w("cmd display power-" + (on ? "on" : "off") + ": " + out.trim());
+            } catch (Exception e) {
+                Ln.w("cmd display power failed: " + e);
+            }
+        }
+        if (setPhysicalDisplaysBrightness(on ? 1.0f : 0.0f)) {
+            panelOffMethod = "brightness";
+            return true;
+        }
+        panelOffMethod = "none";
+        return false;
+    }
+
+    private static boolean setPhysicalDisplaysBrightness(float brightness) {
+        if (Build.VERSION.SDK_INT < AndroidVersions.API_29_ANDROID_10) {
+            return false;
+        }
+        boolean useDisplayControl = Build.VERSION.SDK_INT >= AndroidVersions.API_34_ANDROID_14
+                && !SurfaceControl.hasGetPhysicalDisplayIdsMethod();
+        long[] ids = useDisplayControl ? DisplayControl.getPhysicalDisplayIds() : SurfaceControl.getPhysicalDisplayIds();
+        if (ids == null || ids.length == 0) {
+            return false;
+        }
+        boolean allOk = true;
+        for (long id : ids) {
+            IBinder token = useDisplayControl ? DisplayControl.getPhysicalDisplayToken(id) : SurfaceControl.getPhysicalDisplayToken(id);
+            allOk &= token != null && SurfaceControl.setDisplayBrightness(token, brightness);
+        }
+        return allOk;
     }
 
     /** scrcpy Device.setDisplayPower, minus the disabled Android 15 branch and the Honor workaround. */
@@ -389,6 +589,36 @@ final class ScreenPower {
         return SurfaceControl.setDisplayPowerMode(d, mode);
     }
 
+    /**
+     * Push the phone's own inactivity timer out of the way while we are streaming.
+     *
+     * {@link #stayAwake()} only works while the phone is charging - that is how Android defines
+     * stay_on_while_plugged_in - so a phone carried into the car on battery has nothing holding it
+     * up at all. screen_off_timeout does not care about charging, which makes it the only knob that
+     * covers that case. scrcpy (--screen-off-timeout) and SecondScreen both do exactly this, and both
+     * put the old value back; so do we, in {@link #restore()}.
+     *
+     * @param millis the value to set, as a string; null or empty leaves the setting alone
+     */
+    void setScreenOffTimeout(String millis) {
+        if (millis == null || millis.isEmpty()) {
+            return;
+        }
+        try {
+            Integer.parseInt(millis);
+        } catch (NumberFormatException e) {
+            Ln.w("ignoring screen_off_timeout=" + millis + " (not a number of milliseconds)");
+            return;
+        }
+        try {
+            previousScreenOffTimeout = Settings.getAndPutValue("system", SCREEN_OFF_TIMEOUT, millis);
+            screenOffTimeout = millis;
+            Ln.i(SCREEN_OFF_TIMEOUT + " = " + millis + " (was " + previousScreenOffTimeout + ")");
+        } catch (Throwable e) {
+            Ln.w("Could not set " + SCREEN_OFF_TIMEOUT + ": " + e);
+        }
+    }
+
     void stayAwake() {
         try {
             previousStayOn = Settings.getAndPutValue("global", STAY_ON, STAY_ON_ALL);
@@ -412,6 +642,16 @@ final class ScreenPower {
                 Ln.w("Could not restore " + STAY_ON + ": " + e);
             }
             previousStayOn = null;
+        }
+        if (previousScreenOffTimeout != null) {
+            try {
+                Settings.putValue("system", SCREEN_OFF_TIMEOUT, previousScreenOffTimeout);
+                Ln.i(SCREEN_OFF_TIMEOUT + " restored to " + previousScreenOffTimeout);
+            } catch (SettingsException e) {
+                Ln.w("Could not restore " + SCREEN_OFF_TIMEOUT + ": " + e);
+            }
+            previousScreenOffTimeout = null;
+            screenOffTimeout = null;
         }
     }
 }

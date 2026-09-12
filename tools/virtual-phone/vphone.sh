@@ -19,6 +19,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 
 ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+# 폰의 유휴 타이머를 밀어 둔다. stay_on_while_plugged_in 과 달리 충전과 무관하게 듣는 손잡이라
+# 검사 대상이다(05-screen). 서버가 내려갈 때 원래 값으로 되돌린다(kill-switch).
+SCREEN_OFF_TIMEOUT="${SCREEN_OFF_TIMEOUT:-600000}"
 API="${API:-36}"
 AVD="${AVD:-carcast-vphone}"
 PORT="${PORT:-3333}"
@@ -127,7 +130,7 @@ start_server() {
   # stdin 까지 /dev/null 로 떼어 놓는다 — 세 fd 중 하나라도 adb 파이프에 남아 있으면
   # `adb shell "... &"` 가 원격 셸이 끝난 뒤에도 돌아오지 않는다(CI 에서 여기서 멈췄다).
   timeout 60 "$ANDROID_HOME/platform-tools/adb" shell \
-    "CLASSPATH=\$(pm path $PKG | cut -d: -f2) setsid nohup app_process / com.carcast.server.Server $id port=$PORT daemon=true >$DEVICE_LOG 2>&1 </dev/null &" \
+    "CLASSPATH=\$(pm path $PKG | cut -d: -f2) setsid nohup app_process / com.carcast.server.Server $id port=$PORT daemon=true screen_off_timeout=$SCREEN_OFF_TIMEOUT >$DEVICE_LOG 2>&1 </dev/null &" \
     >/dev/null || die "서버 기동 명령이 돌아오지 않았다"
   adb forward --remove tcp:$PORT >/dev/null 2>&1 || true
   adb forward tcp:$PORT tcp:$PORT >/dev/null

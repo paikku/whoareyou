@@ -290,6 +290,10 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("height", display.height);
         m.put("dpi", display.dpi);
         m.put("displayId", display.displayId());
+        // Flags the display really carries, not the ones we asked for (see DisplayCapture.displayFlags).
+        m.put("displayFlags", display.displayFlags());
+        m.put("displayOwnGroup", display.has(DisplayCapture.FLAG_OWN_DISPLAY_GROUP));
+        m.put("displayAlwaysUnlocked", display.has(DisplayCapture.FLAG_ALWAYS_UNLOCKED));
         m.put("encoder", encoder != null ? encoder.name() : null);
         m.put("frames", sink != null ? sink.getFrames() : 0);
         m.put("keyframes", sink != null ? sink.getKeyframes() : 0);

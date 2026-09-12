@@ -12,6 +12,7 @@ import java.util.Map;
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [decorations=false] [app=com.google.android.youtube] [source=clip]
  *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
+ *     [screen_off_timeout=&lt;ms&gt;] [keep_active_fallback=false] [vd_wake=true]
  * </pre>
  * Extra endpoints: {@code POST /api/screen?on=0|1} turns only the phone's main display off/on (the virtual
  * display keeps running); {@code GET /api/screen} reports it.
@@ -126,8 +127,13 @@ public final class Server {
             if (source != null) {
                 screen.setOnWake(source::requestKeyframe);
             }
+            // Unlike stay_awake, this one works on battery too - the phone carried into the car
+            // without a cable is exactly the case stay_on_while_plugged_in does not cover.
+            screen.setScreenOffTimeout(raw.get("screen_off_timeout"));
             screen.setSleepRecovery(!"false".equals(raw.get("sleep_recovery")));
             screen.setKeepActive(!"false".equals(raw.get("keep_active")));
+            screen.setKeepActiveFallback("true".equals(raw.get("keep_active_fallback")));
+            screen.setVdWake(!"false".equals(raw.get("vd_wake")));
             if (source != null) {
                 screen.setKeepActiveDisplay(source::displayId);
             }

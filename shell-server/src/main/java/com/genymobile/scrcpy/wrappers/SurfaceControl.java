@@ -181,6 +181,22 @@ public final class SurfaceControl {
         }
     }
 
+    /**
+     * Last-resort darkening for ROMs where setDisplayPowerMode is refused: drive the panel's
+     * brightness to 0 instead. Extinguish keeps this as its fallback for the same reason.
+     * The backlight is off but the display is still composing, so it costs more power than a real
+     * power-off — only worth it when the real one does not work.
+     */
+    public static boolean setDisplayBrightness(IBinder displayToken, float brightness) {
+        try {
+            CLASS.getMethod("setDisplayBrightness", IBinder.class, float.class).invoke(null, displayToken, brightness);
+            return true;
+        } catch (ReflectiveOperationException e) {
+            Ln.w("setDisplayBrightness failed: " + e);
+            return false;
+        }
+    }
+
     public static void destroyDisplay(IBinder displayToken) {
         try {
             CLASS.getMethod("destroyDisplay", IBinder.class).invoke(null, displayToken);
