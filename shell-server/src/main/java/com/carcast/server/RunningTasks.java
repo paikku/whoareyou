@@ -22,8 +22,20 @@ final class RunningTasks {
     }
 
     static String json(int ourDisplay) {
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("display", ourDisplay);
         List<Object> out = new ArrayList<>();
-        for (TaskList.Task t : list()) {
+        String error = null;
+        List<TaskList.Task> tasks;
+        try {
+            tasks = TaskList.INSTANCE.parse(Command.execReadOutput("am", "stack", "list"));
+        } catch (Exception e) {
+            // "도는 앱이 없다"와 "물어보지도 못했다"는 다르다. 차가 그 둘을 구별할 수 있어야 한다.
+            Ln.w("am stack list failed: " + e);
+            tasks = new ArrayList<>();
+            error = "am stack list: " + e;
+        }
+        for (TaskList.Task t : tasks) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("taskId", t.getTaskId());
             m.put("name", t.getName());
@@ -34,16 +46,11 @@ final class RunningTasks {
             m.put("label", labelOf(t.getPackageName()));
             out.add(m);
         }
-        return Json.INSTANCE.array(out);
-    }
-
-    private static List<TaskList.Task> list() {
-        try {
-            return TaskList.INSTANCE.parse(Command.execReadOutput("am", "stack", "list"));
-        } catch (Exception e) {
-            Ln.w("am stack list failed: " + e);
-            return new ArrayList<>();
+        res.put("tasks", out);
+        if (error != null) {
+            res.put("error", error);
         }
+        return Json.INSTANCE.obj(res);
     }
 
     /** The human name for a package, from the app list we already built; falls back to the package. */

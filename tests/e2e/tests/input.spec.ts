@@ -61,8 +61,11 @@ test('차 홈에서 앱을 고르면 그 앱이 차 화면에 뜬다', async ({ 
 
   await page.locator('#btn-home').click();
   const tiles = page.locator('#launcher-grid .tile');
+  // 목록은 **아이콘을 기다리지 않고** 곧바로 뜬다. 아이콘까지 한 번에 실어 오던 것이 실기기에서
+  // 새 연결을 전부 막았기 때문이다(실차 리포트 #31~33).
   await expect(tiles).toHaveCount(3);
-  // 아이콘을 못 그린 앱은 이름 첫 글자 타일로 뜬다 — 빈 네모를 남기지 않는다는 계약.
+  // 그 다음 보이는 칸부터 아이콘이 채워지고, 못 그리는 앱은 첫 글자 타일로 남는다.
+  await expect(page.locator('#launcher-grid .tile img')).toHaveCount(2);
   await expect(page.locator('#launcher-grid .tile .fallback')).toHaveCount(1);
 
   // 찾기: 운전 중에 목록을 훑는 대신 한 번에 좁힐 수 있어야 한다.

@@ -134,16 +134,23 @@ const server = createServer((req, res) => {
   // 차의 홈과 최근앱이 읽는 두 목록. 진짜 폰에서는 PackageManager 와 `am stack list` 에서 나온다;
   // 여기서는 UI 가 목록을 그리는지, 고른 것이 /api/app 으로 가는지만 보면 되므로 몇 개만 흉내 낸다.
   if (url.pathname === '/api/apps') {
-    const icons = url.searchParams.get('icons') !== '0';
-    // 1x1 투명 PNG. 아이콘이 있는 경우와 없는 경우를 둘 다 그려 보게 섞어 둔다.
-    const dot = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-    const apps = [
+    // 이름만. 아이콘은 /api/icon 이 하나씩 준다 — 목록에 다 싣던 것이 실기기에서 새 연결을 전부
+    // 막아 버렸다(실차 리포트 #31~33).
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify([
       { package: 'com.google.android.youtube', label: 'YouTube', system: false },
       { package: 'com.android.settings', label: '설정', system: true },
       { package: 'com.spotify.music', label: 'Spotify', system: false },
-    ].map((a, i) => (icons && i !== 2 ? { ...a, icon: dot } : a));
+    ]));
+    return;
+  }
+  if (url.pathname === '/api/icon') {
+    // 1x1 투명 PNG. 하나는 일부러 못 그리는 앱으로 둬서 "첫 글자 타일"이 남는지 보게 한다.
+    const pkg = url.searchParams.get('pkg') ?? '';
+    const dot = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    state.iconRequests = (state.iconRequests ?? 0) + 1;
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(apps));
+    res.end(JSON.stringify({ package: pkg, icon: pkg === 'com.spotify.music' ? null : dot }));
     return;
   }
   if (url.pathname === '/api/tasks') {
@@ -156,7 +163,7 @@ const server = createServer((req, res) => {
       tasks[0].here = false;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(tasks));
+    res.end(JSON.stringify({ display: 7, tasks }));
     return;
   }
   if (url.pathname === '/api/screen') {

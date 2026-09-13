@@ -126,10 +126,21 @@ const sheetTitle = $('launcher-title');
 const sheetEmpty = $('launcher-empty');
 const sheetFind = $('launcher-find') as HTMLInputElement;
 
-interface AppRow { package: string; label: string; icon?: string }
+interface AppRow { package: string; label: string }
+
+/** 보이는 칸에만 아이콘을 요청한다. 스크롤 밖의 수백 개를 미리 끌어오지 않는다. */
+const iconWatcher = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    const el = e.target as HTMLElement;
+    iconWatcher.unobserve(el);
+    if (el.dataset.pkg) fillIcon(el, el.dataset.pkg);
+  }
+}, { root: null, rootMargin: '200px' });
 interface TaskRow { taskId: number; package: string; label: string; display: number; here: boolean }
 
 let apps: AppRow[] = [];
+let homeError = '';
 let sheetMode: 'home' | 'recents' = 'home';
 
 const closeSheet = () => {
@@ -139,14 +150,51 @@ const closeSheet = () => {
 $('launcher-close').addEventListener('click', closeSheet);
 sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
 
-/** 한 칸. 아이콘이 없으면 이름 첫 글자로 대신한다 — 빈 네모보다 낫다. */
-function tile(label: string, icon: string | undefined, sub: string | null, onPick: () => void): HTMLElement {
+/**
+ * 아이콘은 **화면에 보이는 칸만, 하나씩** 가져온다.
+ *
+ * 처음에는 목록 한 번에 다 실어 왔는데, 진짜 폰에서는 그것이 수백 개의 앱 리소스를 한 요청 안에서
+ * 여는 일이 된다. 폰에서 그 뒤로 **새 연결이 전부 실패했다**(실차 리포트 #31~33) — 차 화면이 검은
+ * 채로 재접속만 반복했다. 그래서 목록은 이름만 받고, 아이콘은 보이는 것부터 한 줄씩 채운다.
+ */
+const iconCache = new Map<string, string | null>();
+let iconQueue: Promise<void> = Promise.resolve();
+
+function fillIcon(el: HTMLElement, pkg: string) {
+  const cached = iconCache.get(pkg);
+  if (cached !== undefined) {
+    if (cached) swapIcon(el, cached);
+    return;
+  }
+  // 직렬로 세워 둔다. 동시에 여러 개를 부르면 폰에서 같은 일이 되풀이된다.
+  iconQueue = iconQueue.then(async () => {
+    if (iconCache.has(pkg) || !el.isConnected) return;
+    try {
+      const r = await (await fetch(`/api/icon?pkg=${encodeURIComponent(pkg)}`)).json();
+      iconCache.set(pkg, r.icon ?? null);
+      if (r.icon) swapIcon(el, r.icon);
+    } catch { iconCache.set(pkg, null); }
+  });
+}
+
+function swapIcon(tileEl: HTMLElement, src: string) {
+  const fallback = tileEl.querySelector('.fallback');
+  if (!fallback) return;
+  const img = document.createElement('img');
+  img.src = src;
+  fallback.replaceWith(img);
+}
+
+/** 한 칸. 아이콘은 나중에 채워지고, 그때까지(또는 못 그리면) 이름 첫 글자로 둔다 — 빈 네모보다 낫다. */
+function tile(label: string, pkg: string, sub: string | null, onPick: () => void): HTMLElement {
   const el = document.createElement('button');
   el.className = sub ? 'tile away' : 'tile';
-  const art = document.createElement(icon ? 'img' : 'div');
-  if (icon) (art as HTMLImageElement).src = icon;
-  else { art.className = 'fallback'; art.textContent = (label[0] ?? '?').toUpperCase(); }
+  const art = document.createElement('div');
+  art.className = 'fallback';
+  art.textContent = (label[0] ?? '?').toUpperCase();
   el.append(art);
+  iconWatcher.observe(el);
+  el.dataset.pkg = pkg;
   const name = document.createElement('span');
   name.className = 'name';
   name.textContent = label;
@@ -173,9 +221,9 @@ function pick(pkg: string) {
 function renderHome(filter: string) {
   const q = filter.trim().toLowerCase();
   const rows = q ? apps.filter((a) => a.label.toLowerCase().includes(q) || a.package.includes(q)) : apps;
-  sheetGrid.replaceChildren(...rows.map((a) => tile(a.label, a.icon, null, () => pick(a.package))));
+  sheetGrid.replaceChildren(...rows.map((a) => tile(a.label, a.package, null, () => pick(a.package))));
   sheetEmpty.hidden = rows.length > 0;
-  sheetEmpty.textContent = q ? `"${filter}" 에 맞는 앱이 없습니다` : '앱 목록을 읽지 못했습니다';
+  sheetEmpty.textContent = q ? `"${filter}" 에 맞는 앱이 없습니다` : (homeError || '앱 목록을 읽지 못했습니다');
 }
 
 async function openHome() {
@@ -188,7 +236,12 @@ async function openHome() {
     sheetGrid.replaceChildren();
     sheetEmpty.hidden = false;
     sheetEmpty.textContent = '앱 목록을 읽는 중…';
-    try { apps = await (await fetch('/api/apps')).json(); } catch { apps = []; }
+    try {
+      const r = await (await fetch('/api/apps')).json();
+      // 서버가 목록을 못 만들면 **왜인지**를 준다. "앱이 없습니다"로 뭉개지 않는다.
+      if (Array.isArray(r)) { apps = r; homeError = ''; }
+      else { apps = []; homeError = r?.error ?? '앱 목록을 읽지 못했습니다'; }
+    } catch (e) { apps = []; homeError = `폰에 물어보지 못했습니다: ${e}`; }
   }
   renderHome(sheetFind.value);
 }
@@ -202,17 +255,29 @@ async function openRecents() {
   sheetEmpty.hidden = false;
   sheetEmpty.textContent = '읽는 중…';
   let tasks: TaskRow[] = [];
-  try { tasks = await (await fetch('/api/tasks')).json(); } catch { /* 아래에서 빈 목록으로 처리 */ }
-  // 차 화면에서 도는 것이 먼저, 폰으로 끌려간 것은 그 뒤에 "폰에 있음"이라고 표시해 되돌릴 수 있게 둔다.
+  let ourDisplay: number | null = null;
+  let error = '';
+  try {
+    const r = await (await fetch('/api/tasks')).json();
+    tasks = Array.isArray(r?.tasks) ? r.tasks : [];
+    ourDisplay = r?.display ?? null;
+    error = r?.error ?? '';
+  } catch (e) { error = `폰에 물어보지 못했습니다: ${e}`; }
+
+  // 차 화면에서 도는 것이 먼저, 폰으로 끌려간 것은 "폰에 있음"으로 뒤에.
   const here = tasks.filter((t) => t.here);
-  const away = tasks.filter((t) => !t.here && t.display === 0);
-  const iconOf = (pkg: string) => apps.find((a) => a.package === pkg)?.icon;
+  const away = tasks.filter((t) => !t.here);
   sheetGrid.replaceChildren(
-    ...here.map((t) => tile(t.label, iconOf(t.package), null, () => pick(t.package))),
-    ...away.map((t) => tile(t.label, iconOf(t.package), '폰에 있음 · 눌러서 가져오기', () => pick(t.package))),
+    ...here.map((t) => tile(t.label, t.package, null, () => pick(t.package))),
+    // 여기에도 저기에도 안 잡히면 **아무것도 안 보여 주는 대신** 어디에 있는지를 적어 보여 준다.
+    // "도는 앱이 없다"와 "우리 화면에서 못 찾았다"는 다른 말이고, 그 차이가 곧 원인이다.
+    ...away.map((t) => tile(t.label, t.package, t.display === 0 ? '폰에 있음 · 눌러서 가져오기' : `화면 ${t.display}`,
+      () => pick(t.package))),
   );
   sheetEmpty.hidden = here.length + away.length > 0;
-  sheetEmpty.textContent = '이 화면에서 도는 앱이 없습니다. ● 홈에서 하나 고르세요.';
+  sheetEmpty.textContent = error
+    ? error
+    : `도는 앱을 찾지 못했습니다 (차 화면 ${ourDisplay ?? '?'}). ● 홈에서 하나 고르세요.`;
 }
 
 $('btn-home').addEventListener('click', openHome);

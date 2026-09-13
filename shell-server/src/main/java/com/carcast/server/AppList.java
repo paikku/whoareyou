@@ -2,6 +2,7 @@ package com.carcast.server;
 
 import com.carcast.core.Json;
 import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.util.Command;
 import com.genymobile.scrcpy.util.Ln;
 
 import android.content.Intent;
@@ -25,6 +26,13 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * The apps the car can start, and their icons — the "home" the car needs of its own.
  *
+ * **Icons are never rendered for the whole list.** The first version did, and on a real phone that is
+ * hundreds of {@code getApplicationIcon()} calls in one request, each opening another app's APK to read
+ * its resources. The virtual phone has 22 apps and never noticed; an S26 Ultra has hundreds, and the
+ * server came back with the control socket still alive but **every new connection failing** — the shape
+ * of a process out of file descriptors (real-car reports #31-33). So the list is names only, and icons
+ * come one at a time from /api/icon as the car draws them.
+ *
  * Why the car cannot just press HOME: that key is not ours to send. Android routes HOME and
  * APP_SWITCH to the *default* display no matter which display the event carries, so pressing them
  * from the car sends the phone to its own launcher and drags the running app back to display 0 with
@@ -39,25 +47,45 @@ final class AppList {
     private static final int ICON_PX = 96;
 
     private static volatile List<Map<String, Object>> cached;
+    /** Why the list is empty, when it is. The car shows this instead of "no apps". */
+    private static volatile String problem = "";
+    /** Where the list came from: "package-manager" or "shell" (the fallback). */
+    private static volatile String origin = "";
     private static final Map<String, String> ICONS = new ConcurrentHashMap<>();
 
     private AppList() {
     }
 
-    static String json(boolean withIcons, boolean refresh) {
+    static String json(boolean refresh) {
         List<Map<String, Object>> apps = list(refresh);
-        List<Object> out = new ArrayList<>(apps.size());
-        for (Map<String, Object> app : apps) {
-            Map<String, Object> m = new LinkedHashMap<>(app);
-            if (withIcons) {
-                String icon = icon((String) app.get("package"));
-                if (icon != null) {
-                    m.put("icon", icon);
-                }
-            }
-            out.add(m);
+        if (apps.isEmpty()) {
+            // An empty array reads as "this phone has no apps", which is never true and tells the driver
+            // nothing. Say what went wrong instead — the car puts it on screen.
+            Map<String, Object> err = new LinkedHashMap<>();
+            err.put("error", problem.isEmpty() ? "앱 목록이 비어 있습니다" : problem);
+            return Json.INSTANCE.obj(err);
         }
-        return Json.INSTANCE.array(out);
+        return Json.INSTANCE.array(new ArrayList<Object>(apps));
+    }
+
+    /** For /api/status: how many apps we found and where they came from (or why we found none). */
+    static Map<String, Object> info() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        List<Map<String, Object>> apps = cached;
+        m.put("apps", apps == null ? null : apps.size());
+        m.put("appsFrom", origin.isEmpty() ? null : origin);
+        if (!problem.isEmpty()) {
+            m.put("appsError", problem);
+        }
+        return m;
+    }
+
+    /** One app's icon, as {@code {"package":…,"icon":"data:…"|null}}. */
+    static String iconJson(String pkg) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("package", pkg);
+        m.put("icon", pkg == null || pkg.isEmpty() ? null : icon(pkg));
+        return Json.INSTANCE.obj(m);
     }
 
     static synchronized List<Map<String, Object>> list(boolean refresh) {
@@ -66,6 +94,8 @@ final class AppList {
             return c;
         }
         List<Map<String, Object>> apps = new ArrayList<>();
+        problem = "";
+        origin = "";
         try {
             PackageManager pm = FakeContext.get().getPackageManager();
             for (ApplicationInfo info : pm.getInstalledApplications(0)) {
@@ -79,12 +109,59 @@ final class AppList {
                 m.put("system", (info.flags & ApplicationInfo.FLAG_SYSTEM) != 0);
                 apps.add(m);
             }
-            Collections.sort(apps, Comparator.comparing(a -> ((String) a.get("label")).toLowerCase(java.util.Locale.ROOT)));
+            origin = "package-manager";
         } catch (Throwable t) {
-            // A car with an empty home is bad; a car that cannot open the page at all is worse.
-            Ln.e("could not list apps: " + t);
+            // PackageManager from a bare app_process is not a given: it depends on the fake context that
+            // Workarounds builds, and that has ROM-specific ways of not working. Say so, then try the
+            // other road rather than handing the car an empty home.
+            problem = "PackageManager: " + t;
+            Ln.e("could not list apps through PackageManager: " + t);
         }
+        if (apps.isEmpty()) {
+            apps = listViaShell();
+        }
+        Collections.sort(apps, Comparator.comparing(a -> ((String) a.get("label")).toLowerCase(java.util.Locale.ROOT)));
         cached = apps;
+        return apps;
+    }
+
+    /**
+     * The same question asked the way the shell asks it: which components answer the launcher intent.
+     * No labels (the package name stands in) and no icons, but it needs nothing but `cmd`, so it works
+     * where the framework path does not — and a home with plain names beats a home with nothing.
+     */
+    private static List<Map<String, Object>> listViaShell() {
+        List<Map<String, Object>> apps = new ArrayList<>();
+        try {
+            String out = Command.execReadOutput("cmd", "package", "query-activities", "--brief",
+                    "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER");
+            java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+            for (String line : out.split("\n")) {
+                String s = line.trim();
+                int slash = s.indexOf('/');
+                if (slash <= 0 || s.contains(" ") || s.contains("=")) {
+                    continue;
+                }
+                seen.add(s.substring(0, slash));
+            }
+            for (String pkg : seen) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("package", pkg);
+                m.put("label", pkg);
+                m.put("system", false);
+                apps.add(m);
+            }
+            if (!apps.isEmpty()) {
+                origin = "shell";
+                Ln.i("app list via `cmd package query-activities`: " + apps.size() + " apps");
+            } else if (problem.isEmpty()) {
+                problem = "cmd package query-activities 가 아무것도 돌려주지 않았습니다";
+            }
+        } catch (Throwable t) {
+            String why = "cmd package query-activities: " + t;
+            problem = problem.isEmpty() ? why : problem + " / " + why;
+            Ln.e("could not list apps through the shell either: " + t);
+        }
         return apps;
     }
 
@@ -93,8 +170,12 @@ final class AppList {
         return i != null ? i : pm.getLeanbackLaunchIntentForPackage(pkg);
     }
 
-    /** The app's icon as a {@code data:} URI, or null when it cannot be rendered. Cached per package. */
-    static String icon(String pkg) {
+    /**
+     * The app's icon as a {@code data:} URI, or null when it cannot be rendered. Cached per package,
+     * and **one at a time**: reading an icon loads another app's resources, and doing that for a whole
+     * phone's worth of apps at once is what broke the server (see the class comment).
+     */
+    static synchronized String icon(String pkg) {
         String hit = ICONS.get(pkg);
         if (hit != null) {
             return hit.isEmpty() ? null : hit;
