@@ -86,7 +86,10 @@ function packet(type, ptsUs, payload) {
 }
 
 // ---- state exposed to tests --------------------------------------------------------------
-const state = { touches: [], keys: [], texts: [], videoClients: 0, controlClients: 0, framesSent: 0, wsRejected: 0, wsAccepted: 0 };
+const state = { touches: [], keys: [], texts: [], videoClients: 0, controlClients: 0, framesSent: 0, wsRejected: 0, wsAccepted: 0,
+  // 실기기와 같은 진단 필드: 받은 연결 수와 accept 오류. 차에서 "죽었다"고 할 때 폰까지 닿았는지를
+  // 가른다(StreamSession.statusJson 과 같은 이름이어야 리포트를 같은 눈으로 읽을 수 있다).
+  accepts: 0, acceptErrors: 0, accepting: true, videoDropped: 0, lastAcceptAgoMs: null };
 // Diagnostic reports posted by /diag (same API as the phone's ReportStore, memory only).
 const reports = [];
 
@@ -306,6 +309,9 @@ if (WS_DROP_EVERY > 0) {
     state.wsDropped = (state.wsDropped ?? 0) + 1;
   }, WS_DROP_EVERY * 1000);
 }
+
+// 실기기와 같게: TCP 연결이 실제로 닿을 때마다 센다.
+server.on('connection', () => { state.accepts++; state.lastAcceptAgoMs = 0; });
 
 server.listen(PORT, HOST, () => {
   console.log(`fake phone on http://${HOST}:${PORT}/  web=${WEB}  ws-reject=${WS_REJECT} ws-drop-every=${WS_DROP_EVERY}s delay=${DELAY_MS}ms`);

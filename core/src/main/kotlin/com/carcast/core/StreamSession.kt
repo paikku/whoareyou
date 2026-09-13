@@ -90,6 +90,7 @@ class StreamSession(
         running = true
         event("HTTP 서버 시작 ($process): 0.0.0.0:$port" + if (reports.size > 0) ", 저장된 진단 ${reports.size}건" else "")
         videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개 가득, 다음 키프레임까지 버림") }
+        videoHub.onClientDropped = { remote -> event("video 클라이언트 $remote 를 놓아줌: init 세그먼트를 받지 못함 — 재접속을 기다린다") }
         val live = videoSource
         if (live != null) {
             try {
@@ -221,6 +222,13 @@ class StreamSession(
             "width" to 1280,
             "height" to 720,
             "addresses" to localAddresses(),
+            // 받은 연결 수·accept 오류·마지막 연결이 언제였나. 차에서 "죽었다"고 할 때 폰까지
+            // 닿기는 했는지를 가르는 유일한 증거다(끊긴 링크와 멎은 서버는 브라우저에서 똑같아 보인다).
+            "accepts" to (http?.accepts ?: 0L),
+            "acceptErrors" to (http?.acceptErrors ?: 0L),
+            "accepting" to (http?.accepting ?: false),
+            "lastAcceptAgoMs" to http?.lastAcceptAt?.takeIf { it > 0 }?.let { System.currentTimeMillis() - it },
+            "videoDropped" to videoHub.dropped,
             "reports" to reports.size,
             "lastReport" to reports.last?.let { mapOf("id" to it.id, "receivedAt" to it.receivedAt, "remote" to it.remote, "summary" to it.summary) },
         )

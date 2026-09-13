@@ -58,7 +58,9 @@ let lastPacketAt = 0;
 let recoveries = 0;
 const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ? '?codec=mjpeg' : ''}`), {
   onOpen: () => { renderer.reset(); note(`video ws open #${videoWs.stats.connects}`); },
-  onClose: () => note('video ws closed'),
+  // 왜 끊겼는지까지 남긴다. 1006 은 인사도 없이 끊긴 것(링크가 사라짐), 1000/1001 은 폰이
+  // 제대로 닫은 것 — 리포트에서 "폰이 멎었나, 선이 끊겼나"를 가르는 데 이 한 글자가 쓰인다.
+  onClose: (ev) => note(`video ws closed${'code' in ev ? ` (${ev.code})` : ''}`),
   onMessage: (data) => {
     if (typeof data === 'string') return;
     const p = parseMediaPacket(data);

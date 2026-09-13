@@ -31,6 +31,28 @@ test('touch on the picture arrives as normalised coordinates', async ({ page }) 
   expect(down.y).toBeCloseTo(0.75, 2);
 });
 
+// 세 버튼은 폰의 탐색 막대와 같은 순서·같은 모양이어야 한다. 운전 중에 읽고 고르는 것이 아니라
+// 손이 아는 자리를 누르는 것이라, 순서가 바뀌면 엉뚱한 것이 눌린다. 순서와 글리프를 못박는다.
+test('탐색 막대는 왼쪽부터 최근·홈·뒤로, 글자가 아니라 선으로 그려진다', async ({ page }) => {
+  await page.goto('/');
+  const ids = await page.locator('#nav button').evaluateAll((els) =>
+    els.map((e) => e.id || e.getAttribute('data-key')));
+  expect(ids).toEqual(['btn-recents', 'btn-home', 'back']);
+
+  // 이모지나 글자가 아니라 선 그림이다(폰의 것과 같은 인상을 주는 유일한 방법이고, 차 화면의
+  // 글꼴이 무엇이든 같게 보인다). 최근=세로줄 셋, 홈=원, 뒤로=꺾인 선.
+  for (const id of ['#btn-recents', '#btn-home', '#bar button[data-key=back]']) {
+    await expect(page.locator(`${id} svg`)).toHaveCount(1);
+    expect((await page.locator(id).innerText()).trim()).toBe('');
+  }
+  expect(await page.locator('#btn-recents svg path').getAttribute('d')).toMatch(/^M5.5 5.5v13M12 5.5v13M18.5 5.5v13$/);
+  await expect(page.locator('#btn-home svg circle')).toHaveCount(1);
+
+  // 상자에 들어 있지 않다: 테두리를 두르면 우리 버튼처럼 보이고, 폰의 막대와 달라진다.
+  const border = await page.locator('#btn-home').evaluate((e) => getComputedStyle(e).borderTopWidth);
+  expect(border).toBe('0px');
+});
+
 test('◀ 는 폰으로 가고, ● 홈은 **키를 보내지 않는다**', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);

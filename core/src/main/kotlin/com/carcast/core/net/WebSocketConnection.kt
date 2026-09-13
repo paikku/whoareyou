@@ -48,10 +48,29 @@ class WebSocketConnection(
         return queue.offer(Outgoing(if (text) OP_TEXT else OP_BINARY, payload))
     }
 
-    /** Blocking enqueue for control/status messages that must not be dropped. */
-    fun send(payload: ByteArray, text: Boolean = false) {
-        if (closed) return
-        queue.put(Outgoing(if (text) OP_TEXT else OP_BINARY, payload))
+    /**
+     * Enqueue something that must not be dropped (the init segment, a status line). Returns false when
+     * this socket could not take it within [SEND_WAIT_MS] — and then closes it.
+     *
+     * This used to be an unbounded `queue.put`, and that is how the server died. A car whose TCP window
+     * has closed (a Wi-Fi hiccup, the Tesla browser busy) stops draining; the queue fills; the next init
+     * segment — and the encoder emits one on **every app start** — parked the encoder's output thread on
+     * that one socket, holding EncodedH264Sink's monitor, until TCP finally gave up minutes later. The
+     * picture froze for everybody while /api/status kept answering, which is exactly what "가끔 서버가
+     * 죽는다" looks like from the car. A socket this far behind has nothing to gain from the wait anyway:
+     * it is 64 frames late, so we drop it and let it reconnect — attach() hands a fresh client the init
+     * segment and the last keyframe, which is a better picture than the one it was going to get.
+     */
+    fun send(payload: ByteArray, text: Boolean = false): Boolean {
+        if (closed) return false
+        val queued = try {
+            queue.offer(Outgoing(if (text) OP_TEXT else OP_BINARY, payload), SEND_WAIT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!queued) close()
+        return queued
     }
 
     fun sendText(s: String) = send(s.toByteArray(), text = true)
@@ -166,6 +185,9 @@ class WebSocketConnection(
         finished = true
         closed = true
         try { socket.close() } catch (_: IOException) {}
+        // Whatever is still queued has nowhere to go, and anything waiting for room in send() should
+        // stop waiting now rather than at the end of its timeout.
+        queue.clear()
         listener?.onClose(this)
     }
 
@@ -177,6 +199,11 @@ class WebSocketConnection(
         private const val OP_PING = 0x9
         private const val OP_PONG = 0xA
         private const val MAX_MESSAGE = 1L shl 20
+        /**
+         * How long [send] waits for room. Long enough that a momentary hiccup keeps its connection,
+         * short enough that the encoder thread is never held by one car: at 30fps this is ~8 frames.
+         */
+        private const val SEND_WAIT_MS = 250L
         private const val GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
         fun acceptKey(clientKey: String): String {
