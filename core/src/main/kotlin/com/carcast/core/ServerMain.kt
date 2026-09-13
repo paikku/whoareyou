@@ -60,7 +60,7 @@ object ServerMain {
         startApp: ((String, String) -> Map<String, Any?>)? = null,
         control: ((ControlMessage) -> Unit)? = null,
         onControlGone: (() -> Unit)? = null,
-        extraApi: ((String, String, Map<String, String>) -> String?)? = null,
+        extraApi: ((String, String, Map<String, String>, String) -> String?)? = null,
         onStopped: () -> Unit = {},
         onReady: ((StreamSession) -> Unit)? = null,
     ) {

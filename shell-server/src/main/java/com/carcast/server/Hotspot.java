@@ -1,0 +1,455 @@
+package com.carcast.server;
+
+import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.util.Settings;
+import com.genymobile.scrcpy.util.SettingsException;
+
+import android.content.Context;
+
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Turns the phone's Wi-Fi hotspot on and off, so the app can do "everything off" (and back on) in one
+ * press instead of sending the user into Settings while the car waits.
+ *
+ * Why here and not in the app: there is no public API for the *tethered* hotspot. The app uid has only
+ * {@code WifiManager.startLocalOnlyHotspot}, whose SSID and password are random on every call — the car
+ * would have to be re-paired each time, which defeats the point. The tethered hotspot is behind
+ * {@code android.net.TetheringManager} (@SystemApi, so reflection) and {@code TETHER_PRIVILEGED}, which the
+ * Shell package holds and we run as. Same reason the rest of this process exists.
+ *
+ * {@code cmd wifi start-softap} is not an option either: WifiShellCommand refuses every privileged command
+ * unless the caller is root, and uid 2000 is not.
+ *
+ * Carrier locks: {@code setExemptFromEntitlementCheck(true)} plus clearing {@code tether_dun_required} is what
+ * Castla found necessary on carrier-locked Samsung devices (docs/prior-art.md §4); without them a carrier
+ * build answers the request with TETHER_ERROR_PROVISIONING_FAILED. Both are best effort and reported.
+ *
+ * Everything here is reflection against hidden API, so every step reports what it did: a device that
+ * refuses must say so in /api/hotspot rather than look like a hotspot that did not come up.
+ */
+final class Hotspot {
+    /** TetheringManager.TETHERING_WIFI. */
+    private static final int TETHERING_WIFI = 0;
+    /** WifiManager.WIFI_AP_STATE_* (hidden constants, stable since Android 4). */
+    private static final int WIFI_AP_STATE_ENABLING = 12;
+    private static final int WIFI_AP_STATE_ENABLED = 13;
+    /** How long to wait for the tethering callback before answering "still pending". */
+    private static final long DEFAULT_WAIT_MS = 15_000;
+    private static final long MAX_WAIT_MS = 60_000;
+    /**
+     * Interface names a Wi-Fi AP is brought up on, when nothing else will tell us the state: swlan0 is
+     * Samsung's, ap0/softap0 are Qualcomm/AOSP, wlan1 is the second radio on dual-band devices.
+     */
+    private static final String[] AP_INTERFACES = {"swlan0", "softap0", "ap0", "wlan1"};
+
+    private Hotspot() {
+    }
+
+    /** The last thing start/stop did, so a failure survives long enough for the app to show it. */
+    private static volatile String lastAction = "";
+    private static volatile String lastError = "";
+
+    /**
+     * /api/status carries the hotspot on every request, and the app polls it twice a second while the car
+     * is watching. Reading the state enumerates every network interface, so a short cache keeps a status
+     * request from doing that work over and over; anything that changes the state clears it.
+     */
+    private static final long STATE_CACHE_MS = 750;
+    private static volatile State cachedState;
+    private static volatile long cachedAt;
+
+    /**
+     * The whole {@code /api/hotspot} endpoint, so the rule that matters lives next to what it protects
+     * rather than in a lambda nobody can call from a test.
+     *
+     * Loopback only for writes, exactly like {@code /api/stop}: the car reaches the phone *over* this
+     * hotspot, and so does anything else on it. Reads are open — the state is already visible to anyone
+     * who can see the SSID.
+     */
+    static String route(String method, Map<String, String> query, String remote) {
+        if (!"POST".equals(method)) {
+            return statusJson();
+        }
+        if (remote == null || !remote.startsWith("127.")) {
+            return "{\"ok\":false,\"error\":\"loopback only\"}";
+        }
+        String on = query == null ? null : query.get("on");
+        boolean wanted = !"0".equals(on) && !"false".equals(on);
+        return set(wanted, query == null ? null : query.get("wait"));
+    }
+
+    /** JSON for {@code GET /api/hotspot}. */
+    static String statusJson() {
+        return json(info());
+    }
+
+    static Map<String, Object> info() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        State s = state();
+        m.put("on", s.on);
+        m.put("known", s.known);
+        m.put("via", s.via);
+        m.put("interfaces", s.interfaces);
+        m.put("controllable", tetheringManager() != null);
+        if (!lastAction.isEmpty()) {
+            m.put("lastAction", lastAction);
+        }
+        if (!lastError.isEmpty()) {
+            m.put("lastError", lastError);
+        }
+        return m;
+    }
+
+    /**
+     * {@code POST /api/hotspot?on=0|1[&wait=<ms>]}. Blocks until the tethering callback answers (or the AP
+     * state agrees) so the caller can sequence the rest — turning the server off before the hotspot is
+     * actually down would leave the hotspot on with nothing able to turn it off.
+     */
+    static synchronized String set(boolean on, String waitSpec) {
+        long wait = DEFAULT_WAIT_MS;
+        if (waitSpec != null) {
+            try {
+                wait = Math.max(0, Math.min(MAX_WAIT_MS, Long.parseLong(waitSpec.trim())));
+            } catch (NumberFormatException ignored) {
+                // keep the default; a bad wait= is not worth failing the request over
+            }
+        }
+        lastAction = (on ? "start" : "stop") + " @" + System.currentTimeMillis();
+        lastError = "";
+        State before = freshState();
+        if (before.known && before.on == on) {
+            return reply(true, "already " + (on ? "on" : "off"), before);
+        }
+        Object tm = tetheringManager();
+        if (tm == null) {
+            lastError = "no tethering service";
+            return reply(false, "no tethering service (uid " + uid() + "; TETHER_PRIVILEGED is the shell's, not an app's)", before);
+        }
+        String detail;
+        try {
+            detail = on ? doStart(tm, wait) : doStop(tm, wait);
+        } catch (Throwable t) {
+            lastError = String.valueOf(t);
+            return reply(false, "reflection failed: " + t, freshState());
+        }
+        State after = freshState();
+        boolean ok = !after.known || after.on == on;
+        if (!ok) {
+            lastError = detail;
+        }
+        return reply(ok, detail, after);
+    }
+
+    // --- doing it -------------------------------------------------------------------------------
+
+    private static String doStart(Object tm, long waitMs) throws Exception {
+        String dun = clearDunRequirement();
+        Class<?> requestBuilder = Class.forName("android.net.TetheringManager$TetheringRequest$Builder");
+        Object builder = requestBuilder.getConstructor(int.class).newInstance(TETHERING_WIFI);
+        // Carrier entitlement: ask to skip the check and never to show its UI. A car is not a place to
+        // answer a provisioning dialog, and on an unlocked device both calls are no-ops.
+        String exempt = optional(requestBuilder, builder, "setExemptFromEntitlementCheck", true);
+        String noUi = optional(requestBuilder, builder, "setShouldShowEntitlementUi", false);
+        Object request = requestBuilder.getMethod("build").invoke(builder);
+
+        Class<?> callbackClass = Class.forName("android.net.TetheringManager$StartTetheringCallback");
+        final CountDownLatch done = new CountDownLatch(1);
+        final String[] outcome = {"no callback"};
+        Object callback = Proxy.newProxyInstance(callbackClass.getClassLoader(), new Class<?>[]{callbackClass},
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "onTetheringStarted":
+                            outcome[0] = "started";
+                            done.countDown();
+                            break;
+                        case "onTetheringFailed":
+                            outcome[0] = "failed error=" + (args != null && args.length > 0 ? args[0] : "?");
+                            done.countDown();
+                            break;
+                        default:
+                            // equals/hashCode/toString reach the proxy too; answer them sanely.
+                            if ("toString".equals(method.getName())) {
+                                return "HotspotCallback";
+                            }
+                            if ("hashCode".equals(method.getName())) {
+                                return System.identityHashCode(proxy);
+                            }
+                            if ("equals".equals(method.getName())) {
+                                return proxy == (args == null ? null : args[0]);
+                            }
+                            break;
+                    }
+                    return null;
+                });
+        Method start = tm.getClass().getMethod("startTethering", request.getClass(), Executor.class, callbackClass);
+        Executor direct = Runnable::run;
+        start.invoke(tm, request, direct, callback);
+        done.await(waitMs, TimeUnit.MILLISECONDS);
+        return "startTethering: " + outcome[0] + "; entitlement: " + exempt + ", " + noUi + "; dun: " + dun;
+    }
+
+    private static String doStop(Object tm, long waitMs) throws Exception {
+        // stopTethering(int) has no callback; poll the state instead so the caller learns when it is really down.
+        tm.getClass().getMethod("stopTethering", int.class).invoke(tm, TETHERING_WIFI);
+        long deadline = System.currentTimeMillis() + waitMs;
+        State s = freshState();
+        while (s.known && s.on && System.currentTimeMillis() < deadline) {
+            Thread.sleep(250);
+            s = freshState();
+        }
+        return "stopTethering: " + (s.known ? (s.on ? "still up after " + waitMs + "ms" : "down") : "state unknown");
+    }
+
+    /**
+     * Carrier builds gate tethering behind a DUN provisioning check; clearing the global flag is what makes
+     * the entitlement exemption stick on them. Shell may write global settings; if a ROM refuses, say so and
+     * carry on — on an unlocked device the flag is already 0.
+     */
+    private static String clearDunRequirement() {
+        try {
+            String was = Settings.getAndPutValue(Settings.TABLE_GLOBAL, "tether_dun_required", "0");
+            return "tether_dun_required was " + (was == null || was.isEmpty() ? "unset" : was);
+        } catch (SettingsException e) {
+            return "could not clear tether_dun_required (" + e.getMessage() + ")";
+        }
+    }
+
+    /** A builder setter that may not exist on this ROM: its absence is worth reporting, never fatal. */
+    private static String optional(Class<?> cls, Object target, String name, boolean value) {
+        try {
+            cls.getMethod(name, boolean.class).invoke(target, value);
+            return name + "=" + value;
+        } catch (ReflectiveOperationException e) {
+            return name + " unavailable (" + e.getClass().getSimpleName() + ")";
+        }
+    }
+
+    // --- reading the state ----------------------------------------------------------------------
+
+    /** What we could find out about the AP, and which of the three ways answered. */
+    static final class State {
+        final boolean on;
+        final boolean known;
+        final String via;
+        final List<String> interfaces;
+
+        State(boolean on, boolean known, String via, List<String> interfaces) {
+            this.on = on;
+            this.known = known;
+            this.via = via;
+            this.interfaces = interfaces;
+        }
+    }
+
+    /**
+     * Three sources, best first. None of them is guaranteed on every ROM, so the answer carries which one
+     * spoke: "the hotspot is off" and "nobody would tell us" are different things to a caller about to
+     * shut the server down.
+     */
+    static State state() {
+        State cached = cachedState;
+        if (cached != null && System.currentTimeMillis() - cachedAt < STATE_CACHE_MS) {
+            return cached;
+        }
+        return freshState();
+    }
+
+    /** Reads the phone rather than the cache: for the moments when the answer is about to change. */
+    private static synchronized State freshState() {
+        State s = readState();
+        cachedState = s;
+        cachedAt = System.currentTimeMillis();
+        return s;
+    }
+
+    private static State readState() {
+        List<String> ifaces = apInterfaces();
+        Integer apState = wifiApState();
+        if (apState != null) {
+            boolean on = apState == WIFI_AP_STATE_ENABLED || apState == WIFI_AP_STATE_ENABLING;
+            return new State(on, true, "getWifiApState=" + apState, ifaces);
+        }
+        String[] tethered = tetheredIfaces();
+        if (tethered != null) {
+            return new State(tethered.length > 0, true, "getTetheredIfaces=" + tethered.length, ifaces);
+        }
+        if (!ifaces.isEmpty()) {
+            return new State(true, true, "interface " + ifaces.get(0), ifaces);
+        }
+        return new State(false, false, "unknown", ifaces);
+    }
+
+    private static Integer wifiApState() {
+        try {
+            Object wifi = FakeContext.get().getSystemService(Context.WIFI_SERVICE);
+            if (wifi == null) {
+                return null;
+            }
+            Object v = wifi.getClass().getMethod("getWifiApState").invoke(wifi);
+            return v instanceof Integer ? (Integer) v : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static String[] tetheredIfaces() {
+        try {
+            Object cm = FakeContext.get().getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return null;
+            }
+            Object v = cm.getClass().getMethod("getTetheredIfaces").invoke(cm);
+            return v instanceof String[] ? (String[]) v : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Up AP-looking interfaces that carry an IPv4 address — the last resort, and the one no ROM can refuse. */
+    private static List<String> apInterfaces() {
+        List<String> out = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> e = NetworkInterface.getNetworkInterfaces();
+            while (e != null && e.hasMoreElements()) {
+                NetworkInterface ni = e.nextElement();
+                String name = ni.getName().toLowerCase(Locale.US);
+                boolean looksLikeAp = false;
+                for (String candidate : AP_INTERFACES) {
+                    if (name.equals(candidate)) {
+                        looksLikeAp = true;
+                        break;
+                    }
+                }
+                if (!looksLikeAp || !ni.isUp()) {
+                    continue;
+                }
+                for (InetAddress a : Collections.list(ni.getInetAddresses())) {
+                    if (a instanceof Inet4Address && !a.isLoopbackAddress()) {
+                        out.add(ni.getName() + "=" + a.getHostAddress());
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            // A phone that will not enumerate its interfaces tells us nothing; that is what "unknown" is for.
+        }
+        return out;
+    }
+
+    /** Diagnostics must never be the thing that throws: off a device there is no Process to ask. */
+    private static String uid() {
+        try {
+            return String.valueOf(android.os.Process.myUid());
+        } catch (Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private static volatile Object tetheringService;
+    private static volatile boolean tetheringLookedUp;
+
+    /** The service handle does not change for the life of the process, and the lookup is a binder call. */
+    private static Object tetheringManager() {
+        if (!tetheringLookedUp) {
+            synchronized (Hotspot.class) {
+                if (!tetheringLookedUp) {
+                    try {
+                        tetheringService = FakeContext.get().getSystemService("tethering");
+                    } catch (Throwable t) {
+                        tetheringService = null;
+                    }
+                    tetheringLookedUp = true;
+                }
+            }
+        }
+        return tetheringService;
+    }
+
+    // --- JSON -----------------------------------------------------------------------------------
+
+    private static String reply(boolean ok, String detail, State s) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("ok", ok);
+        m.put("detail", detail);
+        m.put("on", s.on);
+        m.put("known", s.known);
+        m.put("via", s.via);
+        m.put("interfaces", s.interfaces);
+        m.put("controllable", tetheringManager() != null);
+        if (!lastError.isEmpty()) {
+            m.put("lastError", lastError);
+        }
+        return json(m);
+    }
+
+    private static String json(Map<String, Object> m) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Object> e : m.entrySet()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append(quote(e.getKey())).append(':').append(value(e.getValue()));
+        }
+        return sb.append('}').toString();
+    }
+
+    private static String value(Object v) {
+        if (v == null) {
+            return "null";
+        }
+        if (v instanceof Boolean || v instanceof Number) {
+            return String.valueOf(v);
+        }
+        if (v instanceof List) {
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (Object o : (List<?>) v) {
+                if (!first) {
+                    sb.append(',');
+                }
+                first = false;
+                sb.append(value(o));
+            }
+            return sb.append(']').toString();
+        }
+        return quote(String.valueOf(v));
+    }
+
+    private static String quote(String s) {
+        StringBuilder sb = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"': sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format(Locale.US, "\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        return sb.append('"').toString();
+    }
+}

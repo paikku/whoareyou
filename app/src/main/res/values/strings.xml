@@ -41,4 +41,15 @@
     <string name="copy_log">로그 복사</string>
     <string name="clear_log">로그 지우기</string>
     <string name="copied">로그 %1$d줄을 클립보드에 복사했습니다</string>
+    <string name="bulk_on">일괄 켜기 (VPN → 서버 → 핫스팟)</string>
+    <string name="bulk_off">일괄 끄기 (핫스팟 → 서버 → VPN)</string>
+    <string name="bulk_on_progress">일괄 켜는 중… (VPN → 서버 → 핫스팟)</string>
+    <string name="bulk_off_progress">일괄 끄는 중… (핫스팟 → 서버 → VPN)</string>
+    <string name="bulk_off_confirm">핫스팟, shell 서버, VPN 주소를 순서대로 모두 끕니다. 차에서 보고 있다면 화면이 끊깁니다. 끌까요?</string>
+    <string name="bulk_on_warn_none">TCP 모드도 USB 디버깅도 꺼져 있습니다. 핫스팟을 켜면 Wi-Fi가 끊기면서 서버가 adbd와 함께 종료될 수 있습니다. \'TCP 모드\'를 먼저 켜 두는 것을 권합니다. 그래도 진행할까요?</string>
+    <string name="hotspot_settings">핫스팟 설정 열기</string>
+    <string name="widget_title">CarCast</string>
+    <string name="widget_detail">VPN %1$s  서버 %2$s  핫스팟 %3$s</string>
+    <string name="widget_description">핫스팟·서버·VPN을 한 번에 켜고 끄는 스위치</string>
+    <string name="widget_toggle_description">CarCast 일괄 켜기/끄기</string>
 </resources>

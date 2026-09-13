@@ -346,12 +346,9 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private fun newTcpPort(): Int = 30_000 + java.security.SecureRandom().nextInt(15_000)
 
     /** Cheap gate: is anything listening there? A full adb handshake is far too slow for the poll loop. */
-    private fun portOpen(port: Int): Boolean = runCatching {
-        java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), PORT_PROBE_MS) }
-        true
-    }.getOrDefault(false)
+    private fun portOpen(port: Int): Boolean = probe(port)
 
-    private fun tcpModeReachable(): Boolean = prefs.tcpModeOptIn && prefs.tcpPort > 0 && portOpen(prefs.tcpPort)
+    private fun tcpModeReachable(): Boolean = tcpModeReachable(context)
 
     /** The /api/status body when a server answers on loopback, else null. */
     private fun serverStatus(): String? = try {
@@ -385,6 +382,21 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         private const val TCP_MODE_WAIT_S = 20
         private const val TCP_MODE_MAX_TRIES = 2
         private const val SERVER_DIR = "/data/local/tmp/carcast"
+
+        /**
+         * Is adbd listening on the TCP-mode port right now? The port number alone proves nothing — a reboot
+         * or a "TCP 모드 끄기" leaves the number behind — so this dials it. Shared with the bulk on/off
+         * sequence, which has to know whether the server can be brought back after Wi-Fi drops.
+         */
+        fun tcpModeReachable(context: Context): Boolean {
+            val prefs = AdbPrefs(context)
+            return prefs.tcpModeOptIn && prefs.tcpPort > 0 && probe(prefs.tcpPort)
+        }
+
+        private fun probe(port: Int): Boolean = runCatching {
+            java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), PORT_PROBE_MS) }
+            true
+        }.getOrDefault(false)
 
         /** Kill switch: asks the server (whoever started it) to exit. Loopback only, so only this phone can. */
         fun stopServer(): String = try {

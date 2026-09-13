@@ -18,6 +18,7 @@ import com.carcast.adb.ShellServerLink
 import com.carcast.core.Assets
 import com.carcast.core.StreamSession
 import com.carcast.ui.MainActivity
+import com.carcast.widget.CarCastWidget
 import com.carcast.vpn.CarVpnService
 import java.io.IOException
 import java.io.InputStream
@@ -51,6 +52,30 @@ class StreamService : Service() {
             if (running) shellLink?.reconnect()
             return START_STICKY
         }
+        if (intent?.action == ACTION_ALL_OFF) {
+            // The press may come from the widget with no session running at all, so take the foreground
+            // first: the sequence talks to the radio and can take tens of seconds, and a background service
+            // would be killed halfway, leaving the hotspot up with nothing able to switch it off.
+            startForeground(NOTIF_ID, buildNotification(getString(R.string.bulk_off_progress)), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            runBulk {
+                // A refused press (one already running) must not take the service down under the sequence
+                // that is still running — it only puts the notification back.
+                if (BulkControl.allOff(::log) { stopSession() }) stopSelf() else notifyRunning()
+            }
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_ALL_ON) {
+            useVpn = intent.getBooleanExtra(EXTRA_USE_VPN, useVpn)
+            serverInApp = intent.getBooleanExtra(EXTRA_SERVER_IN_APP, serverInApp)
+            startForeground(NOTIF_ID, buildNotification(getString(R.string.bulk_on_progress)), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            runBulk {
+                BulkControl.allOn(this, ::log) { startSession() }
+                // Back to the standing notification, whatever the sequence managed.
+                notifyRunning()
+            }
+
+            return START_STICKY
+        }
         useVpn = intent?.getBooleanExtra(EXTRA_USE_VPN, true) ?: true
         serverInApp = intent?.getBooleanExtra(EXTRA_SERVER_IN_APP, false) ?: false
         startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -58,9 +83,32 @@ class StreamService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Runs a bulk sequence off the main thread. Whether it runs at all is [BulkControl]'s to decide — the
+     * claim has to be atomic, and a check here would be a second, racier one.
+     */
+    private fun runBulk(body: () -> Unit) {
+        Thread({
+            try {
+                body()
+            } catch (t: Throwable) {
+                log("일괄 동작 실패: $t")
+            } finally {
+                CarCastWidget.refresh(this)
+            }
+        }, "bulk").apply { isDaemon = true }.start()
+    }
+
+    private fun notifyRunning() {
+        runCatching {
+            getSystemService(android.app.NotificationManager::class.java).notify(NOTIF_ID, buildNotification())
+        }
+    }
+
     private fun startSession() {
         if (running) return
         running = true
+        CarCastWidget.refresh(this)
         if (useVpn) startService(Intent(this, CarVpnService::class.java)) else log("VPN 없이 시작 (핫스팟 주소로만 접속 가능)")
         if (serverInApp) {
             val s = StreamSession(
@@ -92,6 +140,7 @@ class StreamService : Service() {
         inApp?.stop(); inApp = null
         startService(Intent(this, CarVpnService::class.java).setAction(CarVpnService.ACTION_STOP))
         shellStatus = null
+        CarCastWidget.refresh(this)
         log("세션 종료 (shell 서버는 그대로 둠 — 끄려면 '서버 종료')")
     }
 
@@ -108,12 +157,15 @@ class StreamService : Service() {
                     "서버 응답 확인: process=${j?.optString("process")} uid=${j?.opt("uid") ?: "?"} build=${j?.optString("build")} source=${j?.optString("source")}"
                 } else "서버 응답 없음 (127.0.0.1:${Config.HTTP_PORT})"
             )
+            // The home screen switch reads the same state, so push it the moment it changes rather than
+            // letting the widget poll on its own (a widget has no process of its own to poll from).
+            if (up != wasUp) CarCastWidget.refresh(this)
             wasUp = up
             try { Thread.sleep(2000) } catch (_: InterruptedException) { return }
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String? = null): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
@@ -123,7 +175,7 @@ class StreamService : Service() {
         return NotificationCompat.Builder(this, CarCastApp.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_cast)
             .setContentTitle(getString(R.string.notif_title))
-            .setContentText(getString(R.string.notif_text, Config.TUN_ADDRESS, Config.HTTP_PORT))
+            .setContentText(text ?: getString(R.string.notif_text, Config.TUN_ADDRESS, Config.HTTP_PORT))
             .setContentIntent(open)
             .addAction(0, getString(R.string.stop), stop)
             .setOngoing(true)
@@ -149,6 +201,9 @@ class StreamService : Service() {
         const val ACTION_STOP = "com.carcast.service.STOP"
         /** Sent after pairing so the running session connects right away instead of waiting out its backoff. */
         const val ACTION_CONNECT = "com.carcast.service.CONNECT"
+        /** One press for the lot — see [BulkControl] for why the order of the three steps is not a preference. */
+        const val ACTION_ALL_ON = "com.carcast.service.ALL_ON"
+        const val ACTION_ALL_OFF = "com.carcast.service.ALL_OFF"
         const val EXTRA_USE_VPN = "useVpn"
         const val EXTRA_SERVER_IN_APP = "serverInApp"
 

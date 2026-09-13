@@ -73,6 +73,9 @@ dependencies {
     implementation(libs.material)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
+    // The real org.json, not the android.jar stub that throws "not mocked": the bulk sequence parses the
+    // server's replies, and a test that cannot parse them could not check the order the steps run in.
+    testImplementation(libs.json)
 }
 
 // Build the web client into assets/web before packaging. Skip with -PskipWeb.

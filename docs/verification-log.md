@@ -33,6 +33,10 @@
 | — | `persist.adb.tcp.port`를 shell이 설정할 수 있어 재부팅 후에도 adbd가 포트를 연다 | ❌ **막힘 (2026-09-05 실측)**: `Failed to set property 'persist.adb.tcp.port' to '36788'. See dmesg for error reason.` — 2회 모두 동일. **콜드 부팅 후 Wi-Fi 1회는 남는다**(Tesor·Castla와 동일) | B | [hotspot-only.md](hotspot-only.md) §3 |
 | — | 테소르(Tesor)가 Wi-Fi 없이 동작한다 | ❌ 테소르는 Shizuku 위에서 돈다(설치 안내 2단계). 비루팅 Shizuku는 재부팅 시 종료되고 무선 디버깅 = Wi-Fi로만 다시 시작된다 — 같은 제약 | 문헌 | [hotspot-only.md](hotspot-only.md) §1.4 |
 
+| — | **앱에서 핫스팟을 켜고 끌 수 있다** (`TetheringManager.startTethering/stopTethering`, shell uid) | ⏳ **미실시 (실기기 필요)**. 근거: Shell 패키지가 `TETHER_PRIVILEGED`·`WRITE_SETTINGS` 를 가지며(AOSP 매니페스트), Castla 가 같은 uid(Shizuku)에서 같은 호출로 핫스팟을 자동 토글한다(prior-art §4). `cmd wifi start-softap` 은 **root 전용**이라(WifiShellCommand) uid 2000 으로는 불가 — 이 길은 없다 | B | §1 아래 주 |
+| — | 통신사 잠금 기기에서 entitlement 를 우회할 수 있다 (`setExemptFromEntitlementCheck(true)` + `tether_dun_required=0`) | ⏳ **미실시**. Castla 가 "Samsung/carrier-locked 기기에 필수"로 적어 둔 것을 그대로 따랐다. 실패하면 `/api/hotspot` 의 `detail` 에 `TETHER_ERROR_PROVISIONING_FAILED` 가 남는다 | B | — |
+| — | 핫스팟 켜짐/꺼짐을 읽을 수 있다 (`getWifiApState` → `getTetheredIfaces` → 인터페이스 이름) | ⏳ 세 경로 중 **무엇이 답했는지**를 `via` 로 남긴다. 셋 다 실패하면 `known=false` 이고, 그때는 "꺼짐"이라 하지 않는다 | B | — |
+
 **설계에 반영된 결론:** 가정 1의 조건 때문에 HTTP/WS 서버는 앱이 아니라 shell 프로세스에서 돈다
 ([dev-plan.md 아키텍처 3항](dev-plan.md)). 앱은 tun 주소 유지·페어링·기동·UI만 맡는다.
 
@@ -57,6 +61,10 @@
 | `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합, `POST /api/report` 저장·비JSON 거부·256KB 초과 413·`GET /api/reports`·status의 `lastReport` |
 | `core` | `ControlMessageTest` | 웹 터치/키/텍스트 패킷 파싱(정규화 좌표, UTF-8), 잘린·미지 패킷 거부 |
 | `core` | `EncodedH264SinkTest` | 인코더 출력(config 버퍼 + Annex-B AU, 원본 .h264에서 추출) → init 세그먼트 1개 + 프레임당 moof/mdat 1개, 첫 패킷 TYPE_KEY, pts 유지, SPS/PPS 인라인 키프레임만으로도 부트스트랩 |
+| `shell-server` | `HotspotTest` | `/api/hotspot` 의 loopback 규칙(차에서 온 POST 거부, GET 은 허용), 그리고 **아무도 답하지 않을 때 `known=false`** — "꺼짐"으로 단정하지 않는 것 |
+| `app` | `BulkControlTest` | 일괄 끄기의 **순서**(핫스팟 → 서버 → 세션)를 가짜 loopback 서버로 확인. 이미 꺼져 있으면 건너뛰고, 모르면 그래도 시도하고, 서버가 없으면 껐다고 말하지 않는다 |
+| `app` | `CarCastWidgetTest` | 위젯 스위치: 끄기는 VPN 동의를 기다리지 않고, 켜기는 동의 없이 시작하지 않는다. 세션만 살고 서버가 죽은 상태를 "켜짐"으로 보이지 않는다 |
+| `core` | `ExtraApiRemoteTest` | 호스트가 더한 `/api` 경로에 **호출자 주소가 전달**된다 (loopback 전용 규칙이 성립하는 전제). null 반환 시 코어 경로로 넘어간다 |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
@@ -409,6 +417,9 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 ---
 
 ## 5. 열린 질문 (다음 검증 대상)
+0. **핫스팟 일괄 제어(B):** 실기기에서 `POST /api/hotspot?on=1` 이 실제로 AP 를 올리는지, 그때 `via` 가 무엇인지,
+   통신사 entitlement 우회가 필요했는지. 그리고 **핫스팟을 켠 뒤 서버가 살아남는지** — TCP 모드가 켜진 폰에서는
+   살아야 하고(§3.8), 아니면 §3.5 대로 죽는다. 절차: 앱의 "일괄 켜기" 한 번 → 로그의 `1/3 · 2/3 · 3/3` 줄.
 1. 차 브라우저에서 `100.64/10` 대역이 실제로 열리는지, MSE H.264 디코드 fps (가정 2).
 2. ~~M0: One UI 8에서 shell의 VD 생성·`--start-app`·`display_ime_policy=local`·오디오 소스 선택 (가정 3·4).~~ 완료 → car-tests/s26u-one-ui-8.md
 3. ~~M3: Kadb 2.1.1 `pair`/`connect`, NsdManager `_adb-tls-pairing`/`_adb-tls-connect`, 데몬화한 서버의 수명(Shizuku #1125류).~~ 완료 → §3.4, §3.5. 남은 것: 재부팅 후 포트 재발견, "서버 종료" 킬 스위치.

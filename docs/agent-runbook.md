@@ -101,6 +101,29 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 활성유지N idleN`. 이 한 줄이 "기기가 잠든 것 / 패널만 꺼진 것 / 유휴 블랭킹"을 가른다. 이 줄이 없으면
 옛 빌드이므로 먼저 APK 부터 올린다(리포트 #26·#27 을 그것 때문에 가리지 못했다).
 
+### 일괄 켜기·끄기 와 바탕화면 위젯 (핫스팟·서버·VPN 을 한 번에)
+
+셋은 독립적이지 않고, **순서가 취향이 아니라 제약**이다. 핫스팟을 바꿀 수 있는 것은 shell 서버뿐이므로
+(앱 uid 에는 테더링 핫스팟 API 가 없다 — `startLocalOnlyHotspot` 은 SSID·비밀번호가 매번 바뀌어 차가 다시
+못 붙는다), 서버를 먼저 죽이면 **핫스팟을 끌 수 있는 것이 아무것도 남지 않는다.**
+
+- 끄기: **핫스팟 → 서버 → 세션(VPN)**, 켜기: **세션 → 서버 → 핫스팟**
+- 서버: `Hotspot.java` — `TetheringManager.startTethering/stopTethering` 리플렉션,
+  `setExemptFromEntitlementCheck(true)` + `tether_dun_required=0`(통신사 잠금 우회, Castla 가 찾은 것).
+  `POST /api/hotspot` 은 **loopback 전용** — 차는 그 핫스팟을 타고 들어오므로 자기 발밑을 끊게 둘 수 없다
+- 앱: `BulkControl.kt`(순서와 그 이유), `StreamService.ACTION_ALL_ON/ALL_OFF`, `CarCastWidget.kt`
+- 상태: `/api/status.hotspot` 의 `on` `known` `via` `controllable` — **`known=false` 는 "꺼짐"이 아니라
+  "아무도 답해 주지 않았다"** 이다. 이 둘을 섞으면 일괄 끄기가 1단계를 건너뛰고 핫스팟을 켜 둔 채 서버를 죽인다
+- 검사: `tests/device/tests/08-hotspot.test.mjs`(엔드포인트·위젯 등록), 단위 `HotspotTest`(loopback 규칙,
+  모르는 상태), `BulkControlTest`(끄기 순서), `CarCastWidgetTest`(스위치가 언제 켜져 보이나)
+
+**위험 하나:** TCP 모드도 USB 디버깅도 꺼져 있으면 핫스팟을 켜는 순간 Wi-Fi 가 끊기고 adbd 와 함께 서버가
+cgroup 째 SIGKILL 된다(§3.5). `BulkControl.precondition()` 이 그 셋 중 무엇인지 먼저 말하고, 앱은 경고를
+띄우되 **막지는 않는다** — TCP 모드가 켜진 폰에서는 이게 매일 쓰는 정상 경로다.
+
+**에뮬레이터에는 진짜 AP 가 없다.** 여기서 보는 것은 "엔드포인트가 있고, 모르는 것을 안다고 하지 않고,
+핫스팟 요청이 서버를 죽이지 않는다"까지다. "핫스팟이 실제로 켜졌다"와 통신사 entitlement 는 B(실기기) 몫이다.
+
 ## 4. 새 상황을 추가하는 법
 
 `tests/e2e/tests/lifecycle/actions.ts` 에 동작 하나를 더하면 시나리오와 무작위 탐색 양쪽에 자동으로 들어간다.
