@@ -62,10 +62,10 @@
 | `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합, `POST /api/report` 저장·비JSON 거부·256KB 초과 413·`GET /api/reports`·status의 `lastReport` |
 | `core` | `ControlMessageTest` | 웹 터치/키/텍스트 패킷 파싱(정규화 좌표, UTF-8), 잘린·미지 패킷 거부 |
 | `core` | `EncodedH264SinkTest` | 인코더 출력(config 버퍼 + Annex-B AU, 원본 .h264에서 추출) → init 세그먼트 1개 + 프레임당 moof/mdat 1개, 첫 패킷 TYPE_KEY, pts 유지, SPS/PPS 인라인 키프레임만으로도 부트스트랩 |
-| `shell-server` | `HotspotTest` | `/api/hotspot` 의 loopback 규칙(차에서 온 POST 거부, GET 은 허용), 그리고 **아무도 답하지 않을 때 `known=false`** — "꺼짐"으로 단정하지 않는 것 |
-| `app` | `BulkControlTest` | 일괄 끄기의 **순서**(핫스팟 → 서버 → 세션)를 가짜 loopback 서버로 확인. 이미 꺼져 있으면 건너뛰고, 모르면 그래도 시도하고, 서버가 없으면 껐다고 말하지 않는다 |
-| `app` | `CarCastWidgetTest` | 위젯 스위치: 끄기는 VPN 동의를 기다리지 않고, 켜기는 동의 없이 시작하지 않는다. 세션만 살고 서버가 죽은 상태를 "켜짐"으로 보이지 않는다 |
-| `core` | `ExtraApiRemoteTest` | 호스트가 더한 `/api` 경로에 **호출자 주소가 전달**된다 (loopback 전용 규칙이 성립하는 전제). null 반환 시 코어 경로로 넘어간다 |
+| `shell-server` | `HotspotTest` | **아무도 답하지 않을 때 `known=false`** — "꺼짐"으로 단정하지 않는 것, `via` 로 무엇이 답했는지 남기는 것, 그리고 옛 빌드의 쓰기 요청을 이유와 함께 거절하는 것 |
+| `app` | `BulkControlTest` | 일괄 끄기의 **순서**(서버 → 세션)를 가짜 loopback 서버로 확인 — 킬 스위치가 그 서버로 가는 요청이라 세션을 먼저 내리면 끌 방법이 사라진다. 핫스팟은 건드리지 않는다. 두 번 누르면 두 번째는 거절 |
+| `app` | `CarCastWidgetTest` | 위젯 스위치: 끄기는 VPN 동의를 기다리지 않고, 켜기는 동의 없이 시작하지 않는다. 세션만 살고 서버가 죽은 상태를 "켜짐"으로 보이지 않는다 (상태를 가진 쪽이 바뀔 때마다 다시 그려 주는 것은 `StreamService`·`CarVpnService` 의 몫) |
+| `core` | `ExtraApiTest` | 호스트가 더한 `/api` 경로가 요청을 받고 그 답이 서빙된다. null 을 주면 코어 경로로 넘어간다 — 호스트 경로가 `/api/status` 를 가려 버리면 차가 멈춘다 |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
@@ -418,7 +418,7 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 ---
 
 ## 5. 열린 질문 (다음 검증 대상)
-0. ~~**핫스팟을 앱에서 켤 수 있는가:**~~ **답 나옴 — 못 켠다.** 가상 폰(run #41·#42)과 S26U/One UI 8
+0. ~~**핫스팟을 앱에서 켤 수 있는가:**~~ **답 나옴 — 못 켠다. 바꾸는 코드는 제거했고(2026-09-13) 읽기만 남겼다.** 가상 폰(run #41·#42)과 S26U/One UI 8
    (2026-09-13, `d00a495`) 둘 다 면제 요청과 면제 없는 재시도 모두 `NO_CHANGE_TETHERING_PERMISSION(14)`.
    shell 에게는 `TETHER_PRIVILEGED` 가 없고 WRITE_SETTINGS 경로도 닫혀 있다(삼성 빌드는 프로비저닝 앱이
    설정돼 있어 `isTetherProvisioningRequired()` 가 참일 것으로 보인다 — 미확인). `cmd wifi start-softap` 은

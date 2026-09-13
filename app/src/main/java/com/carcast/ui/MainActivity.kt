@@ -20,6 +20,7 @@ import com.carcast.adb.AdbLink
 import com.carcast.adb.AdbPairingService
 import com.carcast.adb.AdbPrefs
 import com.carcast.service.BulkControl
+import com.carcast.service.HotspotState
 import com.carcast.service.NetDiag
 import com.carcast.service.SelfTest
 import com.carcast.service.StreamService
@@ -218,19 +219,19 @@ class MainActivity : AppCompatActivity() {
         }.apply { isDaemon = true }.start()
     }
 
-    /** The hotspot as the shell server sees it; "?" whenever nothing would say, which is not the same as off. */
+    /**
+     * The hotspot, which the user switches and we only report. "?" whenever nothing would say — not the
+     * same as off, and the difference matters when the car cannot reach the phone.
+     */
     private fun hotspotLine(statusJson: String?): String {
-        if (statusJson == null) return "서버 응답 없음"
-        val st = runCatching { JSONObject(statusJson) }.getOrNull() ?: return "상태를 읽지 못함"
-        // A server that answers but carries no hotspot block is an older build, not a phone without a hotspot.
-        val h = st.optJSONObject("hotspot") ?: return "이전 빌드의 서버 — 핫스팟 제어 없음"
-        // "This phone refuses us" is not "no server": it is final, and the only useful answer is the
-        // Settings screen — so say that, rather than an error code the driver cannot act on.
-        if (h.optBoolean("permissionDenied", false)) return getString(R.string.hotspot_no_permission)
-        if (!h.optBoolean("controllable", false)) return "제어 불가 (${h.optString("via")})"
-        val state = if (!h.optBoolean("known", false)) "알 수 없음" else if (h.optBoolean("on", false)) "켜짐" else "꺼짐"
-        val err = h.optString("lastError")
-        return state + " (" + h.optString("via") + ")" + if (err.isEmpty()) "" else "\n  마지막 오류: $err"
+        val state = when (HotspotState.on()) {
+            true -> "켜짐"
+            false -> "꺼짐 — 차가 붙으려면 설정에서 켜세요"
+            null -> "알 수 없음"
+        }
+        val via = runCatching { JSONObject(statusJson ?: return state).optJSONObject("hotspot")?.optString("via") }
+            .getOrNull().orEmpty()
+        return if (via.isEmpty()) state else "$state ($via)"
     }
 
     /** One line about the newest report the car sent, from the /api/status JSON the service polls. */
@@ -278,24 +279,6 @@ class MainActivity : AppCompatActivity() {
      * take the server down with it is said out loud before it happens, not afterwards in the log.
      */
     private fun bulkOn() {
-        if (hotspotRefused()) {
-            androidx.appcompat.app.AlertDialog.Builder(this)
-                .setMessage(R.string.hotspot_no_permission_on)
-                .setPositiveButton(R.string.hotspot_settings) { _, _ -> openTetherSettings() }
-                .setNeutralButton(R.string.bulk_on) { _, _ -> startBulkOn() }
-                .setNegativeButton(android.R.string.cancel, null).show()
-            return
-        }
-        startBulkOn()
-    }
-
-    /** What the server last said about being allowed to switch the hotspot at all. */
-    private fun hotspotRefused(): Boolean = runCatching {
-        JSONObject(StreamService.shellStatus ?: return false)
-            .optJSONObject("hotspot")?.optBoolean("permissionDenied", false) == true
-    }.getOrDefault(false)
-
-    private fun startBulkOn() {
         val go: () -> Unit = {
             if (BulkControl.precondition(this) == BulkControl.Survival.NONE) {
                 androidx.appcompat.app.AlertDialog.Builder(this)

@@ -72,12 +72,8 @@ class StreamSession(
      */
     var onControlGone: () -> Unit = {}
 
-    /**
-     * Extra /api endpoints from the host process (e.g. /api/screen); return JSON or null for "not mine".
-     * [remote] is the caller's address, so a host route can be loopback-only the way /api/stop is —
-     * the car is on the hotspot and must not be able to switch that hotspot off underneath itself.
-     */
-    var extraApi: ((method: String, path: String, query: Map<String, String>, remote: String) -> String?)? = null
+    /** Extra /api endpoints from the host process (e.g. /api/screen); return JSON or null for "not mine". */
+    var extraApi: ((method: String, path: String, query: Map<String, String>) -> String?)? = null
 
     private fun event(s: String) { Log.i(TAG, s); onEvent(s) }
 
@@ -159,7 +155,7 @@ class StreamSession(
     }
 
     private fun onApi(method: String, path: String, query: Map<String, String>, body: ByteArray, remote: String): String? {
-        extraApi?.invoke(method, path, query, remote)?.let { return it }
+        extraApi?.invoke(method, path, query)?.let { return it }
         return onCoreApi(method, path, query, body, remote)
     }
 

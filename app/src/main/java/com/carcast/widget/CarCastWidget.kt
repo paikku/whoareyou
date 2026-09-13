@@ -10,6 +10,7 @@ import android.net.VpnService
 import android.widget.RemoteViews
 import com.carcast.R
 import com.carcast.service.BulkControl
+import com.carcast.service.HotspotState
 import com.carcast.service.StreamService
 import com.carcast.ui.MainActivity
 import com.carcast.vpn.CarVpnService
@@ -120,9 +121,10 @@ class CarCastWidget : AppWidgetProvider() {
                 R.id.widget_detail, when (busy) {
                     BulkControl.Phase.TURNING_ON -> context.getString(R.string.bulk_on_progress)
                     BulkControl.Phase.TURNING_OFF -> context.getString(R.string.bulk_off_progress)
+                    // The hotspot is the driver's own switch, so it is shown and never touched.
                     BulkControl.Phase.IDLE -> context.getString(
                         R.string.widget_detail,
-                        mark(vpn), mark(server), hotspotMark(server),
+                        mark(vpn), mark(server), hotspotMark(),
                     )
                 }
             )
@@ -145,18 +147,14 @@ class CarCastWidget : AppWidgetProvider() {
         private fun mark(up: Boolean) = if (up) "●" else "○"
 
         /**
-         * The hotspot answer costs a loopback request, and a widget redraw must not block on one: without a
-         * server there is nothing to ask anyway, and with one the cached /api/status carries it.
+         * Costs no network: [HotspotState] reads the last /api/status we already have, and falls back to the
+         * phone's own interfaces when no server is running — which is most of the time the driver looks at
+         * this, since the switch is for when nothing of ours is up yet.
          */
-        private fun hotspotMark(serverUp: Boolean): String {
-            if (!serverUp) return "?"
-            val status = StreamService.shellStatus ?: return "?"
-            val on = runCatching {
-                val h = org.json.JSONObject(status).optJSONObject("hotspot") ?: return "?"
-                if (!h.optBoolean("known", false)) return "?"
-                h.optBoolean("on", false)
-            }.getOrElse { return "?" }
-            return mark(on)
+        private fun hotspotMark(): String = when (HotspotState.on()) {
+            true -> "●"
+            false -> "○"
+            null -> "?"
         }
     }
 }

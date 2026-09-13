@@ -16,9 +16,8 @@ import java.util.Map;
  * </pre>
  * Extra endpoints: {@code POST /api/screen?on=0|1[&via=power-mode|cmd-display|brightness]} turns only the
  * phone's main display off/on (the virtual display keeps running); {@code GET /api/screen} reports it.
- * {@code POST /api/hotspot?on=0|1[&wait=<ms>]} turns the phone's Wi-Fi hotspot on or off (loopback only,
- * like {@code /api/stop}), and {@code GET /api/hotspot} reports it — see {@link Hotspot} for why that cannot
- * live in the app.
+ * {@code GET /api/hotspot} reports whether the phone's hotspot is up — read only; see {@link Hotspot} for
+ * why switching it is not ours to do.
  * {@code GET /api/apps[?refresh=1]} lists the apps the car can start (the car's own home),
  * {@code GET /api/icon?pkg=…} returns one app's icon, and {@code GET /api/tasks} lists what is running
  * and on which display (the car's own recents).
@@ -193,7 +192,7 @@ public final class Server {
             // The car's socket died: let go of anything it was holding, or the next tap is a phantom pinch.
             injector.cancelAll();
             return kotlin.Unit.INSTANCE;
-        }, (method, path, query, remote) -> {
+        }, (method, path, query) -> {
             // The car's own home: the apps it can start. Names only — see AppList's class comment for
             // why icons are not allowed to ride along.
             if ("/api/apps".equals(path) && "GET".equals(method)) {
@@ -211,7 +210,7 @@ public final class Server {
             // Loopback only, exactly like /api/stop: the car reaches us *over* that hotspot and must not
             // be able to switch it off underneath itself, and neither may anything else sharing it.
             if ("/api/hotspot".equals(path)) {
-                return Hotspot.route(method, query, remote);
+                return Hotspot.route(method);
             }
             if (!"/api/screen".equals(path)) {
                 return null;

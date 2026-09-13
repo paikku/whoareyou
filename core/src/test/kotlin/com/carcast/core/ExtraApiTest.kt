@@ -9,14 +9,12 @@ import java.net.URL
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * A host route has to be able to be loopback-only, the way `/api/stop` already is.
- *
- * `/api/hotspot` is the reason: the car reaches the phone *over* the hotspot it would be switching off,
- * and so does anything else sharing that hotspot. The guard is one line in the shell server, but it can
- * only work if the caller's address reaches [StreamSession.extraApi] at all — and nothing else would fail
- * if it quietly stopped, which is exactly the kind of hole this pins shut.
+ * The host process adds its own /api routes (the shell server's /api/screen, /api/apps, /api/hotspot …) and
+ * returns null for anything it does not recognise. Both halves matter and neither is obvious from the call
+ * site: a host route that shadowed a core one would break /api/status for the car, and a host that stopped
+ * being consulted would take the car's screen and app controls with it.
  */
-class ExtraApiRemoteTest {
+class ExtraApiTest {
     /** No APK and no assets: these requests never touch a file. */
     private object NoAssets : Assets {
         override fun open(path: String): InputStream? = null
@@ -26,25 +24,22 @@ class ExtraApiRemoteTest {
     private fun freePort(): Int = java.net.ServerSocket(0).use { it.localPort }
 
     @Test(timeout = 20_000)
-    fun extraApiSeesTheCallerAddress() {
+    fun theHostSeesTheRequestAndItsAnswerIsServed() {
         val seen = CopyOnWriteArrayList<String>()
         val port = freePort()
         val session = StreamSession(NoAssets, port = port, process = "test")
-        session.extraApi = { method, path, _, remote ->
+        session.extraApi = { method, path, query ->
             if (path == "/api/probe") {
-                seen.add("$method $remote")
-                Json.obj(mapOf("remote" to remote, "loopback" to remote.startsWith("127.")))
+                seen.add("$method ${query["x"]}")
+                Json.obj(mapOf("mine" to true))
             } else {
                 null
             }
         }
         session.start()
         try {
-            val body = get("http://127.0.0.1:$port/api/probe")
-            assertTrue(body, body.contains("\"loopback\":true"))
-            assertEquals(1, seen.size)
-            val line = seen[0]
-            assertTrue("expected 'GET 127.0.0.1:<port>', got '$line'", line.startsWith("GET 127.0.0.1:"))
+            assertTrue(get("http://127.0.0.1:$port/api/probe?x=7").contains("\"mine\":true"))
+            assertEquals(listOf("GET 7"), seen.toList())
         } finally {
             session.stop()
         }
@@ -52,10 +47,10 @@ class ExtraApiRemoteTest {
 
     /** "Not mine" must still fall through to the core routes, or adding a host route would shadow them. */
     @Test(timeout = 20_000)
-    fun nullFromExtraApiFallsThroughToTheCoreRoutes() {
+    fun nullFromTheHostFallsThroughToTheCoreRoutes() {
         val port = freePort()
         val session = StreamSession(NoAssets, port = port, process = "test")
-        session.extraApi = { _, _, _, _ -> null }
+        session.extraApi = { _, _, _ -> null }
         session.start()
         try {
             assertTrue(get("http://127.0.0.1:$port/api/status").contains("\"running\":true"))

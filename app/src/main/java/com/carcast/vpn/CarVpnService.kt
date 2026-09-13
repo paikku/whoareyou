@@ -5,6 +5,7 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.carcast.Config
+import com.carcast.widget.CarCastWidget
 
 /**
  * Not a VPN in any meaningful sense: it only attaches [Config.TUN_ADDRESS] to the phone.
@@ -52,10 +53,10 @@ class CarVpnService : VpnService() {
                 Log.w(TAG, "cannot exclude self from VPN", e)
             }
             tun = builder.establish()
-            state = if (tun != null) State.UP else State.ERROR
+            setState(if (tun != null) State.UP else State.ERROR)
             Log.i(TAG, "tun ${Config.TUN_ADDRESS}/${Config.TUN_PREFIX} state=$state")
         } catch (e: Exception) {
-            state = State.ERROR
+            setState(State.ERROR)
             Log.e(TAG, "establish failed", e)
         }
     }
@@ -63,7 +64,21 @@ class CarVpnService : VpnService() {
     private fun closeTun() {
         try { tun?.close() } catch (_: Exception) {}
         tun = null
-        state = State.DOWN
+        setState(State.DOWN)
+    }
+
+    /**
+     * The tun is the only thing that knows when the tun is up, so it is the only thing that can say so.
+     *
+     * Whoever asked for the change learns nothing by asking again straight away: stopping goes through
+     * startService, so the caller is several thread hops ahead of the tun actually closing. The home screen
+     * switch was left showing "VPN ●" after being switched off for exactly that reason — the redraw ran
+     * before this line did, and nothing redrew afterwards.
+     */
+    private fun setState(s: State) {
+        if (state == s) return
+        state = s
+        CarCastWidget.refresh(this)
     }
 
     override fun onRevoke() {
@@ -82,6 +97,7 @@ class CarVpnService : VpnService() {
         private const val TAG = "CarVpnService"
         const val ACTION_STOP = "com.carcast.vpn.STOP"
 
+        /** Written by the service itself on every transition, which is also when the widget is redrawn. */
         @Volatile
         var state: State = State.DOWN
             private set
