@@ -57,7 +57,10 @@ final class AppList {
     }
 
     static String json(boolean refresh) {
+        // 목록 자체는 잘 안 바뀌지만 **순서는 바뀐다**(방금 띄운 앱이 맨 위여야 한다). 목록을 다시
+        // 읽지 않고 순서만 다시 매긴다 — 다시 읽는 것은 폰에서 비싼 일이다.
         List<Map<String, Object>> apps = list(refresh);
+        resort(apps);
         if (apps.isEmpty()) {
             // An empty array reads as "this phone has no apps", which is never true and tells the driver
             // nothing. Say what went wrong instead — the car puts it on screen.
@@ -74,10 +77,29 @@ final class AppList {
         List<Map<String, Object>> apps = cached;
         m.put("apps", apps == null ? null : apps.size());
         m.put("appsFrom", origin.isEmpty() ? null : origin);
+        m.put("appHistory", AppHistory.size());
         if (!problem.isEmpty()) {
             m.put("appsError", problem);
         }
         return m;
+    }
+
+    private static synchronized void resort(List<Map<String, Object>> apps) {
+        for (Map<String, Object> a : apps) {
+            long last = AppHistory.lastUsed((String) a.get("package"));
+            if (last > 0) {
+                a.put("lastUsed", last);
+            }
+        }
+        Collections.sort(apps, (x, y) -> {
+            long lx = x.get("lastUsed") == null ? 0 : (Long) x.get("lastUsed");
+            long ly = y.get("lastUsed") == null ? 0 : (Long) y.get("lastUsed");
+            if (lx != ly) {
+                return Long.compare(ly, lx);
+            }
+            return ((String) x.get("label")).toLowerCase(java.util.Locale.ROOT)
+                    .compareTo(((String) y.get("label")).toLowerCase(java.util.Locale.ROOT));
+        });
     }
 
     /** One app's icon, as {@code {"package":…,"icon":"data:…"|null}}. */
@@ -120,7 +142,23 @@ final class AppList {
         if (apps.isEmpty()) {
             apps = listViaShell();
         }
-        Collections.sort(apps, Comparator.comparing(a -> ((String) a.get("label")).toLowerCase(java.util.Locale.ROOT)));
+        // **최신순이 먼저.** 차에서 쓰는 앱은 몇 개뿐인데 그것을 이름순 목록 한가운데서 찾게 하면
+        // 운전 중에 쓸 수 없다. 쓴 적 있는 것을 마지막으로 쓴 순서대로 위에 올리고, 나머지를 이름순으로.
+        for (Map<String, Object> a : apps) {
+            long last = AppHistory.lastUsed((String) a.get("package"));
+            if (last > 0) {
+                a.put("lastUsed", last);
+            }
+        }
+        Collections.sort(apps, (x, y) -> {
+            long lx = x.get("lastUsed") == null ? 0 : (Long) x.get("lastUsed");
+            long ly = y.get("lastUsed") == null ? 0 : (Long) y.get("lastUsed");
+            if (lx != ly) {
+                return Long.compare(ly, lx);
+            }
+            return ((String) x.get("label")).toLowerCase(java.util.Locale.ROOT)
+                    .compareTo(((String) y.get("label")).toLowerCase(java.util.Locale.ROOT));
+        });
         cached = apps;
         return apps;
     }

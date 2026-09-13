@@ -178,6 +178,8 @@ public final class DisplayVideoSource implements VideoSource {
         lastApp = component;
         lastPackage = pkg;
         appDisplay = id;
+        // 차에서 띄운 것만 센다. 홈과 최근앱을 최신순으로 세우는 근거이고, 서버를 껐다 켜도 남는다.
+        AppHistory.used(pkg);
         fastWatchUntilMs = System.currentTimeMillis() + APP_WATCH_FAST_WINDOW_MS;
         startAppWatcher();
         // The picture is about to change completely. Without this the car waits up to I_FRAME_INTERVAL (2 s)

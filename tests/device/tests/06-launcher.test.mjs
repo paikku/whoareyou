@@ -3,7 +3,7 @@
 // 그래서 차는 자기 목록을 직접 그린다. 여기서 보는 것은 그 목록을 만드는 두 엔드포인트다.
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { adbAvailable, api, collectVideo, pickLauncherApp, sleep, startApp, status } from '../lib.mjs';
+import { adbAvailable, adbShell, api, collectVideo, pickLauncherApp, sleep, startApp, status } from '../lib.mjs';
 
 test('GET /api/apps — 차 홈에 올릴 앱 목록이 나온다', async (t) => {
   const t0 = Date.now();
@@ -68,20 +68,54 @@ test('GET /api/tasks — 차 화면에서 도는 앱이 "여기"로 나온다', 
   assert.equal(r.display, s.displayId, '/api/tasks 가 말하는 차 화면 번호가 상태와 다르다');
   const tasks = r.tasks;
   assert.ok(Array.isArray(tasks), `tasks 가 배열이 아니다: ${JSON.stringify(r)}`);
+  t.diagnostic(`차 화면 태스크 ${tasks.length}개, 폰 쪽 ${r.elsewhere}개: ${tasks.map((x) => x.package).join(', ')}`);
+  // **차 화면 것만** 와야 한다. 폰에서 쓰는 앱은 차의 최근앱이 아니다.
+  for (const x of tasks) {
+    assert.equal(x.display, s.displayId, `차 화면이 아닌 태스크가 섞였다: ${JSON.stringify(x)}`);
+  }
   const mine = tasks.filter((x) => x.package === pkg);
-  t.diagnostic(`태스크 ${tasks.length}개 중 ${pkg}: ${JSON.stringify(mine)}`);
   assert.ok(mine.length > 0, `방금 띄운 ${pkg} 이 태스크 목록에 없다 — 최근앱이 빈 채로 뜬다`);
-  const here = mine.find((x) => x.here);
-  assert.ok(here, `${pkg} 이 차 화면(display ${s.displayId})에 있다고 나오지 않는다`);
-  assert.equal(here.display, s.displayId, '"여기"라면서 디스플레이 번호가 다르다');
-  assert.ok(here.label && here.label.length > 0, '최근앱에 보여 줄 이름이 없다');
-  assert.equal(typeof here.taskId, 'number');
+  assert.ok(mine[0].label && mine[0].label.length > 0, '최근앱에 보여 줄 이름이 없다');
+  assert.equal(typeof mine[0].taskId, 'number');
+  // 최신순: 방금 띄운 것이 맨 앞.
+  assert.equal(tasks[0].package, pkg, '방금 띄운 앱이 최근앱 맨 앞에 없다');
+});
+
+test('홈은 최근에 쓴 앱을 맨 위에 올린다', async (t) => {
+  const s0 = await status();
+  if (s0.source !== 'display') return t.skip('클립 모드');
+  const pkg = adbAvailable ? pickLauncherApp() : (process.env.TEST_APP ?? 'com.android.settings');
+  await startApp(pkg);
+  await sleep(1500);
+  const apps = await api('/api/apps');
+  assert.ok(Array.isArray(apps), `목록 대신 이유가 왔다: ${JSON.stringify(apps)}`);
+  t.diagnostic(`맨 위 3개: ${apps.slice(0, 3).map((a) => a.package).join(', ')}`);
+  // 운전 중에 이름순 목록 한가운데서 찾게 하면 쓸 수 없다. 방금 띄운 것이 맨 위여야 한다.
+  assert.equal(apps[0].package, pkg, '방금 띄운 앱이 홈 맨 위에 없다');
+  assert.ok(apps[0].lastUsed > 0, '쓴 시각이 기록되지 않았다');
+});
+
+test('사용 기록이 파일로 남아 서버를 껐다 켜도 읽힌다', async (t) => {
+  if (!adbAvailable) return t.skip('adb 없음');
+  const s = await status();
+  t.diagnostic(`기록된 앱 수: ${s.appHistory}`);
+  assert.ok(s.appHistory > 0, '띄운 앱이 있는데 기록이 비어 있다');
+  const file = adbShell('cat /data/local/tmp/carcast/app-history.tsv 2>/dev/null || echo MISSING');
+  t.diagnostic(`app-history.tsv:\n${file}`);
+  assert.notEqual(file, 'MISSING', '기록 파일이 없다 — 서버를 껐다 켜면 순서가 사라진다');
+  // <epoch>\t<횟수>\t<패키지> 한 줄씩. 사람이 읽고 고칠 수 있어야 한다.
+  const rows = file.split('\n').filter(Boolean).map((l) => l.split('\t'));
+  assert.ok(rows.length > 0 && rows[0].length === 3, `형식이 다르다: ${JSON.stringify(rows[0])}`);
+  assert.ok(Number(rows[0][0]) > 0 && Number(rows[0][1]) > 0, '시각이나 횟수가 숫자가 아니다');
+  // 파일 맨 위가 곧 최신이어야 한다 (서버가 껐다 켜도 이 순서를 그대로 읽는다).
+  const times = rows.map((r) => Number(r[0]));
+  assert.deepEqual(times, [...times].sort((a, b) => b - a), '파일이 최신순이 아니다');
 });
 
 test('최근앱에서 고른 앱이 차 화면으로 온다', async (t) => {
   const s0 = await status();
   if (s0.source !== 'display') return t.skip('클립 모드');
-  const here = (await api('/api/tasks')).tasks.find((x) => x.here);
+  const here = (await api('/api/tasks')).tasks[0];
   if (!here) return t.skip('차 화면에 도는 앱이 없다');
   // 차 UI 의 타일은 이것과 같은 요청을 보낸다(▶ 와 같은 길).
   const r = await api(`/api/app?name=${encodeURIComponent(here.package)}`, { method: 'POST' });

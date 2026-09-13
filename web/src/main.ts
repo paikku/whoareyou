@@ -137,7 +137,7 @@ const iconWatcher = new IntersectionObserver((entries) => {
     if (el.dataset.pkg) fillIcon(el, el.dataset.pkg);
   }
 }, { root: null, rootMargin: '200px' });
-interface TaskRow { taskId: number; package: string; label: string; display: number; here: boolean }
+interface TaskRow { taskId: number; package: string; label: string; display: number; lastUsed: number }
 
 let apps: AppRow[] = [];
 let homeError = '';
@@ -256,28 +256,25 @@ async function openRecents() {
   sheetEmpty.textContent = '읽는 중…';
   let tasks: TaskRow[] = [];
   let ourDisplay: number | null = null;
+  let elsewhere = 0;
   let error = '';
   try {
     const r = await (await fetch('/api/tasks')).json();
     tasks = Array.isArray(r?.tasks) ? r.tasks : [];
     ourDisplay = r?.display ?? null;
+    elsewhere = r?.elsewhere ?? 0;
     error = r?.error ?? '';
   } catch (e) { error = `폰에 물어보지 못했습니다: ${e}`; }
 
-  // 차 화면에서 도는 것이 먼저, 폰으로 끌려간 것은 "폰에 있음"으로 뒤에.
-  const here = tasks.filter((t) => t.here);
-  const away = tasks.filter((t) => !t.here);
-  sheetGrid.replaceChildren(
-    ...here.map((t) => tile(t.label, t.package, null, () => pick(t.package))),
-    // 여기에도 저기에도 안 잡히면 **아무것도 안 보여 주는 대신** 어디에 있는지를 적어 보여 준다.
-    // "도는 앱이 없다"와 "우리 화면에서 못 찾았다"는 다른 말이고, 그 차이가 곧 원인이다.
-    ...away.map((t) => tile(t.label, t.package, t.display === 0 ? '폰에 있음 · 눌러서 가져오기' : `화면 ${t.display}`,
-      () => pick(t.package))),
-  );
-  sheetEmpty.hidden = here.length + away.length > 0;
+  // **차 화면에서 도는 것만**, 최신순(서버가 그 순서로 준다). 폰에서 쓰는 앱은 차의 일이 아니다.
+  sheetGrid.replaceChildren(...tasks.map((t) => tile(t.label, t.package, null, () => pick(t.package))));
+  sheetEmpty.hidden = tasks.length > 0;
+  // 비었을 때도 "없습니다"로 끝내지 않는다: 폰 쪽에 몇 개가 도는지를 같이 적어 주면, 아무것도 안
+  // 띄운 것인지 우리 화면에서 못 찾은 것인지가 화면에서 갈린다.
   sheetEmpty.textContent = error
     ? error
-    : `도는 앱을 찾지 못했습니다 (차 화면 ${ourDisplay ?? '?'}). ● 홈에서 하나 고르세요.`;
+    : `차 화면(${ourDisplay ?? '?'})에서 도는 앱이 없습니다`
+      + (elsewhere ? ` — 폰 쪽에 ${elsewhere}개. ● 홈에서 고르면 차로 가져옵니다.` : '. ● 홈에서 하나 고르세요.');
 }
 
 $('btn-home').addEventListener('click', openHome);

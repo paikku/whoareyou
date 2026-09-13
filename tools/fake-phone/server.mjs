@@ -155,15 +155,12 @@ const server = createServer((req, res) => {
   }
   if (url.pathname === '/api/tasks') {
     const started = (state.apps ?? []).at(-1) ?? 'com.google.android.youtube';
-    const tasks = [
-      { taskId: 41, name: `${started}/.Main`, package: started, display: 7, here: !state.appOnPhone, label: started },
-    ];
-    if (state.appOnPhone) {
-      tasks[0].display = 0;
-      tasks[0].here = false;
-    }
+    // 차 화면(7)에서 도는 것만. 폰으로 끌려간 것은 목록에서 빠지고 개수로만 남는다.
+    const tasks = state.appOnPhone
+      ? []
+      : [{ taskId: 41, name: `${started}/.Main`, package: started, display: 7, label: started, lastUsed: Date.now() }];
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ display: 7, tasks }));
+    res.end(JSON.stringify({ display: 7, tasks, elsewhere: state.appOnPhone ? 1 : 0 }));
     return;
   }
   if (url.pathname === '/api/screen') {

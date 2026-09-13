@@ -87,13 +87,11 @@ test('최근 앱은 이 화면에서 도는 것을 보여 준다', async ({ page
   await expect(page.locator('#launcher-title')).toHaveText('최근 앱');
   await expect(page.locator('#launcher-grid .tile')).toHaveCount(1);
 
-  // 폰이 앱을 가져가면 "폰에 있음"으로 뜨고, 눌러서 되찾을 수 있어야 한다.
+  // 폰이 가져간 앱은 **차의 최근앱에 뜨지 않는다** — 차 화면에서 도는 것만 보여 준다는 계약이다.
+  // 대신 비었다는 말로 끝내지 않고 폰 쪽에 몇 개가 있는지를 적어 준다.
   await page.locator('#launcher-close').click();
   await page.evaluate(() => fetch('/api/fake/app-on-phone', { method: 'POST' }));
   await page.locator('#btn-recents').click();
-  const away = page.locator('#launcher-grid .tile.away');
-  await expect(away).toHaveCount(1);
-  await expect(away.locator('.where')).toContainText('폰에 있음');
-  await away.click();
-  await expect.poll(async () => (await statusOf(page)).appOnPhone).toBe(false);
+  await expect(page.locator('#launcher-grid .tile')).toHaveCount(0);
+  await expect(page.locator('#launcher-empty')).toContainText('폰 쪽에 1개');
 });
