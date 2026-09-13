@@ -163,8 +163,10 @@ const server = createServer((req, res) => {
   }
   if (url.pathname === '/api/tasks') {
     const started = (state.apps ?? []).at(-1) ?? 'com.google.android.youtube';
-    // 차 화면(7)에서 도는 것만. 폰으로 끌려간 것은 목록에서 빠지고 개수로만 남는다.
-    const tasks = state.appOnPhone
+    // 차 화면(7)에서 도는 것만. 폰으로 끌려갔거나(appOnPhone) 아예 닫혔으면(appDisplay=null) 빈다 —
+    // 진짜 서버도 그 화면의 task 만 센다.
+    const empty = state.appOnPhone || state.appDisplay === null;
+    const tasks = empty
       ? []
       : [{ taskId: 41, name: `${started}/.Main`, package: started, display: 7, label: started, lastUsed: Date.now() }];
     res.writeHead(200, { 'content-type': 'application/json' });

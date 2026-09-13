@@ -132,9 +132,32 @@ test('차 화면이 비면 홈이 저절로 뜬다 — 처음 들어올 때, 그
   // 앱을 띄웠다가 다시 사라지면(뒤로가기로 빠져나온 경우) 그때 다시 뜬다.
   await page.evaluate(() => fetch('/api/app?name=com.google.android.youtube', { method: 'POST' }));
   // 차가 그 사실을 **본 뒤에** 뒤집어야 한다. 차는 2초마다 폰을 보므로, 보기 전에 뒤집으면
-  // "앱이 있었다가 사라졌다"가 아니라 "계속 비어 있었다"가 된다. 앱이 있다는 것을 차가 알았다는
-  // 신호는 "띄운 앱이 없습니다" 패널이 사라지는 것이다.
-  await expect(page.locator('#state')).toBeHidden();
+  // "앱이 있었다가 사라졌다"가 아니라 "계속 비어 있었다"가 된다. 차가 알았다는 신호는 스스로
+  // 적어 두는 상태 이름이다('no-app' 이 아니게 된다).
+  await expect
+    .poll(async () => page.evaluate(() => (window as any).__carcast.stats().state))
+    .not.toBe('no-app');
   await page.evaluate(() => fetch('/api/fake/no-app', { method: 'POST' }));
   await expect(page.locator('#launcher')).toBeVisible();
+});
+
+test('뒤로가기로 앱을 빠져나오면 홈이 곧바로 뜬다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/app?name=com.google.android.youtube', { method: 'POST' }));
+  await expect
+    .poll(async () => page.evaluate(() => (window as any).__carcast.stats().state))
+    .not.toBe('no-app');
+
+  // 마지막 뒤로가기로 앱이 닫힌 상황.
+  await page.evaluate(() => fetch('/api/fake/no-app', { method: 'POST' }));
+  const t0 = Date.now();
+  await page.locator('#bar button[data-key=back]').click();
+  await expect(page.locator('#launcher')).toBeVisible({ timeout: 2000 });
+  // 상태 폴링(2초)만 믿으면 여기서 몇 초를 검은 화면으로 보낸다. 누른 직후에 직접 물어보는 값어치가 그것이다.
+  expect(Date.now() - t0).toBeLessThan(2000);
+
+  // 그리고 "띄운 앱이 없습니다 / 앱 띄우기" 패널은 더 이상 없다 — 누를 것이 뻔하면 그것을 띄운다.
+  await page.locator('#launcher-close').click();
+  await expect(page.locator('#state')).toBeHidden();
 });

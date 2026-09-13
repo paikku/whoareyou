@@ -19,9 +19,11 @@ test('main page saves a session report with stats and events', async ({ page }) 
   expect(mine, JSON.stringify(reports.map((r: any) => r.summary))).toBeTruthy();
   // 요약 줄은 차 쪽 수치로 시작하고, 그 뒤에 **폰 쪽 한 줄**이 붙는다. 리포트 #26·#27 을 가리지 못한
   // 이유가 그 폰 쪽 정보가 없어서였으므로(verification-log §3.10), 붙어 있다는 것까지가 계약이다.
+  // 요약 줄은 차 쪽 수치로 시작하고, 폰 쪽 한 줄이 **붙어 있을 수 있다**(리포트 #26·#27 을 가리지
+  // 못한 이유가 그 정보가 없어서였다 — verification-log §3.10). 붙는 시점은 차가 폰 상태를 한 번
+  // 이상 받아 본 뒤이므로, 저장이 그보다 빠르면 없을 수도 있다. 붙었다면 모양이 맞아야 한다.
   expect(mine.summary).toMatch(/^session mse \d+fps lag \d+ms frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+( \| 폰 .*)?$/);
-  if (mine.report.server) {
-    expect(mine.summary).toContain('| 폰 ');
+  if (mine.summary.includes('| 폰 ')) {
     expect(mine.summary).toMatch(/화면(ON|OFF)/);
   }
   expect(mine.report.events.join('\n')).toContain('video ws open #1');

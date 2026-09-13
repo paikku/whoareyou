@@ -50,3 +50,7 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 .tile .name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile.away { border-color: #7a5a2a; }
 .tile .where { font-size: 12px; color: #d8a24a; }
+
+/* 안드로이드 3버튼 글리프. 선만 그리고 채우지 않는다 — 폰의 것과 같은 인상이라야 손이 먼저 찾는다. */
+#bar button.nav { display: flex; align-items: center; justify-content: center; }
+#bar button.nav svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

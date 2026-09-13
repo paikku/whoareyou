@@ -39,9 +39,17 @@
   </div>
 </div>
 <nav id="bar">
-  <button data-key="back" title="뒤로">◀</button>
-  <button id="btn-home" title="홈 (차 화면의 앱 목록)">●</button>
-  <button id="btn-recents" title="최근 앱 (이 화면에서 도는 것)">■</button>
+  <!-- 안드로이드 3버튼과 같은 자리·같은 모양: 왼쪽 최근, 가운데 홈, 오른쪽 뒤로. 운전 중에 눈으로
+       찾는 것이라 글리프도 폰과 같아야 손이 먼저 안다. -->
+  <button id="btn-recents" class="nav" title="최근 앱 (이 화면에서 도는 것)" aria-label="최근 앱">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14M12 5v14M17 5v14"/></svg>
+  </button>
+  <button id="btn-home" class="nav" title="홈 (차 화면의 앱 목록)" aria-label="홈">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/></svg>
+  </button>
+  <button data-key="back" class="nav" title="뒤로" aria-label="뒤로">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4.5 8 12l7 7.5"/></svg>
+  </button>
   <span id="stats" class="stats"></span>
   <button id="btn-app" title="앱 실행">▶</button>
   <button id="btn-screen" title="폰 화면 끄기/켜기">📵</button>

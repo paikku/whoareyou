@@ -52,19 +52,22 @@ test('▶ reports what the phone did with the app, and the car notices when the 
 // 얼어붙는다. 고장과 구분되지 않으므로 차는 그 자리에서 이유와 다음 행동을 말해 줘야 한다.
 // 무작위 탐색(seed 501398062)에서 앱이 사라진 뒤 12단계 동안 아무 설명 없이 죽은 화면이 이어졌다 —
 // 누적 프레임 수를 "아직 아무것도 안 나왔다"로 읽고 있어서 패널이 뜨지 못했다.
-test('쓰던 앱이 닫히면 차가 이유를 말하고 다시 띄울 길을 준다', async ({ page }) => {
+test('쓰던 앱이 닫히면 차가 홈을 띄운다', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);
   await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 5, null, { timeout: 30_000 });
   await expect(page.locator('#state')).toBeHidden();
 
+  // 예전에는 여기서 "차 화면에 띄운 앱이 없습니다 / 앱 띄우기" 패널을 띄웠다. 그것은 한 번 더
+  // 누르라는 말일 뿐이었다 — 누를 것이 뻔하면 그냥 그것을 띄우는 게 맞다. 이제 홈이 그 자리에 온다.
   await page.evaluate(async () => (await fetch('/api/fake/no-app')).json());
-  await expect(page.locator('#state')).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator('#state-title')).toContainText('띄운 앱이 없습니다');
+  await expect(page.locator('#launcher')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('#launcher-title')).toHaveText('홈');
   expect((await stats(page)).state).toBe('no-app');
+  await expect(page.locator('#state')).toBeHidden();
 
-  // 그 버튼이 ▶ 와 같은 길로 이어진다.
-  page.once('dialog', (d) => d.accept('com.example.app'));
-  await page.locator('#state-action').click();
+  // 그리고 거기서 고른 앱은 ▶ 와 같은 길로 간다.
+  await page.locator('#launcher-grid .tile').first().click();
+  await expect(page.locator('#launcher')).toBeHidden();
   await expect(page.locator('#stats')).toContainText('앱');
 });

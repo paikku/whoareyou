@@ -108,7 +108,35 @@ stage.addEventListener('pointerdown', start, { once: true });
 for (const btn of document.querySelectorAll<HTMLButtonElement>('#bar button[data-key]')) {
   const code = { back: KEYCODE.BACK }[btn.dataset.key!]!;
   btn.addEventListener('pointerdown', () => control.send(encodeKey(KeyAction.Down, code)));
-  btn.addEventListener('pointerup', () => control.send(encodeKey(KeyAction.Up, code)));
+  btn.addEventListener('pointerup', () => {
+    control.send(encodeKey(KeyAction.Up, code));
+    void watchForExit();
+  });
+}
+
+/**
+ * 뒤로가기로 앱을 빠져나온 순간을 **바로** 잡는다.
+ *
+ * 상태 폴링(2초)만 믿으면 마지막 뒤로가기를 누르고도 몇 초 동안 검은 화면을 보게 된다. 게다가
+ * 서버의 appDisplay 는 서버 나름의 감시 주기(최대 5초)로 갱신되므로 합치면 더 길어진다. 그래서
+ * 누른 직후에는 `/api/tasks` 를 직접 물어본다 — 그건 그 자리에서 `am stack list` 를 돌려 **지금**
+ * 무엇이 도는지를 답한다. 추측이 아니라 사실이고, 비었으면 그 즉시 홈을 띄운다.
+ */
+let exitWatch = 0;
+async function watchForExit() {
+  const mine = ++exitWatch;
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (mine !== exitWatch || !sheet.hidden) return;
+    try {
+      const r = await (await fetch('/api/tasks')).json();
+      if (Array.isArray(r?.tasks) && r.tasks.length === 0) {
+        hadAppOnCar = false; // 느린 폴링이 뒤늦게 같은 일을 또 하지 않도록
+        void openHome();
+        return;
+      }
+    } catch { return; }
+  }
 }
 
 // ── 차의 홈과 최근앱 ────────────────────────────────────────────────────────────────────────────
@@ -456,16 +484,12 @@ function updateStatePanel(): void {
     });
     return;
   }
-  // 가상 화면에 앱의 task 가 하나도 없는 상태. 그릴 것이 없으면 인코더도 아무것도 내지 않으므로
-  // (2026-09-11 가상 폰 실측) 차에는 마지막 프레임이 얼어붙은 채로 남는다 — 고장처럼 보이지만 고장이 아니다.
-  // 처음부터 안 띄운 경우와, 쓰던 앱이 닫힌 경우가 모두 여기다. 무작위 탐색에서 앱이 사라진 뒤 12단계 동안
-  // 아무 설명 없이 죽은 화면이 이어졌다(seed 501398062): 그때 이 패널이 떴어야 했다.
+  // 가상 화면에 앱의 task 가 하나도 없는 상태. 예전에는 여기서 "앱을 띄우세요" 패널을 띄웠는데,
+  // 그것은 한 번 더 누르라는 말일 뿐이었다 — 눌러야 할 것이 뻔하면 그냥 그것을 띄우는 게 맞다.
+  // 이제 홈이 그 자리를 대신한다(maybeOpenHome). 패널은 띄우지 않고 상태 이름만 남긴다.
   if (lastStatus && lastStatus.source === 'display' && lastStatus.appDisplay === null) {
     stateName = 'no-app';
-    showState('차 화면에 띄운 앱이 없습니다', '앱을 고르면 바로 나옵니다. 그릴 것이 없는 동안에는 영상도 멈춰 있습니다.', {
-      label: '앱 띄우기',
-      run: () => $('btn-app').click(),
-    });
+    statePanel.hidden = true;
     return;
   }
   // 폰이 잠들면 가상 디스플레이까지 합성이 멈춘다 — 앱은 멀쩡한데 그림만 얼어붙는다. 실차 리포트 #26 이
