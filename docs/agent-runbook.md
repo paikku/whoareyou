@@ -117,8 +117,11 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
   그때 끊기는 것은 주행 중인 차의 연결이다. 바꾸기 전 값은 매번 `detail` 에 적어 남긴다.
   `POST /api/hotspot` 은 **loopback 전용** — 차는 그 핫스팟을 타고 들어오므로 자기 발밑을 끊게 둘 수 없다
 - 앱: `BulkControl.kt`(순서와 그 이유), `StreamService.ACTION_ALL_ON/ALL_OFF`, `CarCastWidget.kt`
-- 상태: `/api/status.hotspot` 의 `on` `known` `via` `controllable` — **`known=false` 는 "꺼짐"이 아니라
-  "아무도 답해 주지 않았다"** 이다. 이 둘을 섞으면 일괄 끄기가 1단계를 건너뛰고 핫스팟을 켜 둔 채 서버를 죽인다
+- 상태: `/api/status.hotspot` 의 `on` `known` `via` `controllable` `permissionDenied` — **`known=false` 는
+  "꺼짐"이 아니라 "아무도 답해 주지 않았다"** 이다. 이 둘을 섞으면 일괄 끄기가 1단계를 건너뛰고 핫스팟을
+  켜 둔 채 서버를 죽인다. `controllable` 은 **처음에는 낙관적이고 한 방향으로만 내려간다** — 물어보지 않고는
+  알 수 없기 때문이다(TETHER_PRIVILEGED 만 정적으로 보면 WRITE_SETTINGS 로 되는 폰을 못 된다고 한다).
+  첫 거부가 답이고, 그전의 `true` 는 "아직 안 된다는 증거가 없다"는 뜻이지 "된다"가 아니다
 - 검사: `tests/device/tests/08-hotspot.test.mjs`(엔드포인트·위젯 등록), 단위 `HotspotTest`(loopback 규칙,
   모르는 상태), `BulkControlTest`(끄기 순서), `CarCastWidgetTest`(스위치가 언제 켜져 보이나)
 

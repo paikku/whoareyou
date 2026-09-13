@@ -151,6 +151,11 @@ final class Hotspot {
         m.put("interfaces", s.interfaces);
         // "Controllable" has to mean the caller can actually switch it, not merely that a service answered:
         // a build that refuses uid 2000 leaves the app nothing to offer but the Settings screen.
+        //
+        // It starts out optimistic and can only ever go false, because the question cannot be answered
+        // without asking: a static permission check on TETHER_PRIVILEGED would say no on a phone where the
+        // WRITE_SETTINGS path still works. So the first refusal is what settles it — until one arrives,
+        // "true" means "nothing has proven otherwise", not "this will work".
         m.put("controllable", tetheringManager() != null && !permissionDenied);
         if (permissionDenied) {
             m.put("permissionDenied", true);
