@@ -95,3 +95,46 @@ test('최근 앱은 이 화면에서 도는 것을 보여 준다', async ({ page
   await expect(page.locator('#launcher-grid .tile')).toHaveCount(0);
   await expect(page.locator('#launcher-empty')).toContainText('폰 쪽에 1개');
 });
+
+test('홈은 열 때마다 다시 읽어 최근 사용순을 보여 준다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+
+  const names = () => page.locator('#launcher-grid .tile .name').allTextContents();
+  await page.locator('#btn-home').click();
+  await expect(page.locator('#launcher-grid .tile')).toHaveCount(3);
+  const before = await names();
+  await page.locator('#launcher-find').fill('spot');
+  await page.locator('#launcher-grid .tile').first().click();
+  await expect(page.locator('#launcher')).toBeHidden();
+
+  // 방금 쓴 앱이 맨 위여야 한다. 목록을 한 번만 받아 두면 여기서 옛 순서가 그대로 나온다 —
+  // 서버가 아무리 정렬해 줘도 차는 영영 모른다.
+  await page.locator('#btn-home').click();
+  await expect.poll(async () => (await names())[0]).toBe('Spotify');
+  expect(before[0]).not.toBe('Spotify');
+});
+
+test('차 화면이 비면 홈이 저절로 뜬다 — 처음 들어올 때, 그리고 앱에서 빠져나왔을 때', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => fetch('/api/fake/no-app', { method: 'POST' }));
+  await startPlayback(page);
+  // 빈 가상 화면은 그릴 것이 없어 영상이 멈춘다. 그 자리에 다음 할 일을 띄운다.
+  await expect(page.locator('#launcher')).toBeVisible();
+  await expect(page.locator('#launcher-title')).toHaveText('홈');
+
+  // 닫으면 닫힌 채로 있어야 한다 — 계속 비어 있다고 2초마다 되살아나면 못 쓴다.
+  await page.locator('#launcher-close').click();
+  await page.waitForTimeout(3000);
+  await expect(page.locator('#launcher')).toBeHidden();
+
+  // 앱을 띄웠다가 다시 사라지면(뒤로가기로 빠져나온 경우) 그때 다시 뜬다.
+  await page.evaluate(() => fetch('/api/app?name=com.google.android.youtube', { method: 'POST' }));
+  // 차가 그 사실을 **본 뒤에** 뒤집어야 한다. 차는 2초마다 폰을 보므로, 보기 전에 뒤집으면
+  // "앱이 있었다가 사라졌다"가 아니라 "계속 비어 있었다"가 된다. 앱이 있다는 것을 차가 알았다는
+  // 신호는 "띄운 앱이 없습니다" 패널이 사라지는 것이다.
+  await expect(page.locator('#state')).toBeHidden();
+  await page.evaluate(() => fetch('/api/fake/no-app', { method: 'POST' }));
+  await expect(page.locator('#launcher')).toBeVisible();
+});

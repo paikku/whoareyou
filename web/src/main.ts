@@ -232,18 +232,24 @@ async function openHome() {
   sheetFind.hidden = false;
   sheet.hidden = false;
   sheetEmpty.hidden = true;
-  if (!apps.length) {
+  // 가지고 있는 것부터 곧바로 그린다 — 기다리는 빈 화면을 보여 주지 않는다.
+  if (apps.length) renderHome(sheetFind.value);
+  else {
     sheetGrid.replaceChildren();
     sheetEmpty.hidden = false;
     sheetEmpty.textContent = '앱 목록을 읽는 중…';
-    try {
-      const r = await (await fetch('/api/apps')).json();
-      // 서버가 목록을 못 만들면 **왜인지**를 준다. "앱이 없습니다"로 뭉개지 않는다.
-      if (Array.isArray(r)) { apps = r; homeError = ''; }
-      else { apps = []; homeError = r?.error ?? '앱 목록을 읽지 못했습니다'; }
-    } catch (e) { apps = []; homeError = `폰에 물어보지 못했습니다: ${e}`; }
   }
-  renderHome(sheetFind.value);
+  // 그리고 **열 때마다 다시 읽는다.** 목록 자체는 잘 안 바뀌지만 순서는 바뀐다: 방금 쓴 앱이
+  // 맨 위로 와야 하는데, 한 번 받아 두고 말면 차는 영영 옛날 순서를 보여 준다.
+  try {
+    const r = await (await fetch('/api/apps')).json();
+    // 서버가 목록을 못 만들면 **왜인지**를 준다. "앱이 없습니다"로 뭉개지 않는다.
+    if (Array.isArray(r)) { apps = r; homeError = ''; }
+    else { apps = []; homeError = r?.error ?? '앱 목록을 읽지 못했습니다'; }
+  } catch (e) {
+    if (!apps.length) homeError = `폰에 물어보지 못했습니다: ${e}`;
+  }
+  if (sheetMode === 'home' && !sheet.hidden) renderHome(sheetFind.value);
 }
 
 async function openRecents() {
@@ -275,6 +281,28 @@ async function openRecents() {
     ? error
     : `차 화면(${ourDisplay ?? '?'})에서 도는 앱이 없습니다`
       + (elsewhere ? ` — 폰 쪽에 ${elsewhere}개. ● 홈에서 고르면 차로 가져옵니다.` : '. ● 홈에서 하나 고르세요.');
+}
+
+/**
+ * 차 화면이 비면 홈을 띄운다 — 처음 들어왔을 때와, 뒤로가기로 앱에서 빠져나왔을 때.
+ *
+ * 빈 가상 화면은 그릴 것이 없어 인코더가 아무것도 내지 않는다. 그래서 그대로 두면 차에는 검은
+ * 화면(또는 마지막 프레임)이 남고, 운전자는 고장인지 아닌지 알 수 없다. 그 자리에 홈을 띄우면
+ * 다음에 할 일이 화면에 있다.
+ *
+ * **들어가는 순간에만** 띄운다. 매번 띄우면 닫아 둔 홈이 계속 되살아나 성가시다 — 닫은 것은
+ * 닫아 둔 채로 두고, 다음에 앱이 사라질 때 다시 띄운다.
+ */
+/** true = 앱이 있었다, false = 비어 있었다, null = 아직 본 적 없다. */
+let hadAppOnCar: boolean | null = null;
+function maybeOpenHome(st: any) {
+  if (st?.source !== 'display') return;
+  const empty = st.appDisplay === null && st.appOnPhone !== true;
+  // 비어 **있게 된** 순간만 잡는다. 계속 비어 있는 동안 매번 띄우면 닫아 둔 홈이 2초마다 되살아난다.
+  const becameEmpty = empty && hadAppOnCar !== false;
+  hadAppOnCar = !empty;
+  // 재생이 시작되기 전에는 띄우지 않는다: 시작은 화면을 한 번 눌러야 하는데, 그 손짓을 홈이 가로챈다.
+  if (becameEmpty && started && sheet.hidden) void openHome();
 }
 
 $('btn-home').addEventListener('click', openHome);
@@ -369,6 +397,7 @@ setInterval(async () => {
     }
     // 폰 화면 전원은 차의 📵 로도, 폰의 전원 버튼으로도 바뀐다. 버튼은 언제나 서버가 말하는 쪽을 따른다.
     $('btn-screen').classList.toggle('off', st.screenOn === false);
+    maybeOpenHome(st);
   } catch {
     // 폰이 잠깐 없는 것: 영상 소켓의 재접속이 알아서 덮는다. 다만 오래가면 상태 패널이 말한다.
     if (!statusFailedAt) statusFailedAt = Date.now();

@@ -127,6 +127,10 @@ const server = createServer((req, res) => {
     const from = state.appOnPhone ? 0 : null;
     const action = from === null ? 'started' : restart === 'never' ? 'moved' : 'restarted';
     state.appOnPhone = false;
+    // 진짜 서버는 띄운 뒤 그 앱의 task 가 어느 화면에 있는지를 상태에 적는다. 여기서 빼먹으면
+    // 차는 앱을 띄우고도 "화면에 앱이 없다"고 믿는다 — 가짜 폰이 진짜 폰과 갈리던 자리다.
+    state.appDisplay = 7;
+    state.app = `${name}/.Main`;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, result: `fake: ${action} ${name}`, action, package: name, fromDisplay: from, display: 7 }));
     return;
@@ -136,12 +140,16 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/apps') {
     // 이름만. 아이콘은 /api/icon 이 하나씩 준다 — 목록에 다 싣던 것이 실기기에서 새 연결을 전부
     // 막아 버렸다(실차 리포트 #31~33).
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify([
+    const all = [
       { package: 'com.google.android.youtube', label: 'YouTube', system: false },
       { package: 'com.android.settings', label: '설정', system: true },
       { package: 'com.spotify.music', label: 'Spotify', system: false },
-    ]));
+    ];
+    // 진짜 폰처럼 **최근 사용순**으로 준다. 차가 목록을 캐시해 두면 이 순서 변화를 놓친다.
+    const used = state.apps ?? [];
+    all.sort((a, b) => used.lastIndexOf(b.package) - used.lastIndexOf(a.package));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(all));
     return;
   }
   if (url.pathname === '/api/icon') {
