@@ -104,12 +104,120 @@ const start = async () => {
 overlay.addEventListener('pointerdown', start, { once: true });
 stage.addEventListener('pointerdown', start, { once: true });
 
-// Nav bar keys -> Android key events.
+// 뒤로가기만 폰으로 보낸다. BACK 은 이벤트가 실린 디스플레이에서 처리되므로 차 화면의 앱에 제대로 간다.
 for (const btn of document.querySelectorAll<HTMLButtonElement>('#bar button[data-key]')) {
-  const code = { back: KEYCODE.BACK, home: KEYCODE.HOME, recents: KEYCODE.APP_SWITCH }[btn.dataset.key!]!;
+  const code = { back: KEYCODE.BACK }[btn.dataset.key!]!;
   btn.addEventListener('pointerdown', () => control.send(encodeKey(KeyAction.Down, code)));
   btn.addEventListener('pointerup', () => control.send(encodeKey(KeyAction.Up, code)));
 }
+
+// ── 차의 홈과 최근앱 ────────────────────────────────────────────────────────────────────────────
+//
+// HOME 과 APP_SWITCH 는 **보내지 않는다.** 안드로이드는 그 두 키를 이벤트에 실린 디스플레이가 아니라
+// **기본 디스플레이(폰)** 의 것으로 처리한다. 그래서 차에서 누르면 폰이 자기 런처로 가면서 차에서 보던
+// 앱을 display 0 으로 끌고 간다 — 실차 리포트 #30 에 그 순간이 그대로 찍혀 있다:
+// "464.0s phone took com.google.android.youtube (display 0)". 차 화면은 비고, 앱 감시자가 그것을
+// 뒤늦게 알아채 다시 띄우는 핑퐁이 난다.
+//
+// 그래서 차는 자기 홈(설치된 앱 목록)과 자기 최근앱(이 가상 화면 위의 태스크)을 직접 그린다.
+const sheet = $('launcher');
+const sheetGrid = $('launcher-grid');
+const sheetTitle = $('launcher-title');
+const sheetEmpty = $('launcher-empty');
+const sheetFind = $('launcher-find') as HTMLInputElement;
+
+interface AppRow { package: string; label: string; icon?: string }
+interface TaskRow { taskId: number; package: string; label: string; display: number; here: boolean }
+
+let apps: AppRow[] = [];
+let sheetMode: 'home' | 'recents' = 'home';
+
+const closeSheet = () => {
+  sheet.hidden = true;
+  sheetFind.value = '';
+};
+$('launcher-close').addEventListener('click', closeSheet);
+sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
+
+/** 한 칸. 아이콘이 없으면 이름 첫 글자로 대신한다 — 빈 네모보다 낫다. */
+function tile(label: string, icon: string | undefined, sub: string | null, onPick: () => void): HTMLElement {
+  const el = document.createElement('button');
+  el.className = sub ? 'tile away' : 'tile';
+  const art = document.createElement(icon ? 'img' : 'div');
+  if (icon) (art as HTMLImageElement).src = icon;
+  else { art.className = 'fallback'; art.textContent = (label[0] ?? '?').toUpperCase(); }
+  el.append(art);
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = label;
+  el.append(name);
+  if (sub) {
+    const where = document.createElement('span');
+    where.className = 'where';
+    where.textContent = sub;
+    el.append(where);
+  }
+  el.addEventListener('click', onPick);
+  return el;
+}
+
+/**
+ * 시트에서 앱 하나를 고른다. 띄우는 일은 ▶ 와 같은 길(`launch`)로 보낸다 — 실패했을 때 알리고,
+ * 마지막에 고른 앱을 기억하고, "폰이 가져갔다" 상태를 푸는 것까지 거기 다 들어 있다.
+ */
+function pick(pkg: string) {
+  closeSheet();
+  void launch(pkg);
+}
+
+function renderHome(filter: string) {
+  const q = filter.trim().toLowerCase();
+  const rows = q ? apps.filter((a) => a.label.toLowerCase().includes(q) || a.package.includes(q)) : apps;
+  sheetGrid.replaceChildren(...rows.map((a) => tile(a.label, a.icon, null, () => pick(a.package))));
+  sheetEmpty.hidden = rows.length > 0;
+  sheetEmpty.textContent = q ? `"${filter}" 에 맞는 앱이 없습니다` : '앱 목록을 읽지 못했습니다';
+}
+
+async function openHome() {
+  sheetMode = 'home';
+  sheetTitle.textContent = '홈';
+  sheetFind.hidden = false;
+  sheet.hidden = false;
+  sheetEmpty.hidden = true;
+  if (!apps.length) {
+    sheetGrid.replaceChildren();
+    sheetEmpty.hidden = false;
+    sheetEmpty.textContent = '앱 목록을 읽는 중…';
+    try { apps = await (await fetch('/api/apps')).json(); } catch { apps = []; }
+  }
+  renderHome(sheetFind.value);
+}
+
+async function openRecents() {
+  sheetMode = 'recents';
+  sheetTitle.textContent = '최근 앱';
+  sheetFind.hidden = true;
+  sheet.hidden = false;
+  sheetGrid.replaceChildren();
+  sheetEmpty.hidden = false;
+  sheetEmpty.textContent = '읽는 중…';
+  let tasks: TaskRow[] = [];
+  try { tasks = await (await fetch('/api/tasks')).json(); } catch { /* 아래에서 빈 목록으로 처리 */ }
+  // 차 화면에서 도는 것이 먼저, 폰으로 끌려간 것은 그 뒤에 "폰에 있음"이라고 표시해 되돌릴 수 있게 둔다.
+  const here = tasks.filter((t) => t.here);
+  const away = tasks.filter((t) => !t.here && t.display === 0);
+  const iconOf = (pkg: string) => apps.find((a) => a.package === pkg)?.icon;
+  sheetGrid.replaceChildren(
+    ...here.map((t) => tile(t.label, iconOf(t.package), null, () => pick(t.package))),
+    ...away.map((t) => tile(t.label, iconOf(t.package), '폰에 있음 · 눌러서 가져오기', () => pick(t.package))),
+  );
+  sheetEmpty.hidden = here.length + away.length > 0;
+  sheetEmpty.textContent = '이 화면에서 도는 앱이 없습니다. ● 홈에서 하나 고르세요.';
+}
+
+$('btn-home').addEventListener('click', openHome);
+$('btn-recents').addEventListener('click', openRecents);
+sheetFind.addEventListener('input', () => { if (sheetMode === 'home') renderHome(sheetFind.value); });
 
 // Keyboard: focus a hidden input so the car keyboard opens; ship committed text to the phone.
 $('btn-keyboard').addEventListener('click', () => {

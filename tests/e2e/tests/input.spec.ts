@@ -31,15 +31,66 @@ test('touch on the picture arrives as normalised coordinates', async ({ page }) 
   expect(down.y).toBeCloseTo(0.75, 2);
 });
 
-test('nav bar buttons send Android key codes', async ({ page }) => {
+test('◀ 는 폰으로 가고, ● 홈은 **키를 보내지 않는다**', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);
   await page.waitForFunction(() => (window as any).__carcast.stats().controlWs.open);
   await page.evaluate(() => fetch('/api/reset'));
+
   await page.locator('#bar button[data-key=back]').click();
-  await page.locator('#bar button[data-key=home]').click();
-  await expect.poll(async () => (await statusOf(page)).keys.length).toBeGreaterThanOrEqual(4);
-  const keys = (await statusOf(page)).keys.map((k: any) => k.keycode);
-  expect(keys).toContain(4);
-  expect(keys).toContain(3);
+  await expect.poll(async () => (await statusOf(page)).keys.length).toBeGreaterThanOrEqual(2);
+  expect((await statusOf(page)).keys.map((k: any) => k.keycode)).toContain(4); // KEYCODE_BACK
+
+  // HOME(3)/APP_SWITCH(187) 은 이벤트에 실린 디스플레이가 아니라 **폰의 기본 디스플레이** 것으로
+  // 처리된다. 그래서 보내면 차에서 보던 앱이 폰으로 끌려간다(실차 리포트 #30). 차는 대신 자기
+  // 목록을 띄운다 — 그 계약을 여기서 못박는다: 눌러도 폰으로 가는 키가 하나도 늘지 않아야 한다.
+  const before = (await statusOf(page)).keys.length;
+  await page.locator('#btn-home').click();
+  await expect(page.locator('#launcher')).toBeVisible();
+  await page.locator('#launcher-close').click();
+  await page.locator('#btn-recents').click();
+  await expect(page.locator('#launcher')).toBeVisible();
+  await page.locator('#launcher-close').click();
+  expect((await statusOf(page)).keys.length).toBe(before);
+});
+
+test('차 홈에서 앱을 고르면 그 앱이 차 화면에 뜬다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+
+  await page.locator('#btn-home').click();
+  const tiles = page.locator('#launcher-grid .tile');
+  await expect(tiles).toHaveCount(3);
+  // 아이콘을 못 그린 앱은 이름 첫 글자 타일로 뜬다 — 빈 네모를 남기지 않는다는 계약.
+  await expect(page.locator('#launcher-grid .tile .fallback')).toHaveCount(1);
+
+  // 찾기: 운전 중에 목록을 훑는 대신 한 번에 좁힐 수 있어야 한다.
+  await page.locator('#launcher-find').fill('you');
+  await expect(tiles).toHaveCount(1);
+  await tiles.first().click();
+
+  // 고른 것이 ▶ 와 같은 길로 간다: 폰이 그 앱을 받았고, 시트는 닫혔다.
+  await expect(page.locator('#launcher')).toBeHidden();
+  await expect.poll(async () => (await statusOf(page)).apps ?? []).toContain('com.google.android.youtube');
+});
+
+test('최근 앱은 이 화면에서 도는 것을 보여 준다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+
+  await page.locator('#btn-recents').click();
+  await expect(page.locator('#launcher-title')).toHaveText('최근 앱');
+  await expect(page.locator('#launcher-grid .tile')).toHaveCount(1);
+
+  // 폰이 앱을 가져가면 "폰에 있음"으로 뜨고, 눌러서 되찾을 수 있어야 한다.
+  await page.locator('#launcher-close').click();
+  await page.evaluate(() => fetch('/api/fake/app-on-phone', { method: 'POST' }));
+  await page.locator('#btn-recents').click();
+  const away = page.locator('#launcher-grid .tile.away');
+  await expect(away).toHaveCount(1);
+  await expect(away.locator('.where')).toContainText('폰에 있음');
+  await away.click();
+  await expect.poll(async () => (await statusOf(page)).appOnPhone).toBe(false);
 });

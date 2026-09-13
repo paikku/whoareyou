@@ -266,10 +266,28 @@ export const CAR_ACTIONS: Action[] = [
     async run({ page }) { await page.locator('#bar button[data-key=back]').click(); await sleep(600); },
   },
   {
+    // 폰의 HOME 키를 보내던 동작이었다. 그 키는 폰의 기본 디스플레이 것이라 누르면 차에서 보던 앱이
+    // display 0 으로 끌려갔다(실차 리포트 #30). 지금은 차가 자기 목록을 띄우고, 폰은 건드리지 않는다.
     id: 'car.nav-home',
     side: 'car',
-    title: '차의 ● (홈)',
-    async run({ page }) { await page.locator('#bar button[data-key=home]').click(); await sleep(800); },
+    title: '차의 ● (홈) — 차 자기 앱 목록',
+    async run({ page }) {
+      await page.locator('#btn-home').click();
+      await sleep(600);
+      await page.locator('#launcher-close').click();
+      await sleep(400);
+    },
+  },
+  {
+    id: 'car.nav-recents',
+    side: 'car',
+    title: '차의 ■ (최근 앱) — 이 화면에서 도는 것',
+    async run({ page }) {
+      await page.locator('#btn-recents').click();
+      await sleep(800);
+      await page.locator('#launcher-close').click();
+      await sleep(400);
+    },
   },
   {
     id: 'car.type-text',

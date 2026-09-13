@@ -24,11 +24,24 @@
       <button id="state-action" class="state-action" hidden></button>
     </div>
   </div>
+  <!--
+    차의 홈과 최근앱. 폰의 HOME/APP_SWITCH 키를 보내지 않는 이유는 main.ts 의 주석에 있다 —
+    그 키들은 폰의 기본 디스플레이 것이고, 누르면 차에서 보던 앱이 폰으로 끌려간다.
+  -->
+  <div id="launcher" class="overlay sheet" data-ui hidden>
+    <div class="sheet-head">
+      <span id="launcher-title" class="sheet-title">홈</span>
+      <input id="launcher-find" class="sheet-find" type="search" placeholder="앱 찾기" autocomplete="off" spellcheck="false">
+      <button id="launcher-close" class="sheet-close" title="닫기">✕</button>
+    </div>
+    <div id="launcher-grid" class="grid"></div>
+    <div id="launcher-empty" class="sheet-empty" hidden></div>
+  </div>
 </div>
 <nav id="bar">
   <button data-key="back" title="뒤로">◀</button>
-  <button data-key="home" title="홈">●</button>
-  <button data-key="recents" title="최근 앱">■</button>
+  <button id="btn-home" title="홈 (차 화면의 앱 목록)">●</button>
+  <button id="btn-recents" title="최근 앱 (이 화면에서 도는 것)">■</button>
   <span id="stats" class="stats"></span>
   <button id="btn-app" title="앱 실행">▶</button>
   <button id="btn-screen" title="폰 화면 끄기/켜기">📵</button>

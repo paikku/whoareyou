@@ -16,6 +16,8 @@ import java.util.Map;
  * </pre>
  * Extra endpoints: {@code POST /api/screen?on=0|1[&via=power-mode|cmd-display|brightness]} turns only the
  * phone's main display off/on (the virtual display keeps running); {@code GET /api/screen} reports it.
+ * {@code GET /api/apps[?icons=0][&refresh=1]} lists the apps the car can start (the car's own home) and
+ * {@code GET /api/tasks} lists what is running and on which display (the car's own recents).
  * The video comes from a virtual display (scrcpy-style, M4) unless {@code source=clip} forces the bundled test clip.
  *
  * The build id is the git sha the APK was built from ({@link BuildConfig#SERVER_BUILD_ID}); a mismatch
@@ -184,6 +186,15 @@ public final class Server {
             injector.cancelAll();
             return kotlin.Unit.INSTANCE;
         }, (method, path, query) -> {
+            // The car's own home: the apps it can start. Icons ride along as data: URIs when asked,
+            // because this hook can only answer with text (see StreamSession.extraApi).
+            if ("/api/apps".equals(path) && "GET".equals(method)) {
+                return AppList.json(!"0".equals(query.get("icons")), "1".equals(query.get("refresh")));
+            }
+            // The car's own recents: what is running, and on which display.
+            if ("/api/tasks".equals(path) && "GET".equals(method)) {
+                return RunningTasks.json(source == null ? -1 : source.displayId());
+            }
             if (!"/api/screen".equals(path)) {
                 return null;
             }

@@ -131,6 +131,34 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, result: `fake: ${action} ${name}`, action, package: name, fromDisplay: from, display: 7 }));
     return;
   }
+  // 차의 홈과 최근앱이 읽는 두 목록. 진짜 폰에서는 PackageManager 와 `am stack list` 에서 나온다;
+  // 여기서는 UI 가 목록을 그리는지, 고른 것이 /api/app 으로 가는지만 보면 되므로 몇 개만 흉내 낸다.
+  if (url.pathname === '/api/apps') {
+    const icons = url.searchParams.get('icons') !== '0';
+    // 1x1 투명 PNG. 아이콘이 있는 경우와 없는 경우를 둘 다 그려 보게 섞어 둔다.
+    const dot = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    const apps = [
+      { package: 'com.google.android.youtube', label: 'YouTube', system: false },
+      { package: 'com.android.settings', label: '설정', system: true },
+      { package: 'com.spotify.music', label: 'Spotify', system: false },
+    ].map((a, i) => (icons && i !== 2 ? { ...a, icon: dot } : a));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(apps));
+    return;
+  }
+  if (url.pathname === '/api/tasks') {
+    const started = (state.apps ?? []).at(-1) ?? 'com.google.android.youtube';
+    const tasks = [
+      { taskId: 41, name: `${started}/.Main`, package: started, display: 7, here: !state.appOnPhone, label: started },
+    ];
+    if (state.appOnPhone) {
+      tasks[0].display = 0;
+      tasks[0].here = false;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(tasks));
+    return;
+  }
   if (url.pathname === '/api/screen') {
     if (req.method === 'POST') state.screenOn = url.searchParams.get('on') !== '0';
     res.writeHead(200, { 'content-type': 'application/json' });
