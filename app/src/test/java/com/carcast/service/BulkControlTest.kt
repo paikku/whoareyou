@@ -92,6 +92,28 @@ class BulkControlTest {
         assertTrue(log.toString(), log.any { it.contains("상태를 알 수 없어") })
     }
 
+    /**
+     * A phone that has refused once will refuse again. Every press that still tries costs two framework calls
+     * and another write to a carrier setting to be told the same thing, and buries the one useful sentence —
+     * where the driver can do it by hand — under an error string. Both the emulator and the S26U answer this
+     * way, so this is the ordinary path on the hardware we have, not an edge case.
+     */
+    @Test(timeout = 30_000)
+    fun aPhoneThatRefusedOnceIsNotAskedAgain() {
+        val server = FakeServer(hotspotKnown = true, hotspotOn = true, permissionDenied = true).also { fake = it }
+        val events = CopyOnWriteArrayList<String>()
+        val log = CopyOnWriteArrayList<String>()
+        server.onRequest = { events.add(it) }
+
+        BulkControl.allOff(log::add) { events.add("session-stopped") }
+
+        assertFalse("nothing to attempt: the phone already said no", events.any { it.startsWith("POST /api/hotspot") })
+        assertEquals(listOf("POST /api/stop", "session-stopped"), events.map { it.substringBefore('?') }.filterNot { it.startsWith("GET ") })
+        assertTrue(log.toString(), log.any { it.contains("허용하지 않습니다") && it.contains("설정") })
+        // The rest of the sequence is the point: the server and session still come down.
+        assertTrue(log.toString(), log.any { it.startsWith("2/3 서버 종료") })
+    }
+
     /** No server at all: say so, and never claim the hotspot was dealt with. */
     @Test(timeout = 30_000)
     fun withNoServerItSaysTheHotspotCouldNotBeSwitched() {
@@ -170,6 +192,8 @@ class BulkControlTest {
         private val hotspotOn: Boolean,
         private val switchOk: Boolean = true,
         private val switchDetail: String = "started",
+        /** The phone refuses app-driven tethering outright, as both the emulator and the S26U do. */
+        private val permissionDenied: Boolean = false,
     ) : AutoCloseable {
         private val socket = bind()
         var onRequest: (String) -> Unit = {}
@@ -217,7 +241,8 @@ class BulkControlTest {
             val body = when {
                 path == "/api/status" -> "{\"running\":true}"
                 path == "/api/hotspot" && method == "GET" ->
-                    "{\"on\":$on,\"known\":$hotspotKnown,\"via\":\"test\",\"controllable\":true}"
+                    "{\"on\":$on,\"known\":$hotspotKnown,\"via\":\"test\"," +
+                        "\"controllable\":${!permissionDenied},\"permissionDenied\":$permissionDenied}"
                 path == "/api/hotspot" -> {
                     if (switchOk) on = target.contains("on=1")
                     "{\"ok\":$switchOk,\"detail\":\"$switchDetail\",\"on\":$on,\"known\":$hotspotKnown,\"via\":\"test\"}"

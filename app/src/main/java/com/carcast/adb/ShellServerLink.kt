@@ -184,11 +184,10 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private data class Candidate(val port: Int, val why: String)
 
     /**
-     * Every port worth dialling, best first. adbd picks a new port on every wireless-debugging toggle and
-     * reboot, and mDNS can still carry an old record (or another phone's), so one guess is not enough — the
-     * whole list is tried and logged, and the log names what each port was.
+     * Ports we already know about: the TCP-mode port when something is listening on it, and a port the user
+     * typed. Costs a 300ms probe, no discovery.
      */
-    private fun candidates(): List<Candidate> {
+    private fun knownPorts(): List<Candidate> {
         val out = LinkedHashMap<Int, String>()
         // Only when the user opted in: otherwise a port left over from an earlier attempt would probe and log
         // every round, saying "closed" about a mode nobody asked for.
@@ -200,6 +199,19 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         }
         val manual = prefs.manualConnectPort
         if (manual > 0) out.putIfAbsent(manual, "수동 입력")
+        return out.map { Candidate(it.key, it.value) }
+    }
+
+    /**
+     * Ports adbd is advertising. adbd picks a new one on every wireless-debugging toggle and reboot, and the
+     * record can be stale (or another phone's), so everything found is tried and the log names what each was.
+     *
+     * This costs [ADB_CONNECT_WAIT_S] seconds whenever nothing answers, which is **every time in the car**:
+     * wireless debugging is off there, so there is nothing to advertise and the wait always runs out. That is
+     * why it is no longer part of the first look — see [openLink].
+     */
+    private fun discoveredPorts(already: List<Candidate>): List<Candidate> {
+        val out = LinkedHashMap<Int, String>()
         set(State.FINDING_PORT, "mDNS ${ADB_CONNECT_WAIT_S}s")
         val found = mdnsPorts()
         if (found.isEmpty()) log("mDNS _adb-tls-connect 레코드 없음 — 무선 디버깅이 꺼져 있거나 아직 광고 전입니다")
@@ -207,6 +219,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
             log("mDNS _adb-tls-connect: ${host ?: "주소 없음"}:$port${if (local) " (이 폰)" else " (다른 기기)"}")
             out.putIfAbsent(port, if (local) "mDNS" else "mDNS(외부)")
         }
+        for (c in already) out.remove(c.port)
         return out.map { Candidate(it.key, it.value) }
     }
 
@@ -224,27 +237,49 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     }
 
     /**
-     * A connected adb link, shell confirmed: dials [candidates] in turn until one answers `id`. Being unpaired is
-     * reported ahead of connection failures, because that is the one thing the user can act on directly.
+     * A connected adb link, shell confirmed: dials the ports we know about first and only then goes looking.
+     *
+     * The order is what the car costs. In the car wireless debugging is off, so mDNS has nothing to find and
+     * the discovery always burns its full window — 15 seconds before the first dial, every time the server has
+     * to be brought back (measured on the phone, 2026-09-13: `TCP 모드 포트 31432: 열려 있음` at 19:25:57,
+     * connected 19:26:12). TCP mode exists precisely so that port is enough, so try it before paying for a
+     * search that can only fail. Discovery still runs when the known ports get us nowhere, which is the case
+     * it was written for: the first Wi-Fi run, where adbd's port is whatever it picked this boot.
+     *
+     * Being unpaired is reported ahead of connection failures, because that is the one thing the user can act on.
      */
     @Throws(IOException::class)
     private fun openLink(): AdbLink {
         val tried = StringBuilder()
         var notPaired: AdbLink.NotPairedException? = null
-        for (c in candidates()) {
-            if (!active) throw IOException("중지됨")
-            set(State.CONNECTING, "${c.why} 127.0.0.1:${c.port}")
-            val l = AdbLink(c.port, connectTimeoutMs = CONNECT_TIMEOUT_MS)
-            val id = runCatching { l.whoAmI() }
-            id.getOrNull()?.let {
-                if (c.port == prefs.manualConnectPort) prefs.manualPortFailures = 0
-                checkShell(it, c.why)
-                return maybeSwitchToTcpMode(l, c)
+        val known = knownPorts()
+        // Only the TCP-mode port is certainly this phone's adbd — we opened it ourselves. A typed port can be
+        // stale or another device entirely, which is what dropManualPortIfHopeless is for.
+        var notPairedFromOurs = false
+        for (round in listOf(known, null)) {
+            val list = round ?: discoveredPorts(known)
+            for (c in list) {
+                if (!active) throw IOException("중지됨")
+                set(State.CONNECTING, "${c.why} 127.0.0.1:${c.port}")
+                val l = AdbLink(c.port, connectTimeoutMs = CONNECT_TIMEOUT_MS)
+                val id = runCatching { l.whoAmI() }
+                id.getOrNull()?.let {
+                    if (c.port == prefs.manualConnectPort) prefs.manualPortFailures = 0
+                    checkShell(it, c.why)
+                    return maybeSwitchToTcpMode(l, c)
+                }
+                l.close()
+                val e = id.exceptionOrNull()
+                if (e is AdbLink.NotPairedException) {
+                    notPaired = e
+                    if (c.why == "TCP 모드") notPairedFromOurs = true
+                }
+                tried.append("\n  · ${c.port} (${c.why}): ${e?.message?.take(80)}")
             }
-            l.close()
-            val e = id.exceptionOrNull()
-            if (e is AdbLink.NotPairedException) notPaired = e
-            tried.append("\n  · ${c.port} (${c.why}): ${e?.message?.take(80)}")
+            // Our own adbd rejecting our key is final — no other port will answer differently — so say it now
+            // instead of spending the discovery window to be told the same thing. A typed port saying it is
+            // not conclusive: it may belong to another device, and discovery is exactly what rescues that.
+            if (notPairedFromOurs) throw notPaired!!
         }
         notPaired?.let { throw it }
         dropManualPortIfHopeless()

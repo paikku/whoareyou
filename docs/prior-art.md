@@ -93,7 +93,7 @@
 | 1 | **주소를 추측하지 말고 측정한다** — 후보 IPv4를 전부 광고하고, 브라우저가 실제로 접속해 온 `Host` 헤더 IP를 기억해 다음부터 우선 | Castla가 두 번 틀린 뒤 도달한 결론. `192.0.0.x`가 되는 경우가 실제로 있다 | `core` 서버가 `Host`를 기록 → 앱이 URL/QR로 표시 |
 | 2 | **Wi-Fi가 잡히면 앱을 열지 않아도 백그라운드에서 자동 기동** | Tesor의 동작. "재부팅 후 1회"의 체감을 없앤다 | `ShellServerLink`를 네트워크 콜백으로 깨우기 |
 | 3 | **셸 워치독** — 서버가 죽으면 셸 쪽에서 되살린다 | Castla의 2단 워치독. 우리 TCP 모드와 합치면 차에서의 복구가 이중화된다 | `ServerCommand`에 워치독 스크립트 추가 |
-| 4 | **핫스팟 자동 켜기** (`TetheringManager` + `setExemptFromEntitlementCheck(true)`) + **차 BT 감지 자동 시작** | Tesor·Castla 공통. 차에 타면 아무것도 안 눌러도 된다 | shell-server(권한 필요) |
+| 4 | ~~**핫스팟 자동 켜기**~~ (`TetheringManager` + `setExemptFromEntitlementCheck(true)`) — **가져왔다가 ❌ 로 확인됨** (2026-09-13, S26U/One UI 8 + 에뮬레이터 둘 다 `NO_CHANGE_TETHERING_PERMISSION(14)`, verification-log 열린 질문 0). shell 에는 `TETHER_PRIVILEGED` 가 없고, **면제를 요청하는 것 자체가** AOSP 에서 `onlyAllowPrivileged` 로 넘어가 WRITE_SETTINGS 경로까지 막는다. Castla 가 이 기능을 내걸고 있지만 우리 기기에서는 재현되지 않았다 — 같은 uid 인데도 | 남는 것은 **차 BT 감지 자동 시작** 뿐 |
 | 5 | **WebCodecs 렌더러를 http에서 시험** | 평문에서 되면 fMP4 먹싱을 우회해 지연이 준다 | `web/` 렌더러 3번째 구현 |
 | 6 | 도메인 방식은 **채택하지 않는다** | IPv6 전용 통신사에서 DNS64가 NAT64로 보내 깨진다(Castla issue #51 실측) | — |
 

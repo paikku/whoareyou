@@ -194,6 +194,12 @@ final class Hotspot {
         if (before.known && before.on == on) {
             return reply(true, "already " + (on ? "on" : "off"), before);
         }
+        if (permissionDenied) {
+            // Asked and answered. Trying again costs two framework round trips and another write to a carrier
+            // setting, every press, to be told the same thing — and the app has already moved on to telling
+            // the driver to use Settings.
+            return reply(false, "이 폰은 앱이 핫스팟을 바꾸는 것을 허용하지 않습니다 (테더링 권한 없음) — 설정에서 직접", before);
+        }
         Object tm = tetheringManager();
         if (tm == null) {
             lastError = "no tethering service";

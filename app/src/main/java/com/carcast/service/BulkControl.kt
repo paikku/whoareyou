@@ -86,6 +86,15 @@ object BulkControl {
     }.getOrNull()
 
     /**
+     * Has this phone already told us it will not let an app switch the hotspot? Measured on both the emulator
+     * and the S26U: `NO_CHANGE_TETHERING_PERMISSION`. When that is the answer there is nothing to attempt and
+     * nothing to report but where the driver can do it by hand.
+     */
+    fun hotspotRefused(): Boolean = runCatching {
+        JSONObject(get("/api/hotspot", 2000)).optBoolean("permissionDenied", false)
+    }.getOrDefault(false)
+
+    /**
      * Asks the server to switch the hotspot. [waitMs] is how long the server may wait for the radio
      * before answering; our own read timeout has to outlast it or we would give up on a call that worked.
      */
@@ -111,7 +120,9 @@ object BulkControl {
         if (!claim(Phase.TURNING_OFF, log)) return false
         try {
             log("일괄 끄기: 핫스팟 → 서버 → 세션 순서로 끕니다")
-            when (hotspotOn()) {
+            if (hotspotRefused()) {
+                log("1/3 핫스팟: 이 폰은 앱이 바꾸는 것을 허용하지 않습니다 — 설정 > 모바일 핫스팟에서 직접 꺼 주세요")
+            } else when (hotspotOn()) {
                 null -> {
                     // Either no server, or a phone that will not report AP state. Try anyway when a server
                     // answers at all — a blind stop is harmless — and say so when there is nothing to ask.
@@ -163,8 +174,10 @@ object BulkControl {
             val up = awaitServer(SERVER_WAIT_MS)
             log("2/3 서버: " + if (up) "응답 확인" else "${SERVER_WAIT_MS / 1000}초 안에 응답 없음 — 핫스팟은 건너뜁니다 (로그의 adb 상태를 보세요)")
             if (!up) return true
-            when (hotspotOn()) {
-                true -> log("3/3 핫스팟: 이미 켜져 있음")
+            when {
+                hotspotRefused() ->
+                    log("3/3 핫스팟: 이 폰은 앱이 바꾸는 것을 허용하지 않습니다 — 설정 > 모바일 핫스팟에서 직접 켜 주세요")
+                hotspotOn() == true -> log("3/3 핫스팟: 이미 켜져 있음")
                 else -> {
                     val r = setHotspot(true)
                     log("3/3 핫스팟: " + (if (r.ok) "켰습니다" else "켜지 못했습니다") + " — ${r.detail}")
