@@ -49,7 +49,7 @@
     <string name="bulk_on_warn_none">TCP 모드도 USB 디버깅도 꺼져 있습니다. 이 상태에서 Wi-Fi가 끊기면(핫스팟을 켜는 순간이 그렇습니다) 서버가 adbd와 함께 종료되고, 차에서는 다시 띄울 수 없습니다. \'TCP 모드\'를 먼저 켜 두는 것을 권합니다. 그래도 진행할까요?</string>
     <string name="hotspot_settings">핫스팟 설정 열기</string>
     <string name="widget_title">CarCast</string>
-    <string name="widget_detail">VPN %1$s  서버 %2$s  핫스팟 %3$s</string>
-    <string name="widget_description">핫스팟·서버·VPN을 한 번에 켜고 끄는 스위치</string>
+    <string name="widget_detail">VPN %1$s  서버 %2$s</string>
+    <string name="widget_description">서버와 VPN을 한 번에 켜고 끄는 스위치</string>
     <string name="widget_toggle_description">CarCast 일괄 켜기/끄기</string>
 </resources>

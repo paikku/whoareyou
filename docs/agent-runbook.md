@@ -110,8 +110,10 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
   `tether_dun_required` 를 건드리던 것도 없어졌다 — 남은 것은 읽기뿐이다
 - 상태: `GET /api/hotspot` 과 `/api/status.hotspot` 의 `on` `known` `via`. **`known=false` 는 "꺼짐"이 아니라
   "아무도 답해 주지 않았다"** 이다. 이 둘을 섞으면 운전자는 이미 켜 둔 스위치를 다시 만지러 가고 차는 그대로 못 붙는다
-- 서버가 없을 때는 앱이 직접 본다(`HotspotState`): AP 이름의 인터페이스에 IPv4 가 붙어 있나. 위젯이 쓸모 있는
-  때가 대개 아무것도 안 떠 있을 때라서 이 폴백이 필요하다. 서버 답이 있으면 그쪽이 우선이다(`getWifiApState`)
+- **위젯에는 핫스팟을 싣지 않는다.** 스위치가 다루지 않는 것을 스위치 밑에 적으면, 그것도 이 스위치가
+  건드리는 것으로 읽힌다. 핫스팟은 앱 화면에만 한 줄로 있다
+- 서버가 없을 때는 앱이 직접 본다(`HotspotState`): AP 이름의 인터페이스에 IPv4 가 붙어 있나.
+  서버 답이 있으면 그쪽이 우선이다(`getWifiApState`)
 - 앱: `BulkControl.kt`(순서와 그 이유), `StreamService.ACTION_ALL_ON/ALL_OFF`, `CarCastWidget.kt`
 - **위젯은 스스로 폴링하지 못한다.** 상태를 가진 쪽이 바뀔 때마다 `CarCastWidget.refresh()` 를 불러 줘야 한다 —
   `StreamService`(세션·서버)와 `CarVpnService`(tun)가 그렇게 한다. VPN 이 자기 전이를 알리지 않아 위젯이

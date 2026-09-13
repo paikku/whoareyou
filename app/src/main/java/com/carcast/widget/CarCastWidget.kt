@@ -10,7 +10,6 @@ import android.net.VpnService
 import android.widget.RemoteViews
 import com.carcast.R
 import com.carcast.service.BulkControl
-import com.carcast.service.HotspotState
 import com.carcast.service.StreamService
 import com.carcast.ui.MainActivity
 import com.carcast.vpn.CarVpnService
@@ -105,9 +104,9 @@ class CarCastWidget : AppWidgetProvider() {
         }
 
         /**
-         * The switch is on only while the session is actually up; the line under it says which of the three
-         * parts answered, because "on" with a dead server is the failure this project spends most of its
-         * time on and the widget must not hide it.
+         * The switch is on only while the session is actually up, and the line under it splits that into the
+         * two halves the switch owns — because "on" with a dead server is the failure this project spends
+         * most of its time on, and the widget must not hide it behind a single dot.
          */
         private fun render(context: Context): RemoteViews {
             val busy = BulkControl.phase
@@ -121,11 +120,7 @@ class CarCastWidget : AppWidgetProvider() {
                 R.id.widget_detail, when (busy) {
                     BulkControl.Phase.TURNING_ON -> context.getString(R.string.bulk_on_progress)
                     BulkControl.Phase.TURNING_OFF -> context.getString(R.string.bulk_off_progress)
-                    // The hotspot is the driver's own switch, so it is shown and never touched.
-                    BulkControl.Phase.IDLE -> context.getString(
-                        R.string.widget_detail,
-                        mark(vpn), mark(server), hotspotMark(),
-                    )
+                    BulkControl.Phase.IDLE -> context.getString(R.string.widget_detail, mark(vpn), mark(server))
                 }
             )
             views.setCompoundButtonChecked(R.id.widget_toggle, checked)
@@ -145,16 +140,5 @@ class CarCastWidget : AppWidgetProvider() {
         }
 
         private fun mark(up: Boolean) = if (up) "●" else "○"
-
-        /**
-         * Costs no network: [HotspotState] reads the last /api/status we already have, and falls back to the
-         * phone's own interfaces when no server is running — which is most of the time the driver looks at
-         * this, since the switch is for when nothing of ours is up yet.
-         */
-        private fun hotspotMark(): String = when (HotspotState.on()) {
-            true -> "●"
-            false -> "○"
-            null -> "?"
-        }
     }
 }
