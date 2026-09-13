@@ -171,10 +171,7 @@ class BulkControlTest {
         private val switchOk: Boolean = true,
         private val switchDetail: String = "started",
     ) : AutoCloseable {
-        private val socket = ServerSocket().apply {
-            reuseAddress = true
-            bind(InetSocketAddress("127.0.0.1", Config.HTTP_PORT), 8)
-        }
+        private val socket = bind()
         var onRequest: (String) -> Unit = {}
         @Volatile private var closed = false
         /** Flipped by a successful POST, so a later GET tells the truth the way the real server would. */
@@ -186,6 +183,28 @@ class BulkControlTest {
                 try { serve(client) } catch (_: Exception) { } finally { runCatching { client.close() } }
             }
         }, "fake-server").apply { isDaemon = true; start() }
+
+        /**
+         * The port is not ours to choose — [BulkControl] only ever talks to the one the phone's server
+         * listens on — so tests in the same JVM take turns on it. Closing a listening socket is not always
+         * instant from the next bind's point of view, so wait for the port rather than failing the test
+         * over the previous test's teardown (this is what broke on CI but never on a developer machine).
+         */
+        private fun bind(): ServerSocket {
+            var last: Exception? = null
+            repeat(100) {
+                try {
+                    return ServerSocket().apply {
+                        reuseAddress = true
+                        bind(InetSocketAddress("127.0.0.1", Config.HTTP_PORT), 8)
+                    }
+                } catch (e: java.io.IOException) {
+                    last = e
+                    Thread.sleep(50)
+                }
+            }
+            throw IllegalStateException("port ${Config.HTTP_PORT} never came free", last)
+        }
 
         private fun serve(client: Socket) {
             val input = client.getInputStream().bufferedReader()
@@ -223,6 +242,8 @@ class BulkControlTest {
             closed = true
             runCatching { socket.close() }
             thread.interrupt()
+            // Wait for the accept loop to actually be gone before the next test tries the same port.
+            runCatching { thread.join(2_000) }
         }
     }
 }
