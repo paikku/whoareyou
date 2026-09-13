@@ -118,10 +118,17 @@ test('유휴 타이머 손잡이가 걸려 있다 (충전과 무관하게 듣는
   if (!adbAvailable) return t.skip('adb 없음');
   assert.equal(adbShell('settings get system screen_off_timeout'), String(s.screenOffTimeout),
     '서버는 걸었다고 하는데 기기의 설정값이 다르다');
-  // 서버가 갑자기 죽어도(그 폰에서는 adbd 가 사라지면 그렇게 된다) 사용자의 값이 어딘가 남아 있어야
-  // 다음 실행이 되돌릴 수 있다. 그 기록이 없으면 "영영 안 꺼지는 폰"을 사용자에게 떠넘기게 된다.
   const stashed = adbShell('cat /data/local/tmp/carcast/screen_off_timeout.prev 2>/dev/null || echo MISSING');
   t.diagnostic(`남겨 둔 사용자 값: ${stashed}`);
+  if (s.screenOffTimeoutWas == null) {
+    // 원래 값이 이미 더 길어서 **건드리지 않은** 경우다. 되돌릴 것이 없으니 기록도 없어야 한다 —
+    // 남아 있으면 다음 실행이 멀쩡한 값을 "되돌릴 것"으로 착각한다.
+    t.diagnostic('원래 값이 이미 더 길어서 건드리지 않았다');
+    assert.equal(stashed, 'MISSING', '건드리지도 않았는데 되돌릴 기록을 남겼다');
+    return;
+  }
+  // 바꿨다면, 서버가 갑자기 죽어도(그 폰에서는 adbd 가 사라지면 그렇게 된다) 사용자의 값이 어딘가
+  // 남아 있어야 다음 실행이 되돌릴 수 있다. 없으면 "영영 안 꺼지는 폰"을 사용자에게 떠넘기게 된다.
   assert.equal(stashed, String(s.screenOffTimeoutWas),
     '유휴 타이머를 바꿔 놓고 원래 값을 어디에도 안 남겼다 — 서버가 죽으면 되돌릴 길이 없다');
 });

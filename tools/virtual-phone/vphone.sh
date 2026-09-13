@@ -22,6 +22,8 @@ ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
 # 폰의 유휴 타이머를 밀어 둔다. stay_on_while_plugged_in 과 달리 충전과 무관하게 듣는 손잡이라
 # 검사 대상이다(05-screen). 서버가 내려갈 때 원래 값으로 되돌린다(kill-switch).
 SCREEN_OFF_TIMEOUT="${SCREEN_OFF_TIMEOUT:-600000}"
+# 검사 전에 기기를 "보통 폰"처럼 맞춰 두는 값 (위 주석 참고).
+PHONE_LIKE_TIMEOUT="${PHONE_LIKE_TIMEOUT:-60000}"
 API="${API:-36}"
 AVD="${AVD:-carcast-vphone}"
 PORT="${PORT:-3333}"
@@ -125,6 +127,10 @@ server_build_id() {
 start_server() {
   local id="$1"
   adb shell "mkdir -p $(dirname $DEVICE_LOG)" >/dev/null 2>&1 || true
+  # 에뮬레이터는 screen_off_timeout 이 2147483647(사실상 "영영 안 꺼짐")로 나온다. 진짜 폰은 30초~2분이다.
+  # 서버는 **줄이지 않는다**는 규칙이 있어서, 그 기본값을 그대로 두면 손잡이가 아예 안 걸리고
+  # 되돌리기 경로까지 통째로 검사되지 않는다(run #30 에서 그렇게 됐다). 보통 폰처럼 맞춰 놓고 시작한다.
+  adb shell "settings put system screen_off_timeout ${PHONE_LIKE_TIMEOUT}" >/dev/null 2>&1 || true
   # 폰에서 앱이 하는 것과 같은 분리 실행. daemon=true 는 stdin EOF 로 죽지 않는다는 뜻이고,
   # 종료는 loopback 의 POST /api/stop(킬 스위치) 또는 pkill 이다.
   # stdin 까지 /dev/null 로 떼어 놓는다 — 세 fd 중 하나라도 adb 파이프에 남아 있으면
