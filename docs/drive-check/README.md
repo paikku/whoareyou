@@ -1,7 +1,10 @@
 # 드라이브 점검 페이지
 
-기어를 **D** 에 넣었을 때 차 브라우저가 무엇을 멈추는지 눈으로 보는 페이지. `index.html` 한 장이고
-빌드도 외부 요청도 없다.
+기어를 **D** 에 넣었을 때 차 브라우저가 무엇을 멈추는지 눈으로 보는 페이지.
+[`web/public/drive-check.html`](../../web/public/drive-check.html) 한 장이고 빌드도 외부 요청도 없다.
+
+APK 에 실려 폰이 서빙하므로 **호스팅 없이 `http://100.99.9.9:3333/drive-check.html` 로 열면 된다.**
+평문에서 못 재는 것은 WebCodecs 하나뿐이고(아래 "왜 https 여야 하는가"), 그것만 https 가 필요하다.
 
 ## 왜 필요한가
 
@@ -18,7 +21,7 @@
 
 그래서 남는 질문은 "우리 차에서 무엇을 쓸 수 있는가"이고, 이 페이지가 그것만 잰다.
 
-## 왜 https 여야 하는가
+## 왜 https 가 (한 항목에만) 필요한가
 
 `VideoDecoder`(WebCodecs)는 스펙상 secure context 전용이다. 폰이 주는 `http://100.99.9.9` 에서는
 기능이 있어도 항상 `undefined` 로 보이므로, 우리 진단 #7·#13 의 `WebCodecs VideoDecoder: false` 가
@@ -30,17 +33,25 @@
 > 이 제약 자체가 결정에 들어간다: WebCodecs 를 쓰려면 https 만으로는 부족하고 **폰이 wss 까지
 > 종단해야 한다.**
 
-## 올리기
+## 두 갈래
 
-GitHub Pages: **Settings → Pages → Source: `main` 브랜치, 폴더 `/docs`**.
-그러면 `https://<계정>.github.io/<저장소>/drive-check/` 에서 열린다. https 를 주는 정적 호스팅이면 어디든 된다.
+| | 주소 | 답하는 것 |
+|---|---|---|
+| **1차 (호스팅 불필요)** | `http://100.99.9.9:3333/drive-check.html` | canvas·타이머·`<video>`·JPEG — 렌더러 결정에 필요한 대부분 |
+| **2차 (https 필요)** | 아래 참조 | WebCodecs 하나. 안 (a) 의 생사 |
+
+2차용 https 는 이 저장소로는 못 준다 — **private 저장소라 GitHub Pages 를 쓸 수 없다**(무료 계정 기준).
+`web/public/drive-check.html` 을 그대로 올릴 수 있는 곳이면 어디든 된다:
+
+- 이 파일 하나만 담은 **공개 저장소**를 새로 만들고 Pages 켜기 (무료, 영구, 익명 접근 가능).
+  페이지에는 비밀이 없다 — 브라우저 능력만 잰다.
+- Netlify Drop, Cloudflare Pages 등 정적 https 호스팅.
 
 ## 차에서
 
 1. 차 Wi-Fi 설정에서 폰 핫스팟의 **Remain Connected in Drive** 를 켠다.
-2. 폰 화면에 움직이는 것을 띄워 둔다(스트림 쪽 확인을 겸할 때).
-3. 차 브라우저로 위 https 주소를 연다. **정차 상태에서 브레이크를 밟고 D 로 옮긴다.**
-4. 30 초 본다. 손댈 것 없다. **P 로 돌아온 뒤 맨 아래 한 줄을 사진으로 남긴다.**
+2. 차 브라우저로 위 주소를 연다. **정차 상태에서 브레이크를 밟고 D 로 옮긴다.**
+3. 30 초 본다. 손댈 것 없다. **P 로 돌아온 뒤 맨 아래 한 줄을 사진으로 남긴다.**
 
 차에는 devtools 가 없으므로 모든 결과가 화면에 큰 글씨로 찍힌다.
 

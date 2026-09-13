@@ -12,8 +12,9 @@
     기능이 있어도 항상 undefined 로 보인다 — 우리 진단 #7·#13 의 `WebCodecs VideoDecoder: false` 가
     "차에 기능이 없다"는 뜻인지 "평문이라 가려졌다"는 뜻인지 지금까지 가릴 수 없었다. https 에서 한 번
     보면 그 자리에서 갈린다.
-  - 이 페이지는 폰과 통신하지 않는다(https 페이지는 ws:// 를 열 수 없다 — mixed content). 순수하게
-    "이 브라우저가 무엇을 할 수 있고, D 에서 무엇을 멈추는가"만 본다. 폰 쪽은 /api/status 로 따로 본다.
+  - 이 페이지는 폰과 통신하지 않는다. 폰이 서빙하든 https 로 올려 두든 같은 결과가 나와야 하고
+    (https 로 올리면 ws:// 는 mixed content 로 막히기도 한다), 여기서 보는 것은 오직 "이 브라우저가
+    무엇을 할 수 있고 D 에서 무엇을 멈추는가"다. 폰 쪽 상태는 /api/status 로 따로 본다.
 
   쓰는 법: 정차 상태에서 브레이크를 밟고 D 로 옮긴 뒤 화면을 30 초 본다. 손댈 것 없다.
   차에는 devtools 가 없으므로 모든 결과는 화면에 큰 글씨로 찍는다. 맨 아래 한 줄을 사진으로 남기면 된다.
@@ -238,7 +239,6 @@ function cap(name, value, note) {
   tr.innerHTML = `<td>${name}</td><td class="${value === true ? 'ok' : value === false ? 'bad' : ''}">` +
                  `${value === true ? 'O' : value === false ? 'X' : value}${note ? ` <span class="sub">${note}</span>` : ''}</td>`;
   $('caps').appendChild(tr);
-  return good;
 }
 
 const has = (name) => typeof window[name] !== 'undefined';

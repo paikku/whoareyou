@@ -81,6 +81,9 @@ val buildWeb = tasks.register<Exec>("buildWeb") {
     onlyIf { !project.hasProperty("skipWeb") }
     workingDir = rootProject.projectDir
     inputs.dir(webDir.resolve("src"))
+    // public/ is copied verbatim into the bundle, so a page added there (drive-check.html) must
+    // invalidate this task too — otherwise the APK keeps the old assets and the phone serves 404.
+    inputs.dir(webDir.resolve("public"))
     inputs.files(webDir.resolve("package.json"), rootProject.file("package.json"))
     outputs.dir(layout.projectDirectory.dir("src/main/assets/web"))
     val npm = if (System.getProperty("os.name").lowercase().contains("win")) "npm.cmd" else "npm"
