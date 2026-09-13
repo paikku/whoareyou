@@ -224,6 +224,9 @@ class MainActivity : AppCompatActivity() {
         val st = runCatching { JSONObject(statusJson) }.getOrNull() ?: return "상태를 읽지 못함"
         // A server that answers but carries no hotspot block is an older build, not a phone without a hotspot.
         val h = st.optJSONObject("hotspot") ?: return "이전 빌드의 서버 — 핫스팟 제어 없음"
+        // "This phone refuses us" is not "no server": it is final, and the only useful answer is the
+        // Settings screen — so say that, rather than an error code the driver cannot act on.
+        if (h.optBoolean("permissionDenied", false)) return getString(R.string.hotspot_no_permission)
         if (!h.optBoolean("controllable", false)) return "제어 불가 (${h.optString("via")})"
         val state = if (!h.optBoolean("known", false)) "알 수 없음" else if (h.optBoolean("on", false)) "켜짐" else "꺼짐"
         val err = h.optString("lastError")
@@ -275,6 +278,24 @@ class MainActivity : AppCompatActivity() {
      * take the server down with it is said out loud before it happens, not afterwards in the log.
      */
     private fun bulkOn() {
+        if (hotspotRefused()) {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setMessage(R.string.hotspot_no_permission_on)
+                .setPositiveButton(R.string.hotspot_settings) { _, _ -> openTetherSettings() }
+                .setNeutralButton(R.string.bulk_on) { _, _ -> startBulkOn() }
+                .setNegativeButton(android.R.string.cancel, null).show()
+            return
+        }
+        startBulkOn()
+    }
+
+    /** What the server last said about being allowed to switch the hotspot at all. */
+    private fun hotspotRefused(): Boolean = runCatching {
+        JSONObject(StreamService.shellStatus ?: return false)
+            .optJSONObject("hotspot")?.optBoolean("permissionDenied", false) == true
+    }.getOrDefault(false)
+
+    private fun startBulkOn() {
         val go: () -> Unit = {
             if (BulkControl.precondition(this) == BulkControl.Survival.NONE) {
                 androidx.appcompat.app.AlertDialog.Builder(this)

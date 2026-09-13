@@ -96,6 +96,14 @@ final class Hotspot {
     /** The last thing start/stop did, so a failure survives long enough for the app to show it. */
     private static volatile String lastAction = "";
     private static volatile String lastError = "";
+    /**
+     * This phone will not let uid 2000 change tethering at all — both the privileged request and the plain
+     * one came back NO_CHANGE_TETHERING_PERMISSION. Worth a flag of its own rather than another error
+     * string: it is not a failure to retry but a property of the build, and the only useful thing left to
+     * tell the driver is "switch it on in Settings". Measured on the API 36 emulator (run #42); whether
+     * One UI grants it is the open question in docs/verification-log.md.
+     */
+    private static volatile boolean permissionDenied;
 
     /**
      * /api/status carries the hotspot on every request, and the app polls it twice a second while the car
@@ -131,14 +139,27 @@ final class Hotspot {
         return json(info());
     }
 
-    static Map<String, Object> info() {
+    /**
+     * The fields that describe the hotspot, in one place so {@code /api/hotspot}, {@code /api/status} and
+     * the reply to a switch can never come to disagree about what they are called.
+     */
+    private static Map<String, Object> fields(State s) {
         Map<String, Object> m = new LinkedHashMap<>();
-        State s = state();
         m.put("on", s.on);
         m.put("known", s.known);
         m.put("via", s.via);
         m.put("interfaces", s.interfaces);
-        m.put("controllable", tetheringManager() != null);
+        // "Controllable" has to mean the caller can actually switch it, not merely that a service answered:
+        // a build that refuses uid 2000 leaves the app nothing to offer but the Settings screen.
+        m.put("controllable", tetheringManager() != null && !permissionDenied);
+        if (permissionDenied) {
+            m.put("permissionDenied", true);
+        }
+        return m;
+    }
+
+    static Map<String, Object> info() {
+        Map<String, Object> m = fields(state());
         if (!lastAction.isEmpty()) {
             m.put("lastAction", lastAction);
         }
@@ -232,9 +253,15 @@ final class Hotspot {
                     "startTethering(exempt): " + privileged.detail + "; dun: " + dun);
         }
         Attempt plain = attemptStart(tm, false, waitMs - half);
+        if (plain.permissionDenied) {
+            // Both doors are shut: this build does not let shell change tethering, and no further call will.
+            permissionDenied = true;
+        }
         return new Outcome(plain.started, !plain.failed,
                 "startTethering(exempt): " + privileged.detail
-                        + " → 권한 없음, 면제 없이 재시도: " + plain.detail + "; dun: " + dun);
+                        + " → 권한 없음, 면제 없이 재시도: " + plain.detail
+                        + (plain.permissionDenied ? " — 이 폰은 앱이 핫스팟을 바꾸는 것을 허용하지 않습니다" : "")
+                        + "; dun: " + dun);
     }
 
     /** One startTethering call and what came back. */
@@ -502,11 +529,7 @@ final class Hotspot {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("ok", ok);
         m.put("detail", detail);
-        m.put("on", s.on);
-        m.put("known", s.known);
-        m.put("via", s.via);
-        m.put("interfaces", s.interfaces);
-        m.put("controllable", tetheringManager() != null);
+        m.putAll(fields(s));
         if (!lastError.isEmpty()) {
             m.put("lastError", lastError);
         }
