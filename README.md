@@ -46,6 +46,9 @@ Wi-Fi 연결 중에만 켜지므로 집 Wi-Fi에서 띄우고, 서버는 재부�
    아니면 Wi-Fi에서 **시작**을 한 번 누르면 다시 켜진다(로그에 어느 쪽인지 남는다). 배경과 계획: [docs/hotspot-only.md](docs/hotspot-only.md).
    서버 로그는 실행마다 `/data/local/tmp/carcast/server-<epoch>.log`(앱이 `/api/log`로 보여줌).
 
+**TCP 모드가 켜진 뒤 매일 쓰는 순서는 둘이다:** 핫스팟을 켜고(설정이나 빠른 설정 타일에서 — 앱은 못 켠다),
+홈 화면의 **CarCast 스위치**를 켠다. 내릴 때도 그 스위치 하나면 서버와 VPN 이 함께 내려간다.
+
 PC 폴백:
 
 ```powershell
