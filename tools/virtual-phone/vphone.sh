@@ -143,6 +143,22 @@ start_server() {
     fi
   done
   say "서버 응답 (${waited}s)"
+  # HTTP 가 답한다고 준비된 것이 아니다. 가상 디스플레이와 인코더는 그보다 **2초쯤 뒤에** 붙고,
+  # 그 사이 /api/status 는 source=none 을 돌려준다 — 첫 검사가 그 틈에 걸려 깨진 적이 있다(run #24).
+  # "붙었다"의 기준은 소스가 정해지는 순간이지 포트가 열리는 순간이 아니다.
+  local src=""
+  waited=0
+  until [ -n "$src" ] && [ "$src" != "none" ]; do
+    # `|| true`: 아직 못 붙었을 때 curl 이 실패해도 `set -e` 로 스크립트가 죽으면 안 된다.
+    src="$(curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/status" 2>/dev/null | sed -n 's/.*"source":"\([a-z]*\)".*/\1/p' || true)"
+    [ -n "$src" ] && [ "$src" != "none" ] && break
+    sleep 1; waited=$((waited + 1))
+    if [ "$waited" -ge 60 ]; then
+      say "영상 소스가 60초 안에 붙지 않았다. 기동 로그:"; adb shell "cat $DEVICE_LOG" || true
+      die "영상 소스 없음"
+    fi
+  done
+  say "영상 소스 $src (+${waited}s)"
 }
 
 cmd_up() {

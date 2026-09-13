@@ -658,6 +658,10 @@ final class ScreenPower {
                 Ln.w("not changing " + SCREEN_OFF_TIMEOUT + ": could not read the current value");
                 return;
             }
+            // Read, then record, then write - in that order, and never collapsed into one
+            // getAndPutValue: a crash between writing and recording would leave our number in the
+            // setting with nothing saying what it replaced. The extra round trip costs ~100ms of
+            // startup, which is the harness's problem to wait for, not a reason to risk someone's phone.
             if (recovered != null) {
                 screenOffTimeoutRecovered = true;
                 Ln.i("a previous run left " + SCREEN_OFF_TIMEOUT + " changed; the user's value is " + recovered);
