@@ -38,6 +38,9 @@ import java.util.concurrent.TimeUnit;
  * Carrier locks: {@code setExemptFromEntitlementCheck(true)} plus clearing {@code tether_dun_required} is what
  * Castla found necessary on carrier-locked Samsung devices (docs/prior-art.md §4); without them a carrier
  * build answers the request with TETHER_ERROR_PROVISIONING_FAILED. Both are best effort and reported.
+ * But the exemption is not free — it is also what decides whether the request may only be made by a caller
+ * holding TETHER_PRIVILEGED, which shell does not have on every build. {@link #doStart} therefore asks twice,
+ * and its comment carries the measurement that settled the order.
  *
  * Note that {@code tether_dun_required} is <b>not</b> restored, unlike the settings {@link ScreenPower}
  * borrows. Putting it back while the AP is up invites the framework to re-run the very check we just
@@ -62,6 +65,30 @@ final class Hotspot {
      * Samsung's, ap0/softap0 are Qualcomm/AOSP, wlan1 is the second radio on dual-band devices.
      */
     private static final String[] AP_INTERFACES = {"swlan0", "softap0", "ap0", "wlan1"};
+
+    /**
+     * TetheringManager.TETHER_ERROR_* by value. The callback hands back a bare int, and "error=14" in a
+     * log tells a reader nothing — the difference between "this phone will not let us" and "the radio
+     * failed" is the whole diagnosis.
+     */
+    private static final String[] TETHER_ERRORS = {
+        "NO_ERROR", "UNKNOWN_IFACE", "SERVICE_UNAVAIL", "UNSUPPORTED", "UNAVAIL_IFACE", "INTERNAL_ERROR",
+        "TETHER_IFACE_ERROR", "UNTETHER_IFACE_ERROR", "ENABLE_FORWARDING_ERROR", "DISABLE_FORWARDING_ERROR",
+        "IFACE_CFG_ERROR", "PROVISIONING_FAILED", "DHCPSERVER_ERROR", "ENTITLEMENT_UNKNOWN",
+        "NO_CHANGE_TETHERING_PERMISSION", "NO_ACCESS_TETHERING_PERMISSION", "UNKNOWN_TYPE",
+    };
+
+    /** TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION: the one failure we have a second thing to try after. */
+    private static final int TETHER_ERROR_NO_CHANGE_PERMISSION = 14;
+
+    static String errorName(Object code) {
+        if (!(code instanceof Integer)) {
+            return String.valueOf(code);
+        }
+        int i = (Integer) code;
+        String name = i >= 0 && i < TETHER_ERRORS.length ? TETHER_ERRORS[i] : "TETHER_ERROR_" + i;
+        return name + "(" + i + ")";
+    }
 
     private Hotspot() {
     }
@@ -182,19 +209,64 @@ final class Hotspot {
 
     // --- doing it -------------------------------------------------------------------------------
 
+    /**
+     * Two attempts, and the order is the finding rather than a guess.
+     *
+     * {@code setExemptFromEntitlementCheck(true)} is not free: TetheringService passes that very flag as its
+     * {@code onlyAllowPrivileged} argument, so asking to skip the carrier check turns the whole request into
+     * one that {@code TETHER_PRIVILEGED} alone may make. A caller without it is refused outright with
+     * NO_CHANGE_TETHERING_PERMISSION — which is exactly what the API 36 emulator answered us (run #41), and
+     * it never reaches the second path, where a plain request is allowed through the caller's WRITE_SETTINGS.
+     *
+     * So: ask for the exemption first, because a phone that grants us TETHER_PRIVILEGED both accepts it and
+     * needs it on carrier-locked builds — and when that is refused for permission, ask again without it.
+     * Clearing {@code tether_dun_required} is what keeps that second attempt viable: the WRITE_SETTINGS path
+     * is closed while the phone still believes provisioning is required.
+     */
     private static Outcome doStart(Object tm, long waitMs) throws Exception {
         String dun = clearDunRequirement();
+        long half = Math.max(1_000, waitMs / 2);
+        Attempt privileged = attemptStart(tm, true, half);
+        if (!privileged.permissionDenied) {
+            return new Outcome(privileged.started, !privileged.failed,
+                    "startTethering(exempt): " + privileged.detail + "; dun: " + dun);
+        }
+        Attempt plain = attemptStart(tm, false, waitMs - half);
+        return new Outcome(plain.started, !plain.failed,
+                "startTethering(exempt): " + privileged.detail
+                        + " → 권한 없음, 면제 없이 재시도: " + plain.detail + "; dun: " + dun);
+    }
+
+    /** One startTethering call and what came back. */
+    private static final class Attempt {
+        final boolean started;
+        final boolean failed;
+        final boolean permissionDenied;
+        final String detail;
+
+        Attempt(boolean started, boolean failed, boolean permissionDenied, String detail) {
+            this.started = started;
+            this.failed = failed;
+            this.permissionDenied = permissionDenied;
+            this.detail = detail;
+        }
+    }
+
+    private static Attempt attemptStart(Object tm, boolean exempt, long waitMs) throws Exception {
         Class<?> requestBuilder = Class.forName("android.net.TetheringManager$TetheringRequest$Builder");
         Object builder = requestBuilder.getConstructor(int.class).newInstance(TETHERING_WIFI);
-        // Carrier entitlement: ask to skip the check and never to show its UI. A car is not a place to
-        // answer a provisioning dialog, and on an unlocked device both calls are no-ops.
-        String exempt = optional(requestBuilder, builder, "setExemptFromEntitlementCheck", true);
-        String noUi = optional(requestBuilder, builder, "setShouldShowEntitlementUi", false);
+        String flags = "";
+        if (exempt) {
+            // A car is not a place to answer a provisioning dialog, so never let the entitlement UI show.
+            flags = "; " + optional(requestBuilder, builder, "setExemptFromEntitlementCheck", true)
+                    + ", " + optional(requestBuilder, builder, "setShouldShowEntitlementUi", false);
+        }
         Object request = requestBuilder.getMethod("build").invoke(builder);
 
         Class<?> callbackClass = Class.forName("android.net.TetheringManager$StartTetheringCallback");
         final CountDownLatch done = new CountDownLatch(1);
         final String[] outcome = {"no callback"};
+        final int[] errorCode = {-1};
         Object callback = Proxy.newProxyInstance(callbackClass.getClassLoader(), new Class<?>[]{callbackClass},
                 (proxy, method, args) -> {
                     switch (method.getName()) {
@@ -203,7 +275,11 @@ final class Hotspot {
                             done.countDown();
                             break;
                         case "onTetheringFailed":
-                            outcome[0] = "failed error=" + (args != null && args.length > 0 ? args[0] : "?");
+                            Object code = args != null && args.length > 0 ? args[0] : null;
+                            if (code instanceof Integer) {
+                                errorCode[0] = (Integer) code;
+                            }
+                            outcome[0] = "failed " + errorName(code);
                             done.countDown();
                             break;
                         default:
@@ -225,11 +301,11 @@ final class Hotspot {
         Executor direct = Runnable::run;
         start.invoke(tm, request, direct, callback);
         done.await(waitMs, TimeUnit.MILLISECONDS);
-        String detail = "startTethering: " + outcome[0] + "; entitlement: " + exempt + ", " + noUi + "; dun: " + dun;
         boolean started = "started".equals(outcome[0]);
         boolean failed = outcome[0].startsWith("failed");
         // A reported failure is a real answer: never fall back to "the call raised nothing" after one.
-        return new Outcome(started, !failed, detail);
+        return new Attempt(started, failed, errorCode[0] == TETHER_ERROR_NO_CHANGE_PERMISSION,
+                outcome[0] + flags);
     }
 
     private static Outcome doStop(Object tm, long waitMs) throws Exception {

@@ -33,9 +33,10 @@
 | — | `persist.adb.tcp.port`를 shell이 설정할 수 있어 재부팅 후에도 adbd가 포트를 연다 | ❌ **막힘 (2026-09-05 실측)**: `Failed to set property 'persist.adb.tcp.port' to '36788'. See dmesg for error reason.` — 2회 모두 동일. **콜드 부팅 후 Wi-Fi 1회는 남는다**(Tesor·Castla와 동일) | B | [hotspot-only.md](hotspot-only.md) §3 |
 | — | 테소르(Tesor)가 Wi-Fi 없이 동작한다 | ❌ 테소르는 Shizuku 위에서 돈다(설치 안내 2단계). 비루팅 Shizuku는 재부팅 시 종료되고 무선 디버깅 = Wi-Fi로만 다시 시작된다 — 같은 제약 | 문헌 | [hotspot-only.md](hotspot-only.md) §1.4 |
 
-| — | **앱에서 핫스팟을 켜고 끌 수 있다** (`TetheringManager.startTethering/stopTethering`, shell uid) | ⏳ **미실시 (실기기 필요)**. 근거: Shell 패키지가 `TETHER_PRIVILEGED`·`WRITE_SETTINGS` 를 가지며(AOSP 매니페스트), Castla 가 같은 uid(Shizuku)에서 같은 호출로 핫스팟을 자동 토글한다(prior-art §4). `cmd wifi start-softap` 은 **root 전용**이라(WifiShellCommand) uid 2000 으로는 불가 — 이 길은 없다 | B | §1 아래 주 |
-| — | 통신사 잠금 기기에서 entitlement 를 우회할 수 있다 (`setExemptFromEntitlementCheck(true)` + `tether_dun_required=0`) | ⏳ **미실시**. Castla 가 "Samsung/carrier-locked 기기에 필수"로 적어 둔 것을 그대로 따랐다. 실패하면 `/api/hotspot` 의 `detail` 에 `TETHER_ERROR_PROVISIONING_FAILED` 가 남는다 | B | — |
-| — | 핫스팟 켜짐/꺼짐을 읽을 수 있다 (`getWifiApState` → `getTetheredIfaces` → 인터페이스 이름) | ⏳ 세 경로 중 **무엇이 답했는지**를 `via` 로 남긴다. 셋 다 실패하면 `known=false` 이고, 그때는 "꺼짐"이라 하지 않는다 | B | — |
+| — | **앱에서 핫스팟을 켜고 끌 수 있다** (`TetheringManager.startTethering/stopTethering`, shell uid) | ⚠️ **가상 폰에서 조건이 드러남 (2026-09-13, run #41)**: 상태 읽기 ✅ (`getWifiApState=11`, `controllable=true`) — 리플렉션 경로와 `TetheringRequest.Builder` 의 두 setter 모두 API 36 에서 살아 있다. 그러나 **면제를 요청한 켜기는 `NO_CHANGE_TETHERING_PERMISSION(14)` 으로 거부**. AOSP `TetheringService` 가 `exemptFromEntitlementCheck` 를 그대로 `onlyAllowPrivileged` 로 넘기므로 **면제를 달라는 요청 자체가 `TETHER_PRIVILEGED` 를 요구**하고, shell 이 그것을 못 가진 빌드에서는 WRITE_SETTINGS 경로에 닿지도 못하고 끝난다. → 면제 없이 한 번 더 시도하도록 고침(`Hotspot.doStart`). 실기기(One UI) 결과는 ⏳ | A+ / B | §1 아래 주 |
+| — | (위 항목의 근거) | Shell 패키지가 `TETHER_PRIVILEGED`·`WRITE_SETTINGS` 를 **선언**하고(AOSP 매니페스트), Castla 가 같은 uid(Shizuku)에서 같은 호출로 핫스팟을 자동 토글한다(prior-art §4). 선언과 **부여**는 다르다는 것이 run #41 이 보여 준 것이다. `cmd wifi start-softap` 은 root 전용이라(WifiShellCommand) uid 2000 으로는 애초에 불가 — 이 길은 없다 | A+ | §1 아래 주 |
+| — | 통신사 잠금 기기에서 entitlement 를 우회할 수 있다 (`setExemptFromEntitlementCheck(true)` + `tether_dun_required=0`) | ⏳ **미실시**. Castla 가 "Samsung/carrier-locked 기기에 필수"로 적어 둔 것을 따랐다. 다만 우회는 `TETHER_PRIVILEGED` 가 있을 때만 쓸 수 있다(위). 없으면 면제 없는 재시도가 통신사 검사를 그대로 받는다 — 그때 `detail` 에 `PROVISIONING_FAILED(11)` 이 남는다 | B | — |
+| — | 핫스팟 켜짐/꺼짐을 읽을 수 있다 (`getWifiApState` → `getTetheredIfaces` → 인터페이스 이름) | ✅ **가상 폰 (run #41)**: 첫 경로가 답했다(`via=getWifiApState=11`). 셋 다 실패하면 `known=false` 이고 그때는 "꺼짐"이라 하지 않는다. One UI 는 ⏳ | A+ / B | — |
 
 **설계에 반영된 결론:** 가정 1의 조건 때문에 HTTP/WS 서버는 앱이 아니라 shell 프로세스에서 돈다
 ([dev-plan.md 아키텍처 3항](dev-plan.md)). 앱은 tun 주소 유지·페어링·기동·UI만 맡는다.
@@ -417,8 +418,11 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 ---
 
 ## 5. 열린 질문 (다음 검증 대상)
-0. **핫스팟 일괄 제어(B):** 실기기에서 `POST /api/hotspot?on=1` 이 실제로 AP 를 올리는지, 그때 `via` 가 무엇인지,
-   통신사 entitlement 우회가 필요했는지. 그리고 **핫스팟을 켠 뒤 서버가 살아남는지** — TCP 모드가 켜진 폰에서는
+0. **핫스팟 일괄 제어(B):** 실기기에서 `POST /api/hotspot?on=1` 이 실제로 AP 를 올리는지. 가상 폰(run #41)에서
+   **면제를 요청한 켜기는 `NO_CHANGE_TETHERING_PERMISSION(14)`** 이었고, 그래서 면제 없는 재시도를 넣었다 —
+   One UI 의 shell 이 `TETHER_PRIVILEGED` 를 가졌다면 첫 번째가, 아니면 두 번째가 통해야 한다. **둘 다 막히면
+   폰에서 핫스팟을 켜는 길은 없고**, 그때는 일괄 켜기에서 핫스팟 단계를 빼고 "설정에서 켜세요"로 바꾸는 것이 맞다
+   (끄기는 여전히 서버·VPN 만 다룬다). 그리고 **핫스팟을 켠 뒤 서버가 살아남는지** — TCP 모드가 켜진 폰에서는
    살아야 하고(§3.8), 아니면 §3.5 대로 죽는다. 절차: 앱의 "일괄 켜기" 한 번 → 로그의 `1/3 · 2/3 · 3/3` 줄.
 1. 차 브라우저에서 `100.64/10` 대역이 실제로 열리는지, MSE H.264 디코드 fps (가정 2).
 2. ~~M0: One UI 8에서 shell의 VD 생성·`--start-app`·`display_ime_policy=local`·오디오 소스 선택 (가정 3·4).~~ 완료 → car-tests/s26u-one-ui-8.md

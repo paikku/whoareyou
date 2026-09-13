@@ -1,5 +1,6 @@
 package com.carcast.server;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -93,6 +94,21 @@ public class HotspotTest {
             assertTrue(json, json.contains("\"ok\":false"));
             assertTrue(json, json.contains("no tethering service"));
         }
+    }
+
+    /**
+     * The callback hands back a bare int and the app shows what we write. "error=14" says nothing;
+     * the name is the diagnosis — it is the difference between "this phone will not let us" and
+     * "the radio failed". Checked here because the callback itself only fires on a real device.
+     */
+    @Test
+    public void tetheringErrorCodesAreNamed() {
+        assertEquals("NO_CHANGE_TETHERING_PERMISSION(14)", Hotspot.errorName(14));
+        assertEquals("PROVISIONING_FAILED(11)", Hotspot.errorName(11));
+        assertEquals("NO_ERROR(0)", Hotspot.errorName(0));
+        // Out of range, and not an int at all: both have to come back as something readable.
+        assertEquals("TETHER_ERROR_99(99)", Hotspot.errorName(99));
+        assertEquals("null", Hotspot.errorName(null));
     }
 
     /** A junk wait= from a caller must not fail the request; it falls back to the default. */

@@ -108,8 +108,11 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 못 붙는다), 서버를 먼저 죽이면 **핫스팟을 끌 수 있는 것이 아무것도 남지 않는다.**
 
 - 끄기: **핫스팟 → 서버 → 세션(VPN)**, 켜기: **세션 → 서버 → 핫스팟**
-- 서버: `Hotspot.java` — `TetheringManager.startTethering/stopTethering` 리플렉션,
-  `setExemptFromEntitlementCheck(true)` + `tether_dun_required=0`(통신사 잠금 우회, Castla 가 찾은 것).
+- 서버: `Hotspot.java` — `TetheringManager.startTethering/stopTethering` 리플렉션.
+  **켜기는 두 번 시도한다:** `setExemptFromEntitlementCheck(true)` 를 단 요청은 AOSP 가 그 플래그를 그대로
+  `onlyAllowPrivileged` 로 넘기므로 `TETHER_PRIVILEGED` 가 없으면 `NO_CHANGE_TETHERING_PERMISSION(14)` 으로
+  즉시 거부된다(가상 폰 run #41 실측). 그래서 그 답이 오면 **면제 없이 한 번 더** 부른다 — 그 경로는 호출자의
+  WRITE_SETTINGS 로 통과할 수 있고, `tether_dun_required=0` 이 그것을 열어 두는 조건이다.
   **`tether_dun_required` 는 되돌리지 않는다** — AP 가 떠 있는 동안 되돌리면 방금 건너뛴 검사가 다시 돌고,
   그때 끊기는 것은 주행 중인 차의 연결이다. 바꾸기 전 값은 매번 `detail` 에 적어 남긴다.
   `POST /api/hotspot` 은 **loopback 전용** — 차는 그 핫스팟을 타고 들어오므로 자기 발밑을 끊게 둘 수 없다
