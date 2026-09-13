@@ -269,8 +269,15 @@ final class Hotspot {
         return freshState();
     }
 
-    /** Reads the phone rather than the cache: for the moments when the answer is about to change. */
-    private static synchronized State freshState() {
+    /**
+     * Reads the phone rather than the cache: for the moments when the answer is about to change.
+     *
+     * Deliberately not synchronized. {@link #set} holds this class's monitor for as long as the radio
+     * takes — up to 15 seconds — and /api/status carries the hotspot on every request, so a reader that
+     * took the same lock would park the car's status behind a hotspot switch. Two readers doing the same
+     * cheap work at once costs nothing; a stalled /api/status costs the car its picture.
+     */
+    private static State freshState() {
         State s = readState();
         cachedState = s;
         cachedAt = System.currentTimeMillis();
@@ -362,11 +369,13 @@ final class Hotspot {
 
     private static volatile Object tetheringService;
     private static volatile boolean tetheringLookedUp;
+    /** Its own lock, for the same reason as {@link #freshState}: readers must never wait on {@link #set}. */
+    private static final Object TETHERING_LOCK = new Object();
 
     /** The service handle does not change for the life of the process, and the lookup is a binder call. */
     private static Object tetheringManager() {
         if (!tetheringLookedUp) {
-            synchronized (Hotspot.class) {
+            synchronized (TETHERING_LOCK) {
                 if (!tetheringLookedUp) {
                     try {
                         tetheringService = FakeContext.get().getSystemService("tethering");
