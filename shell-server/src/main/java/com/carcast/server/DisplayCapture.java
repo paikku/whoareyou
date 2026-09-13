@@ -29,6 +29,12 @@ final class DisplayCapture {
     private static final int VIRTUAL_DISPLAY_FLAG_OWN_FOCUS = 1 << 14;
     private static final int VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP = 1 << 15;
 
+    // android.view.Display.FLAG_*: what the created display reports back (@hide, so spelled out here).
+    static final int FLAG_TRUSTED = 1 << 7;
+    static final int FLAG_OWN_DISPLAY_GROUP = 1 << 8;
+    static final int FLAG_ALWAYS_UNLOCKED = 1 << 9;
+    static final int FLAG_OWN_FOCUS = 1 << 11;
+
     /** android.view.WindowManager.DISPLAY_IME_POLICY_LOCAL: the keyboard shows on the virtual display itself. */
     static final int DISPLAY_IME_POLICY_LOCAL = 0;
 
@@ -38,6 +44,8 @@ final class DisplayCapture {
     private final boolean systemDecorations;
     private VirtualDisplay virtualDisplay;
     private int displayId = -1;
+    /** What the display actually got, not what we asked for (android.view.Display.FLAG_*). */
+    private int displayFlags;
 
     DisplayCapture(int width, int height, int dpi, boolean systemDecorations) {
         this.width = width;
@@ -48,6 +56,17 @@ final class DisplayCapture {
 
     int displayId() {
         return displayId;
+    }
+
+    /**
+     * The flags the created display really carries. Asking for a flag and getting it are two
+     * different things: OWN_DISPLAY_GROUP needs ADD_TRUSTED_DISPLAY and ALWAYS_UNLOCKED needs
+     * ADD_ALWAYS_UNLOCKED_DISPLAY, and a refused flag is dropped silently. ALWAYS_UNLOCKED is the
+     * one that exempts this display from being covered while the phone's keyguard is up
+     * (AOSP RootWindowContainer.handleNotObscuredLocked), so "did we get it" is a real question.
+     */
+    int displayFlags() {
+        return displayFlags;
     }
 
     void start(Surface surface) throws Exception {
@@ -72,7 +91,11 @@ final class DisplayCapture {
         if (virtualDisplay == null) {
             virtualDisplay = ServiceManager.getDisplayManager().createNewVirtualDisplay("carcast", width, height, dpi, surface, flags);
             displayId = virtualDisplay.getDisplay().getDisplayId();
-            Ln.i("New display: " + width + "x" + height + "/" + dpi + " (id=" + displayId + ")");
+            displayFlags = virtualDisplay.getDisplay().getFlags();
+            Ln.i("New display: " + width + "x" + height + "/" + dpi + " (id=" + displayId + ")"
+                    + " flags=0x" + Integer.toHexString(displayFlags)
+                    + (has(FLAG_OWN_DISPLAY_GROUP) ? " own-group" : " NO-own-group")
+                    + (has(FLAG_ALWAYS_UNLOCKED) ? " always-unlocked" : " NO-always-unlocked"));
             try {
                 ServiceManager.getWindowManager().setDisplayImePolicy(displayId, DISPLAY_IME_POLICY_LOCAL);
             } catch (Throwable t) {
@@ -88,6 +111,10 @@ final class DisplayCapture {
         if (virtualDisplay != null) {
             virtualDisplay.setSurface(null);
         }
+    }
+
+    boolean has(int displayFlag) {
+        return (displayFlags & displayFlag) != 0;
     }
 
     void release() {

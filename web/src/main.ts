@@ -58,7 +58,9 @@ let lastPacketAt = 0;
 let recoveries = 0;
 const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ? '?codec=mjpeg' : ''}`), {
   onOpen: () => { renderer.reset(); note(`video ws open #${videoWs.stats.connects}`); },
-  onClose: () => note('video ws closed'),
+  // 왜 끊겼는지까지 남긴다. 1006 은 인사도 없이 끊긴 것(링크가 사라짐), 1000/1001 은 폰이
+  // 제대로 닫은 것 — 리포트에서 "폰이 멎었나, 선이 끊겼나"를 가르는 데 이 한 글자가 쓰인다.
+  onClose: (ev) => note(`video ws closed${'code' in ev ? ` (${ev.code})` : ''}`),
   onMessage: (data) => {
     if (typeof data === 'string') return;
     const p = parseMediaPacket(data);
@@ -104,12 +106,238 @@ const start = async () => {
 overlay.addEventListener('pointerdown', start, { once: true });
 stage.addEventListener('pointerdown', start, { once: true });
 
-// Nav bar keys -> Android key events.
+// 뒤로가기만 폰으로 보낸다. BACK 은 이벤트가 실린 디스플레이에서 처리되므로 차 화면의 앱에 제대로 간다.
 for (const btn of document.querySelectorAll<HTMLButtonElement>('#bar button[data-key]')) {
-  const code = { back: KEYCODE.BACK, home: KEYCODE.HOME, recents: KEYCODE.APP_SWITCH }[btn.dataset.key!]!;
+  const code = { back: KEYCODE.BACK }[btn.dataset.key!]!;
   btn.addEventListener('pointerdown', () => control.send(encodeKey(KeyAction.Down, code)));
-  btn.addEventListener('pointerup', () => control.send(encodeKey(KeyAction.Up, code)));
+  btn.addEventListener('pointerup', () => {
+    control.send(encodeKey(KeyAction.Up, code));
+    void watchForExit();
+  });
 }
+
+/**
+ * 뒤로가기로 앱을 빠져나온 순간을 **바로** 잡는다.
+ *
+ * 상태 폴링(2초)만 믿으면 마지막 뒤로가기를 누르고도 몇 초 동안 검은 화면을 보게 된다. 게다가
+ * 서버의 appDisplay 는 서버 나름의 감시 주기(최대 5초)로 갱신되므로 합치면 더 길어진다. 그래서
+ * 누른 직후에는 `/api/tasks` 를 직접 물어본다 — 그건 그 자리에서 `am stack list` 를 돌려 **지금**
+ * 무엇이 도는지를 답한다. 추측이 아니라 사실이고, 비었으면 그 즉시 홈을 띄운다.
+ */
+let exitWatch = 0;
+async function watchForExit() {
+  const mine = ++exitWatch;
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (mine !== exitWatch || !sheet.hidden) return;
+    try {
+      const r = await (await fetch('/api/tasks')).json();
+      if (Array.isArray(r?.tasks) && r.tasks.length === 0) {
+        hadAppOnCar = false; // 느린 폴링이 뒤늦게 같은 일을 또 하지 않도록
+        void openHome();
+        return;
+      }
+    } catch { return; }
+  }
+}
+
+// ── 차의 홈과 최근앱 ────────────────────────────────────────────────────────────────────────────
+//
+// HOME 과 APP_SWITCH 는 **보내지 않는다.** 안드로이드는 그 두 키를 이벤트에 실린 디스플레이가 아니라
+// **기본 디스플레이(폰)** 의 것으로 처리한다. 그래서 차에서 누르면 폰이 자기 런처로 가면서 차에서 보던
+// 앱을 display 0 으로 끌고 간다 — 실차 리포트 #30 에 그 순간이 그대로 찍혀 있다:
+// "464.0s phone took com.google.android.youtube (display 0)". 차 화면은 비고, 앱 감시자가 그것을
+// 뒤늦게 알아채 다시 띄우는 핑퐁이 난다.
+//
+// 그래서 차는 자기 홈(설치된 앱 목록)과 자기 최근앱(이 가상 화면 위의 태스크)을 직접 그린다.
+const sheet = $('launcher');
+const sheetGrid = $('launcher-grid');
+const sheetTitle = $('launcher-title');
+const sheetEmpty = $('launcher-empty');
+const sheetFind = $('launcher-find') as HTMLInputElement;
+
+interface AppRow { package: string; label: string }
+
+/** 보이는 칸에만 아이콘을 요청한다. 스크롤 밖의 수백 개를 미리 끌어오지 않는다. */
+const iconWatcher = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    const el = e.target as HTMLElement;
+    iconWatcher.unobserve(el);
+    if (el.dataset.pkg) fillIcon(el, el.dataset.pkg);
+  }
+}, { root: null, rootMargin: '200px' });
+interface TaskRow { taskId: number; package: string; label: string; display: number; lastUsed: number }
+
+let apps: AppRow[] = [];
+let homeError = '';
+let sheetMode: 'home' | 'recents' = 'home';
+
+const closeSheet = () => {
+  sheet.hidden = true;
+  sheetFind.value = '';
+};
+$('launcher-close').addEventListener('click', closeSheet);
+sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
+
+/**
+ * 아이콘은 **화면에 보이는 칸만, 하나씩** 가져온다.
+ *
+ * 처음에는 목록 한 번에 다 실어 왔는데, 진짜 폰에서는 그것이 수백 개의 앱 리소스를 한 요청 안에서
+ * 여는 일이 된다. 폰에서 그 뒤로 **새 연결이 전부 실패했다**(실차 리포트 #31~33) — 차 화면이 검은
+ * 채로 재접속만 반복했다. 그래서 목록은 이름만 받고, 아이콘은 보이는 것부터 한 줄씩 채운다.
+ */
+const iconCache = new Map<string, string | null>();
+let iconQueue: Promise<void> = Promise.resolve();
+
+function fillIcon(el: HTMLElement, pkg: string) {
+  const cached = iconCache.get(pkg);
+  if (cached !== undefined) {
+    if (cached) swapIcon(el, cached);
+    return;
+  }
+  // 직렬로 세워 둔다. 동시에 여러 개를 부르면 폰에서 같은 일이 되풀이된다.
+  iconQueue = iconQueue.then(async () => {
+    if (iconCache.has(pkg) || !el.isConnected) return;
+    try {
+      const r = await (await fetch(`/api/icon?pkg=${encodeURIComponent(pkg)}`)).json();
+      iconCache.set(pkg, r.icon ?? null);
+      if (r.icon) swapIcon(el, r.icon);
+    } catch { iconCache.set(pkg, null); }
+  });
+}
+
+function swapIcon(tileEl: HTMLElement, src: string) {
+  const fallback = tileEl.querySelector('.fallback');
+  if (!fallback) return;
+  const img = document.createElement('img');
+  img.src = src;
+  fallback.replaceWith(img);
+}
+
+/** 한 칸. 아이콘은 나중에 채워지고, 그때까지(또는 못 그리면) 이름 첫 글자로 둔다 — 빈 네모보다 낫다. */
+function tile(label: string, pkg: string, sub: string | null, onPick: () => void): HTMLElement {
+  const el = document.createElement('button');
+  el.className = sub ? 'tile away' : 'tile';
+  const art = document.createElement('div');
+  art.className = 'fallback';
+  art.textContent = (label[0] ?? '?').toUpperCase();
+  el.append(art);
+  iconWatcher.observe(el);
+  el.dataset.pkg = pkg;
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = label;
+  el.append(name);
+  if (sub) {
+    const where = document.createElement('span');
+    where.className = 'where';
+    where.textContent = sub;
+    el.append(where);
+  }
+  el.addEventListener('click', onPick);
+  return el;
+}
+
+/**
+ * 시트에서 앱 하나를 고른다. 띄우는 일은 ▶ 와 같은 길(`launch`)로 보낸다 — 실패했을 때 알리고,
+ * 마지막에 고른 앱을 기억하고, "폰이 가져갔다" 상태를 푸는 것까지 거기 다 들어 있다.
+ */
+function pick(pkg: string) {
+  closeSheet();
+  void launch(pkg);
+}
+
+function renderHome(filter: string) {
+  const q = filter.trim().toLowerCase();
+  const rows = q ? apps.filter((a) => a.label.toLowerCase().includes(q) || a.package.includes(q)) : apps;
+  sheetGrid.replaceChildren(...rows.map((a) => tile(a.label, a.package, null, () => pick(a.package))));
+  sheetEmpty.hidden = rows.length > 0;
+  sheetEmpty.textContent = q ? `"${filter}" 에 맞는 앱이 없습니다` : (homeError || '앱 목록을 읽지 못했습니다');
+}
+
+async function openHome() {
+  sheetMode = 'home';
+  sheetTitle.textContent = '홈';
+  sheetFind.hidden = false;
+  sheet.hidden = false;
+  sheetEmpty.hidden = true;
+  // 가지고 있는 것부터 곧바로 그린다 — 기다리는 빈 화면을 보여 주지 않는다.
+  if (apps.length) renderHome(sheetFind.value);
+  else {
+    sheetGrid.replaceChildren();
+    sheetEmpty.hidden = false;
+    sheetEmpty.textContent = '앱 목록을 읽는 중…';
+  }
+  // 그리고 **열 때마다 다시 읽는다.** 목록 자체는 잘 안 바뀌지만 순서는 바뀐다: 방금 쓴 앱이
+  // 맨 위로 와야 하는데, 한 번 받아 두고 말면 차는 영영 옛날 순서를 보여 준다.
+  try {
+    const r = await (await fetch('/api/apps')).json();
+    // 서버가 목록을 못 만들면 **왜인지**를 준다. "앱이 없습니다"로 뭉개지 않는다.
+    if (Array.isArray(r)) { apps = r; homeError = ''; }
+    else { apps = []; homeError = r?.error ?? '앱 목록을 읽지 못했습니다'; }
+  } catch (e) {
+    if (!apps.length) homeError = `폰에 물어보지 못했습니다: ${e}`;
+  }
+  if (sheetMode === 'home' && !sheet.hidden) renderHome(sheetFind.value);
+}
+
+async function openRecents() {
+  sheetMode = 'recents';
+  sheetTitle.textContent = '최근 앱';
+  sheetFind.hidden = true;
+  sheet.hidden = false;
+  sheetGrid.replaceChildren();
+  sheetEmpty.hidden = false;
+  sheetEmpty.textContent = '읽는 중…';
+  let tasks: TaskRow[] = [];
+  let ourDisplay: number | null = null;
+  let elsewhere = 0;
+  let error = '';
+  try {
+    const r = await (await fetch('/api/tasks')).json();
+    tasks = Array.isArray(r?.tasks) ? r.tasks : [];
+    ourDisplay = r?.display ?? null;
+    elsewhere = r?.elsewhere ?? 0;
+    error = r?.error ?? '';
+  } catch (e) { error = `폰에 물어보지 못했습니다: ${e}`; }
+
+  // **차 화면에서 도는 것만**, 최신순(서버가 그 순서로 준다). 폰에서 쓰는 앱은 차의 일이 아니다.
+  sheetGrid.replaceChildren(...tasks.map((t) => tile(t.label, t.package, null, () => pick(t.package))));
+  sheetEmpty.hidden = tasks.length > 0;
+  // 비었을 때도 "없습니다"로 끝내지 않는다: 폰 쪽에 몇 개가 도는지를 같이 적어 주면, 아무것도 안
+  // 띄운 것인지 우리 화면에서 못 찾은 것인지가 화면에서 갈린다.
+  sheetEmpty.textContent = error
+    ? error
+    : `차 화면(${ourDisplay ?? '?'})에서 도는 앱이 없습니다`
+      + (elsewhere ? ` — 폰 쪽에 ${elsewhere}개. ● 홈에서 고르면 차로 가져옵니다.` : '. ● 홈에서 하나 고르세요.');
+}
+
+/**
+ * 차 화면이 비면 홈을 띄운다 — 처음 들어왔을 때와, 뒤로가기로 앱에서 빠져나왔을 때.
+ *
+ * 빈 가상 화면은 그릴 것이 없어 인코더가 아무것도 내지 않는다. 그래서 그대로 두면 차에는 검은
+ * 화면(또는 마지막 프레임)이 남고, 운전자는 고장인지 아닌지 알 수 없다. 그 자리에 홈을 띄우면
+ * 다음에 할 일이 화면에 있다.
+ *
+ * **들어가는 순간에만** 띄운다. 매번 띄우면 닫아 둔 홈이 계속 되살아나 성가시다 — 닫은 것은
+ * 닫아 둔 채로 두고, 다음에 앱이 사라질 때 다시 띄운다.
+ */
+/** true = 앱이 있었다, false = 비어 있었다, null = 아직 본 적 없다. */
+let hadAppOnCar: boolean | null = null;
+function maybeOpenHome(st: any) {
+  if (st?.source !== 'display') return;
+  const empty = st.appDisplay === null && st.appOnPhone !== true;
+  // 비어 **있게 된** 순간만 잡는다. 계속 비어 있는 동안 매번 띄우면 닫아 둔 홈이 2초마다 되살아난다.
+  const becameEmpty = empty && hadAppOnCar !== false;
+  hadAppOnCar = !empty;
+  // 재생이 시작되기 전에는 띄우지 않는다: 시작은 화면을 한 번 눌러야 하는데, 그 손짓을 홈이 가로챈다.
+  if (becameEmpty && started && sheet.hidden) void openHome();
+}
+
+$('btn-home').addEventListener('click', openHome);
+$('btn-recents').addEventListener('click', openRecents);
+sheetFind.addEventListener('input', () => { if (sheetMode === 'home') renderHome(sheetFind.value); });
 
 // Keyboard: focus a hidden input so the car keyboard opens; ship committed text to the phone.
 $('btn-keyboard').addEventListener('click', () => {
@@ -199,6 +427,7 @@ setInterval(async () => {
     }
     // 폰 화면 전원은 차의 📵 로도, 폰의 전원 버튼으로도 바뀐다. 버튼은 언제나 서버가 말하는 쪽을 따른다.
     $('btn-screen').classList.toggle('off', st.screenOn === false);
+    maybeOpenHome(st);
   } catch {
     // 폰이 잠깐 없는 것: 영상 소켓의 재접속이 알아서 덮는다. 다만 오래가면 상태 패널이 말한다.
     if (!statusFailedAt) statusFailedAt = Date.now();
@@ -257,16 +486,12 @@ function updateStatePanel(): void {
     });
     return;
   }
-  // 가상 화면에 앱의 task 가 하나도 없는 상태. 그릴 것이 없으면 인코더도 아무것도 내지 않으므로
-  // (2026-09-11 가상 폰 실측) 차에는 마지막 프레임이 얼어붙은 채로 남는다 — 고장처럼 보이지만 고장이 아니다.
-  // 처음부터 안 띄운 경우와, 쓰던 앱이 닫힌 경우가 모두 여기다. 무작위 탐색에서 앱이 사라진 뒤 12단계 동안
-  // 아무 설명 없이 죽은 화면이 이어졌다(seed 501398062): 그때 이 패널이 떴어야 했다.
+  // 가상 화면에 앱의 task 가 하나도 없는 상태. 예전에는 여기서 "앱을 띄우세요" 패널을 띄웠는데,
+  // 그것은 한 번 더 누르라는 말일 뿐이었다 — 눌러야 할 것이 뻔하면 그냥 그것을 띄우는 게 맞다.
+  // 이제 홈이 그 자리를 대신한다(maybeOpenHome). 패널은 띄우지 않고 상태 이름만 남긴다.
   if (lastStatus && lastStatus.source === 'display' && lastStatus.appDisplay === null) {
     stateName = 'no-app';
-    showState('차 화면에 띄운 앱이 없습니다', '앱을 고르면 바로 나옵니다. 그릴 것이 없는 동안에는 영상도 멈춰 있습니다.', {
-      label: '앱 띄우기',
-      run: () => $('btn-app').click(),
-    });
+    statePanel.hidden = true;
     return;
   }
   // 폰이 잠들면 가상 디스플레이까지 합성이 멈춘다 — 앱은 멀쩡한데 그림만 얼어붙는다. 실차 리포트 #26 이

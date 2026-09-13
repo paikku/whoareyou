@@ -128,6 +128,8 @@ test('터치: 끌기·길게 누르기·멀티터치·키보드가 폰까지 가
     'car.long-press',
     'car.two-finger',
     'car.nav-back',
+    'car.nav-home',        // 차 자기 홈이 뜨고, 폰은 건드리지 않는다
+    'car.nav-recents',     // 이 화면에서 도는 앱 목록
     'car.type-text',
     'car.touch-while-socket-dies',   // 제스처 도중 소켓이 죽는다
     'car.tap',                        // 그 다음 탭이 멀쩡한 한 손가락 탭이어야 한다

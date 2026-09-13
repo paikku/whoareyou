@@ -12,9 +12,13 @@ import java.util.Map;
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [decorations=false] [app=com.google.android.youtube] [source=clip]
  *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
+ *     [screen_off_timeout=&lt;ms&gt;] [keep_active_fallback=false] [vd_wake=true]
  * </pre>
- * Extra endpoints: {@code POST /api/screen?on=0|1} turns only the phone's main display off/on (the virtual
- * display keeps running); {@code GET /api/screen} reports it.
+ * Extra endpoints: {@code POST /api/screen?on=0|1[&via=power-mode|cmd-display|brightness]} turns only the
+ * phone's main display off/on (the virtual display keeps running); {@code GET /api/screen} reports it.
+ * {@code GET /api/apps[?refresh=1]} lists the apps the car can start (the car's own home),
+ * {@code GET /api/icon?pkg=…} returns one app's icon, and {@code GET /api/tasks} lists what is running
+ * and on which display (the car's own recents).
  * The video comes from a virtual display (scrcpy-style, M4) unless {@code source=clip} forces the bundled test clip.
  *
  * The build id is the git sha the APK was built from ({@link BuildConfig#SERVER_BUILD_ID}); a mismatch
@@ -126,8 +130,13 @@ public final class Server {
             if (source != null) {
                 screen.setOnWake(source::requestKeyframe);
             }
+            // Unlike stay_awake, this one works on battery too - the phone carried into the car
+            // without a cable is exactly the case stay_on_while_plugged_in does not cover.
+            screen.setScreenOffTimeout(raw.get("screen_off_timeout"));
             screen.setSleepRecovery(!"false".equals(raw.get("sleep_recovery")));
             screen.setKeepActive(!"false".equals(raw.get("keep_active")));
+            screen.setKeepActiveFallback("true".equals(raw.get("keep_active_fallback")));
+            screen.setVdWake(!"false".equals(raw.get("vd_wake")));
             if (source != null) {
                 screen.setKeepActiveDisplay(source::displayId);
             }
@@ -158,6 +167,8 @@ public final class Server {
             extra.put("uid", uid);
             extra.put("build", BuildConfig.SERVER_BUILD_ID);
             extra.putAll(screen.info());
+            // 차 홈이 비어 보일 때 "앱이 없다"인지 "못 읽었다"인지를 리포트만 보고 가를 수 있게.
+            extra.putAll(AppList.info());
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());
@@ -178,13 +189,29 @@ public final class Server {
             injector.cancelAll();
             return kotlin.Unit.INSTANCE;
         }, (method, path, query) -> {
+            // The car's own home: the apps it can start. Names only — see AppList's class comment for
+            // why icons are not allowed to ride along.
+            if ("/api/apps".equals(path) && "GET".equals(method)) {
+                return AppList.json("1".equals(query.get("refresh")));
+            }
+            // One icon, fetched as the car draws each tile.
+            if ("/api/icon".equals(path) && "GET".equals(method)) {
+                return AppList.iconJson(query.get("pkg"));
+            }
+            // The car's own recents: what is running, and on which display.
+            if ("/api/tasks".equals(path) && "GET".equals(method)) {
+                return RunningTasks.json(source == null ? -1 : source.displayId());
+            }
             if (!"/api/screen".equals(path)) {
                 return null;
             }
             if ("POST".equals(method)) {
                 boolean on = !"0".equals(query.get("on")) && !"false".equals(query.get("on"));
-                boolean ok = screen.setMainScreen(on);
-                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn() + "}";
+                // ?via=power-mode|cmd-display|brightness forces one way, so a device can be asked which
+                // of them actually works on it instead of us guessing. Omitted: try them in order.
+                boolean ok = screen.setMainScreen(on, query.get("via"));
+                return "{\"ok\":" + ok + ",\"screenOn\":" + screen.isMainScreenOn()
+                        + ",\"via\":\"" + screen.panelMethod() + "\"}";
             }
             return "{\"screenOn\":" + screen.isMainScreenOn() + "}";
         }, () -> {

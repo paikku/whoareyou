@@ -138,3 +138,271 @@ idle for 10sec when screen is off"*. 보고자의 묘사가 우리 증상과 정
 **남은 불확실성:** #6787 은 아직 열려 있다. 즉 상류에도 확실한 해법이 없다. 우리 쪽에서 `userActivity` 가
 One UI 8 에서 실제로 유휴 시계를 되돌리는지는 실기기에서만 답이 나온다 — `/api/status` 의 `keptActive` 가
 올라가는데도 화면이 검어지면 이 경로는 그 ROM 에서 듣지 않는 것이다.
+
+---
+
+# 전원·화면 끄고 켜기 — 2차 조사 (2026-09-12)
+
+§"전원/화면 끄기와 가상 디스플레이"는 scrcpy 하나만 봤다. 이번에는 **scrcpy 말고** 같은 문제를 만난
+다른 구현들과 AOSP 원본을 읽었다. 읽은 것: Castla(소스), Extinguish(소스), SecondScreen(소스),
+DisplayToggle(문서), 그리고 AOSP `PowerManagerService`·`RootWindowContainer`·`DisplayManagerService`.
+**모두 코드/문서 읽기다. 실기기 실측은 하나도 없다** — 실측이 필요한 항목은 §6에 따로 적었다.
+
+## 1. 패널을 끄는 방법은 이미 한 곳으로 수렴했다
+
+| 프로젝트 | 권한 | 패널 끄기 |
+|---|---|---|
+| scrcpy | adb shell | `SurfaceControl.setDisplayPowerMode(token, 0/2)` |
+| Castla | Shizuku | 같음 (`PrivilegedService.setPhysicalDisplayPower`) |
+| Extinguish | Shizuku | 같음 (`DisplayControlService.setPowerModeToSurfaceControl`) |
+| DisplayToggle | adb / root | 같음. dex 하나를 `app_process` 로 띄우는 것까지 우리와 같다 |
+| SecondScreen | **root** | sysfs 백라이트에 `0` (`/sys/class/leds/lcd-backlight/brightness` 외 6종 하드코딩) |
+
+**넷 중 넷이 `setDisplayPowerMode` 다. Android 15 의 `DisplayManager.requestDisplayPower` 를 쓰는 곳은 없다**
+— 우리가 `d98be88` 에서 겪은 것과 같은 이유(scrcpy#5530)로 보인다. 이 선택은 이제 확정된 것으로 본다.
+
+곁가지 둘:
+- **Extinguish 는 물리 디스플레이 중 첫 번째 하나만 끈다**(`getPhysicalDisplayIds()[0]`). scrcpy·우리는 전부 끈다.
+  폴더블에서 갈릴 자리다(우리 쪽이 안전한 선택).
+- **Extinguish 에는 `SurfaceControl.setDisplayBrightness(token, 0f)` 경로도 있다.** `setDisplayPowerMode`
+  가 먹지 않는 ROM 의 대안으로 쓸 수 있다. SecondScreen 의 sysfs 도 같은 성격의 폴백인데 루트가 필요하다.
+
+## 2. "깨어 있게 두기" 의 전체 목록 — AOSP 가 답을 적어 놓았다
+
+`PowerManagerService.isBeingKeptAwakeLocked(powerGroup)` 한 함수가 **display group 단위로** 조건을 나열한다:
+
+```java
+return mStayOn                                             // stay_on_while_plugged_in && 충전 중 (전역)
+    || mProximityPositive
+    || (powerGroup.getWakeLockSummaryLocked() & WAKE_LOCK_STAY_AWAKE) != 0   // 그 그룹의 화면 웨이크락
+    || (powerGroup.getUserActivitySummaryLocked() & (USER_ACTIVITY_SCREEN_BRIGHT|_DIM)) != 0
+    || mScreenBrightnessBoostInProgress;
+```
+
+우리 가상 디스플레이는 `OWN_DISPLAY_GROUP` 으로 자기 그룹을 가지므로(§3 참고), 여기서 **그 그룹에**
+해당하는 것만 듣는다. 남들이 실제로 쓰는 수단을 이 목록에 대보면:
+
+| 수단 | 쓰는 곳 | 성질 |
+|---|---|---|
+| `stay_on_while_plugged_in` | scrcpy `-w`, SecondScreen, **우리** | 충전 중에만. 전역 |
+| **`screen_off_timeout` 를 크게** | scrcpy `--screen-off-timeout`(종료 시 복원), SecondScreen(`2147482000`) | 충전과 무관. **우리는 안 쓴다** |
+| **`FLAG_KEEP_SCREEN_ON` 창 하나** | Extinguish `AwakeHost`(1×1 `TYPE_APPLICATION_OVERLAY`), Castla(VD 위 `Presentation`) | 주기 호출 없음. 상태가 유지된다 |
+| 주기적 `userActivity(displayId)` | scrcpy `--keep-active`(4초), Castla(30초), **우리**(5초) | 계속 두드려야 함 |
+| 가짜 충전 `dumpsys battery set ac 1` | 커뮤니티 (테스트용, `dumpsys battery reset` 로 복원) | 위 1번을 충전 없이 켜는 우회 |
+
+세 번째가 이번 조사에서 가장 값어치 있는 발견이다. `PowerManager.newWakeLock(level, tag)` 은 AOSP 에서
+`newWakeLock(levelAndFlags, tag, mContext.getDisplayId())` 로 가고, `WakeLock.acquire()` 는
+`acquireWakeLock(..., mDisplayId, ...)` 로 간다. 즉 **웨이크락은 만든 컨텍스트의 디스플레이 그룹에 묶인다.**
+창에 `FLAG_KEEP_SCREEN_ON` 을 다는 것은 WindowManager 가 그 창의 디스플레이로 같은 락을 잡아 주는 것이다.
+→ **앱이 `createDisplayContext(가상 디스플레이)` 로 1×1 투명 오버레이를 VD 에 붙이면, 5초마다 두드리는
+대신 그 그룹을 계속 깨어 있게 둘 수 있다.** (추측: 앱 uid 에서 VD 에 창을 붙일 수 있는지는 실측 전. 우리 VD 는
+`PUBLIC` 이라 `DisplayManager.getDisplay(id)` 로 보이기는 한다.)
+
+### 2.1 우리 `keptActive` 는 "먹혔다" 는 증거가 아니다 — 고칠 것
+
+`PowerManagerService.userActivity` 의 권한 검사는 이렇게 끝난다:
+
+```java
+// Once upon a time applications could call userActivity().
+// Now we require the DEVICE_POWER permission.  Log a warning and ignore the
+// request instead of throwing a SecurityException so we don't break old apps.
+return;
+```
+
+**권한이 없으면 예외가 아니라 조용한 무시다.** 우리 `ScreenPower.pokeVirtualDisplay()` 는 예외가 없으면
+`keptActive++` 하므로, **이 카운터는 호출 횟수이지 효과의 증거가 아니다.** verification-log §3.10 이
+"`keptActive` 가 오르는데도 검어지면 이 경로가 안 듣는 것"이라고 적어 둔 판정 기준은 그래서 반쪽이다
+(권한이 없어서 안 듣는 경우와 권한은 있는데 효과가 없는 경우를 못 가른다).
+
+권한 자체는 있을 가능성이 높다 — AOSP `packages/Shell/AndroidManifest.xml` 에 `DEVICE_POWER` 가 들어 있고
+(`protectionLevel="signature|role"`, 셸은 플랫폼 서명), scrcpy 가 이 경로로 동작한다. 하지만 One UI 에서
+확인된 것은 아니다. **판정은 카운터가 아니라 logcat 의 `Ignoring call to PowerManager.userActivity()`
+경고 유무로 해야 한다.**
+
+## 3. 디스플레이 그룹 — 우리 플래그는 맞다, 하나는 무시되고 있다
+
+AOSP `DisplayManagerService.createVirtualDisplayLocked`:
+
+- `OWN_DISPLAY_GROUP` 은 `ADD_TRUSTED_DISPLAY` 권한이 있어야 하고(셸에 있다), 자기 그룹을 만든다. ✅
+- `DEVICE_DISPLAY_GROUP` 은 **virtual device 가 있을 때만** 의미가 있다. 없으면
+  *"Display created with VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP set, but no virtual device.
+  The display will not be added to a device display group."* 를 찍고 **무시한다.**
+  우리(그리고 scrcpy)는 API 34+ 에서 이 플래그를 함께 준다 — 해가 되지는 않지만 하는 일도 없다.
+
+그리고 전원 쪽 함의: `IPowerManager.goToSleep()` 은 내부적으로
+`goToSleepInternal(DEFAULT_DISPLAY_GROUP_IDS, ...)` 다. **기본 그룹만 재운다.** 즉 순수 AOSP 라면 전원 버튼이
+VD 그룹을 재우지는 않아야 한다. 그런데 리포트 #26 에서는 차 화면이 죽었다 → 실제로 죽인 것은 "기기가
+잠들어서"가 아니라 §4 쪽일 가능성이 있다. (추측. 갈라 보는 실험은 §6.)
+
+## 4. 검은 면의 정체 — 키가드일 가능성 (가설, 미검증)
+
+scrcpy#6787 의 묘사("물리 화면이 꺼진 **뒤에** 카운트다운이 시작되고, 10초 뒤 불투명한 검은 면이 덮이며,
+그 아래 앱은 계속 그려진다")와 아귀가 맞는 코드가 AOSP `RootWindowContainer.handleNotObscuredLocked` 에 있다:
+
+```java
+// While a dream or keyguard is showing, obscure ordinary application content on
+// secondary displays ...
+if (w.isDreamWindow() || mWmService.mPolicy.isKeyguardShowing()) {
+    mObscureApplicationContentOnSecondaryDisplays = true;
+}
+...
+} else if (displayContent != null &&
+        (!mObscureApplicationContentOnSecondaryDisplays
+                || displayContent.isKeyguardAlwaysUnlocked()      // ← FLAG_ALWAYS_UNLOCKED
+                || (obscured && w.mAttrs.type == TYPE_KEYGUARD_DIALOG))) {
+    displayHasContent = true;
+}
+```
+
+`isKeyguardAlwaysUnlocked()` 는 `mDisplayInfo.flags & Display.FLAG_ALWAYS_UNLOCKED` 이고, 그것이 곧
+`VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED` 다. 즉:
+
+- **물리 화면이 꺼진 뒤 "10초"는 유휴 타임아웃이 아니라 잠금 지연(`lock_screen_lock_after_timeout`)일 수 있다.**
+  키가드가 뜨는 순간 보조 디스플레이의 앱 콘텐츠가 "내용 없음"으로 떨어진다.
+- 우리는 API 33+ 에서 `ALWAYS_UNLOCKED` 를 주므로 **면제 대상이어야 한다.** 면제가 실제로 붙었는지는
+  플래그를 요청했다는 사실이 아니라 **만들어진 디스플레이가 그 플래그를 갖고 있는지**로 확인해야 한다
+  (`virtualDisplay.getDisplay().getFlags()`). API 33 미만이거나 `ADD_ALWAYS_UNLOCKED_DISPLAY` 가 거부되면
+  플래그는 조용히 빠진다.
+- AOD/Always-On Display 를 쓰는 폰에서는 `isDreamWindow()` 쪽으로도 같은 스위치가 켜진다. One UI 의 AOD 가
+  여기 걸리는지는 모른다.
+
+이것이 맞다면 회피책은 `userActivity` 가 아니라 **잠금을 늦추거나(잠금 지연 설정) 플래그를 확실히 받는 것**이다.
+
+## 5. 전원 버튼 — 가로챌 수 없다는 전제는 모두 같고, 대응만 다르다
+
+| | 대응 |
+|---|---|
+| scrcpy | **자기가 주입한** POWER/WAKEUP 뒤 200ms 에 패널을 다시 끈다(`keepDisplayPowerOff`). 물리 버튼은 못 건드린다고 문서에 명시 |
+| Castla | `ACTION_SCREEN_OFF`/`ACTION_SCREEN_ON` **브로드캐스트**로 상태기계를 돌린다(폴링 없음). 패널 끄기가 실패하면 `isPanelOffSupported=false` 로 **기억해 두고** keep-alive 로 강등한다. 정리 시 항상 패널을 켜 놓는다 |
+| SecondScreen | `ACTION_SCREEN_ON` 을 받아 **`sleep 2` 뒤** 백라이트를 도로 끈다 |
+| 우리 | 1초 폴링 감시자 + 잠들면 깨워서 📵 상태로 되돌리기 + 3연타 탈출구 |
+
+가져올 만한 것 둘:
+1. **브로드캐스트로 바꾸거나 보강하기.** 1초 폴링은 최대 1초를 잃고, 그동안 차는 얼어 있다.
+2. **실패를 기억하기.** Castla 의 `ScreenOffPolicy` 는 패널 끄기가 한 번 실패하면 다시 시도하지 않고
+   keep-alive 로 내려간다. 우리는 `keepActive` 에만 그런 강등이 있다.
+
+한편 Castla 의 keep-alive 구현(`PrivilegedService.wakeUpDisplay`)은 세 가지를 함께 쏜다:
+`input -d <displayId> keyevent 224`(WAKEUP), 리플렉션 `userActivity`, 그리고 VD 위의 (1,1) 무해한 터치.
+**그중 `userActivity` 는 Android 12+ 에서 死코드로 보인다** — 4인자 시그니처는 `(int displayId, long, int, int)`
+인데 `m.invoke(pm, displayId.toLong(), now, 0, 0)` 로 첫 인자를 `Long` 으로 넘긴다. `IllegalArgumentException`
+이 나고 그 자리에서 삼켜진다(코드 읽기 기반, 실행해 보지는 않았다). 실제로 듣는 것은 keyevent 와 가짜 터치뿐일 것이다.
+**우리 구현이 이 점에서는 맞다.** 반대로 그쪽에서 배울 것은 **가짜 터치** 라는 폴백이다 — 권한이 필요 없고,
+`userActivity` 가 조용히 무시되는 ROM 에서도 유효하다.
+
+## 6. 아무도 안 쓰는데 열려 있는 길 — 그룹 단위 sleep/wake
+
+`IPowerManager` 에는 디스플레이를 지정하는 짝이 있다:
+
+```aidl
+void wakeUpWithDisplayId(long time, int reason, String details, String opPackageName, int displayId);
+void goToSleepWithDisplayId(int displayId, long time, int reason, int flags);
+```
+
+둘 다 `DEVICE_POWER` 를 요구하고, 그 권한은 셸 패키지에 있다(§2.1). 우리에게 의미하는 것:
+
+- 지금 `ScreenPower.wake()` 는 `input keyevent WAKEUP` 으로 **폰을 통째로** 깨운 다음 패널을 도로 끈다.
+  그 사이 화면이 한 번 번쩍인다. `wakeUpWithDisplayId(..., 가상디스플레이id)` 면 **그 그룹만** 깨운다.
+- 거꾸로 `goToSleepWithDisplayId(0, ...)` 는 기본 그룹만 재운다 — `setDisplayPowerMode` 와 달리
+  PowerManager 의 장부와 어긋나지 않는다(지금 우리가 `forcedOff` 를 따로 들고 다니는 이유가 그 어긋남이다).
+  다만 그러면 키가드가 뜨므로 §4 의 위험을 같이 짊어진다.
+
+**전부 추측이다.** One UI 에서 셸 uid 로 이 호출이 통하는지, VD 그룹만 깨어 있을 때 인코더가 계속 도는지
+확인된 바 없다.
+
+## 7. 그래서 다음에 할 것
+
+우선순위대로. 위쪽 셋은 실기기 없이 **가상 폰(A+)에서** 바로 볼 수 있다.
+
+| # | 무엇 | 왜 | 어디에 |
+|---|---|---|---|
+| 1 | `keptActive` 대신 **logcat 경고로 판정**하고, VD 의 `getFlags()` 를 `/api/status` 에 싣는다 | 지금 카운터는 효과를 증명하지 못한다(§2.1). 플래그는 §4 가설을 가른다 | `ScreenPower`, `DisplayCapture`, `/api/status` |
+| 2 | **`screen_off_timeout` 손잡이**(크게 잡고 종료 시 복원) | 충전과 무관하게 듣는 유일한 수단. scrcpy·SecondScreen 둘 다 쓴다 | `ScreenPower`, 서버 옵션 |
+| 3 | 잠금 지연을 바꿔 가며 검어지는 시점이 따라 움직이는지 본다 | §4 가설의 유일한 결정적 실험. 맞으면 손잡이가 통째로 바뀐다 | `npm run lifecycle` 시나리오 하나 추가 |
+| 4 | **VD 에 묶인 `FLAG_KEEP_SCREEN_ON` 오버레이** | 두드리기 대신 상태로 유지. Extinguish·Castla 둘 다 이 방식 | 앱(`createDisplayContext`) |
+| 5 | `ACTION_SCREEN_ON/OFF` 로 폴링 보강 + 패널 끄기 실패를 기억 | Castla. 최대 1초의 얼어붙음을 없앤다 | `ScreenPower`, 앱 |
+| 6 | `wakeUpWithDisplayId` 로 폰을 깨우지 않고 VD 만 되살리기 | 지금은 깨웠다 끄느라 번쩍인다 | `ScreenPower.wake` |
+| 7 | 폴백들: `setDisplayBrightness(token,0)`, VD 위 가짜 터치, `cmd display power-off 0`(A15+) | ROM 이 갈리는 자리마다 하나씩 | — |
+| 8 | A+ 에서 `dumpsys battery set ac 1` 로 `stay_awake` 경로를 실제로 통과시켜 본다 | 지금은 에뮬레이터가 충전 중이 아니라 이 손잡이가 검사되지 않는다 | `tools/virtual-phone` |
+
+### 7.1 하네스가 판정할 수 있는 것과 없는 것
+
+§7 의 항목은 **자동으로 판정되는 것 / 재현부터 해야 하는 것 / 하네스 밖**으로 갈린다. A+ 는 API 36
+(Android 16) `google_apis` 에뮬레이터이고, 검사는 `adb`(`adb logcat -d` 포함)와 `/api/status` 와
+프레임 흐름을 볼 수 있다. **A+ 가 답하는 질문은 언제나 "AOSP 에서 되는가" 이지 "One UI 8 에서 되는가" 가 아니다.**
+
+**① 하네스가 판정까지 해 준다** — 단언을 쓸 수 있고 CI 가 지킨다.
+
+| 항목 | 어디에 | 단언 |
+|---|---|---|
+| #1 `userActivity` 가 먹히는지 | `tests/device/tests/05-screen.test.mjs` | 📵 뒤 `adb logcat -d` 에 `Ignoring call to PowerManager.userActivity()` 가 **없을 것** |
+| #1 VD 플래그 | 같은 곳 | `/api/status.displayFlags` 에 `FLAG_ALWAYS_UNLOCKED` 비트가 **있을 것** (요청했다가 아니라 받았다) |
+| #2 `screen_off_timeout` | 05-screen + `kill-switch.test.mjs` | 서버가 도는 동안 값이 바뀌어 있고, 킬 스위치 뒤 **원래 값으로 돌아올 것** |
+| #5 브로드캐스트 | `npm run lifecycle` "전원 버튼 × 📵" | `input keyevent 26` 뒤 `lastPowerEvent` 가 바뀌기까지의 ms — 폴링(최대 1000ms)과 숫자로 비교된다 |
+| #6 `wakeUpWithDisplayId` | 05-screen | 셸 uid 에서 `SecurityException` 없이 통하는지, 그리고 폰이 깨지 않은 채(`interactive=false`) 프레임이 이어지는지 |
+| #7 폴백들의 **호출 결과** | 05-screen | `setDisplayBrightness`·`cmd display power-off 0`(A15+)·VD 가짜 터치가 성공을 돌려주고 영상이 안 끊기는지 |
+| #8 가짜 충전 | `tools/virtual-phone` | `dumpsys battery set ac 1` 뒤 `stay_on_while_plugged_in` 경로가 실제로 발동하고, N 초 동안 기기가 안 잠드는지 |
+
+**② 재현부터 해야 한다** — 지금 하네스에서는 **문제 자체가 일어나지 않을 수 있다.** 단언을 쓰기 전에 실험이 먼저다.
+
+- **블랭킹이 A+ 에서 재현되는가.** 지금 `05-screen` 은 📵 뒤 **3초**만 본다. #6787 의 카운트다운은 10초다.
+  `wiggle()` 로 화면을 계속 흔들면서 30~60초를 보는 검사가 먼저 있어야 이 아래가 전부 성립한다.
+  (가상 디스플레이는 픽셀이 바뀔 때만 프레임을 내므로, 흔드는데도 프레임이 멈추면 그것이 덮인 증거다.)
+- **#3 잠금 지연 실험은 현재 설정에서 원천 봉쇄다.** `vphone.sh` 는 부팅 뒤
+  `wm dismiss-keyguard` 를 부르고, 생애주기의 `phone.wake` 동작도 같은 것을 부른다. 게다가 에뮬레이터에는
+  보안 잠금이 없다. **키가드가 아예 안 뜨는 자리에서 "키가드가 가리는가"를 물을 수는 없다.**
+  먼저 `locksettings set-pin` 으로 잠금을 켜고 `dismiss-keyguard` 를 뺀 전용 시나리오를 만들어야 한다.
+- **#4 오버레이의 효과** 는 ② 에 매달려 있다. "앱 uid 에서 VD 에 창이 붙는가"는 A+ 에서 바로 보이지만,
+  "그래서 안 검어지는가"는 블랭킹이 재현될 때만 판정된다.
+
+**③ 하네스 밖 (B/C 에서만)**
+
+- **패널이 실제로 어두워졌는지.** 에뮬레이터는 `setDisplayPowerMode` 가 성공을 돌려줬다는 것까지만 안다
+  (`05-screen` 주석이 이미 그렇게 적어 두었다). `setDisplayBrightness` 폴백도 마찬가지다.
+- **One UI 8 고유의 답들**: 셸에 `DEVICE_POWER` 가 실제로 있는지, `userActivity` 가 One UI 에서 듣는지,
+  AOD(dream)가 §4 의 스위치를 켜는지, 폴더블의 물리 디스플레이가 여럿일 때.
+- 발열·배터리·30분 연속, 물리 전원 버튼의 3연타 탈출구 체감, 그리고 차에서의 무응답 체감.
+
+**그리고 이 자리(원격 컨테이너)에서는 KVM 이 없어 A+ 를 직접 돌릴 수 없다.** ① 을 짜 넣더라도 판정은
+푸시 → `emulator` 워크플로 로그·아티팩트(`out/vphone/logcat.txt`, `out/lifecycle/report.md`)를 읽는 길뿐이고,
+한 번 도는 데 15~20분이 든다. 그러니 ① 은 **한 번에 모아서** 넣는 편이 싸다.
+
+### 7.2 여기까지 한 것 (2026-09-12, 가상 폰 run #20~#22)
+
+① 로 갈라 둔 것은 **전부 들어갔고 전부 통과했다**(18개 검사, 건너뛴 것 0개). 자세한 수치는
+[verification-log §3.11](verification-log.md). 요약하면:
+
+| # | 무엇 | 결과 |
+|---|---|---|
+| 1 | `keepActiveEffective` + VD 가 **받은** 플래그 | `true` / `0x4f88`(ALWAYS_UNLOCKED 포함) |
+| 2 | `screen_off_timeout` 손잡이와 복원 | 걸리고 되돌아온다 |
+| 3 | **잠금화면 실험** | `isKeyguardShowing=true` 인 채로 덮이지 않았다 — 면제가 듣는다 |
+| 5 | 알아채는 속도 (250ms 감시) | **60ms** |
+| 6 | `wakeUpWithDisplayId` | 넣었으나 **발동하지 않는다** — 폰이 자도 VD 그룹은 안 잔다(그것이 맞는 동작) |
+| 7 | 폴백 세 길 | `power-mode` · `cmd-display` · `brightness` **모두 동작**(`?via=` 로 강제해 확인) |
+| 8 | 가짜 충전으로 `stay_on` | 발동 확인 |
+
+**4번(가상 디스플레이에 `FLAG_KEEP_SCREEN_ON` 창)은 일부러 넣지 않았다.** 가상 폰에서 블랭킹이
+재현되지 않으므로 그 효과를 판정할 길이 없고, 판정할 수 없는 코드를 넣는 것은 §2.1 이 말한 실수를
+다시 저지르는 것이다. 실기기에서 블랭킹이 확인되면 그때 넣는다.
+
+**가져오지 않을 것:** sysfs 백라이트(SecondScreen — 루트 + 기기별 경로), `PowerManager.goToSleep()`·
+`DevicePolicyManager.lockNow()`(기기를 재워 VD 까지 죽인다 — 리포트 #26 의 원인 그 자체), 도메인/HTTPS 경로(§6 기존).
+
+## 8. 출처
+
+- Castla `app/src/main/java/com/castla/mirror/{policy/ScreenOffPolicy.kt, service/MirrorForegroundService.kt,
+  capture/VirtualDisplayManager.kt, shizuku/PrivilegedService.kt}` — <https://github.com/Suprhimp/castla>
+- Extinguish (`shizuku-service/.../DisplayControlService.kt`, `service/hosts/AwakeHost.kt`) — <https://github.com/Moderpach/Extinguish>
+- SecondScreen (`util/U.java`, `service/{ScreenOnService,TempBacklightOnService,ProfileLoadService}.java`) — <https://github.com/farmerbb/SecondScreen>
+- DisplayToggle — <https://github.com/Rehtt/DisplayToggle>
+- scrcpy `doc/device.md`(keep-active·stay-awake·screen-off-timeout·turn-screen-off), `Device.java`, `Controller.java`;
+  이슈 [#6787](https://github.com/Genymobile/scrcpy/issues/6787)(가상 디스플레이 블랭킹, 열림),
+  [#6491](https://github.com/Genymobile/scrcpy/issues/6491)(전원/잠금 뒤 검은 화면, 열림),
+  [#5530](https://github.com/Genymobile/scrcpy/issues/5530)(Android 15 `requestDisplayPower`)
+- AOSP `frameworks/base`: `services/core/java/com/android/server/power/PowerManagerService.java`
+  (`isBeingKeptAwakeLocked`, `userActivity` 권한 검사, `goToSleepInternal`, `wakeUpWithDisplayId`),
+  `services/core/java/com/android/server/wm/{RootWindowContainer,DisplayContent}.java`
+  (`handleNotObscuredLocked`, `isKeyguardAlwaysUnlocked`),
+  `services/core/java/com/android/server/display/DisplayManagerService.java`(VD 플래그 처리),
+  `core/java/android/os/{PowerManager.java,IPowerManager.aidl}`, `packages/Shell/AndroidManifest.xml`

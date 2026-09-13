@@ -86,7 +86,10 @@ function packet(type, ptsUs, payload) {
 }
 
 // ---- state exposed to tests --------------------------------------------------------------
-const state = { touches: [], keys: [], texts: [], videoClients: 0, controlClients: 0, framesSent: 0, wsRejected: 0, wsAccepted: 0 };
+const state = { touches: [], keys: [], texts: [], videoClients: 0, controlClients: 0, framesSent: 0, wsRejected: 0, wsAccepted: 0,
+  // 실기기와 같은 진단 필드: 받은 연결 수와 accept 오류. 차에서 "죽었다"고 할 때 폰까지 닿았는지를
+  // 가른다(StreamSession.statusJson 과 같은 이름이어야 리포트를 같은 눈으로 읽을 수 있다).
+  accepts: 0, acceptErrors: 0, accepting: true, videoDropped: 0, lastAcceptAgoMs: null };
 // Diagnostic reports posted by /diag (same API as the phone's ReportStore, memory only).
 const reports = [];
 
@@ -127,8 +130,50 @@ const server = createServer((req, res) => {
     const from = state.appOnPhone ? 0 : null;
     const action = from === null ? 'started' : restart === 'never' ? 'moved' : 'restarted';
     state.appOnPhone = false;
+    // 진짜 서버는 띄운 뒤 그 앱의 task 가 어느 화면에 있는지를 상태에 적는다. 여기서 빼먹으면
+    // 차는 앱을 띄우고도 "화면에 앱이 없다"고 믿는다 — 가짜 폰이 진짜 폰과 갈리던 자리다.
+    state.appDisplay = 7;
+    state.app = `${name}/.Main`;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, result: `fake: ${action} ${name}`, action, package: name, fromDisplay: from, display: 7 }));
+    return;
+  }
+  // 차의 홈과 최근앱이 읽는 두 목록. 진짜 폰에서는 PackageManager 와 `am stack list` 에서 나온다;
+  // 여기서는 UI 가 목록을 그리는지, 고른 것이 /api/app 으로 가는지만 보면 되므로 몇 개만 흉내 낸다.
+  if (url.pathname === '/api/apps') {
+    // 이름만. 아이콘은 /api/icon 이 하나씩 준다 — 목록에 다 싣던 것이 실기기에서 새 연결을 전부
+    // 막아 버렸다(실차 리포트 #31~33).
+    const all = [
+      { package: 'com.google.android.youtube', label: 'YouTube', system: false },
+      { package: 'com.android.settings', label: '설정', system: true },
+      { package: 'com.spotify.music', label: 'Spotify', system: false },
+    ];
+    // 진짜 폰처럼 **최근 사용순**으로 준다. 차가 목록을 캐시해 두면 이 순서 변화를 놓친다.
+    const used = state.apps ?? [];
+    all.sort((a, b) => used.lastIndexOf(b.package) - used.lastIndexOf(a.package));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(all));
+    return;
+  }
+  if (url.pathname === '/api/icon') {
+    // 1x1 투명 PNG. 하나는 일부러 못 그리는 앱으로 둬서 "첫 글자 타일"이 남는지 보게 한다.
+    const pkg = url.searchParams.get('pkg') ?? '';
+    const dot = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    state.iconRequests = (state.iconRequests ?? 0) + 1;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ package: pkg, icon: pkg === 'com.spotify.music' ? null : dot }));
+    return;
+  }
+  if (url.pathname === '/api/tasks') {
+    const started = (state.apps ?? []).at(-1) ?? 'com.google.android.youtube';
+    // 차 화면(7)에서 도는 것만. 폰으로 끌려갔거나(appOnPhone) 아예 닫혔으면(appDisplay=null) 빈다 —
+    // 진짜 서버도 그 화면의 task 만 센다.
+    const empty = state.appOnPhone || state.appDisplay === null;
+    const tasks = empty
+      ? []
+      : [{ taskId: 41, name: `${started}/.Main`, package: started, display: 7, label: started, lastUsed: Date.now() }];
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ display: 7, tasks, elsewhere: state.appOnPhone ? 1 : 0 }));
     return;
   }
   if (url.pathname === '/api/screen') {
@@ -264,6 +309,9 @@ if (WS_DROP_EVERY > 0) {
     state.wsDropped = (state.wsDropped ?? 0) + 1;
   }, WS_DROP_EVERY * 1000);
 }
+
+// 실기기와 같게: TCP 연결이 실제로 닿을 때마다 센다.
+server.on('connection', () => { state.accepts++; state.lastAcceptAgoMs = 0; });
 
 server.listen(PORT, HOST, () => {
   console.log(`fake phone on http://${HOST}:${PORT}/  web=${WEB}  ws-reject=${WS_REJECT} ws-drop-every=${WS_DROP_EVERY}s delay=${DELAY_MS}ms`);

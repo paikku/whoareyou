@@ -6,9 +6,9 @@ html, body { margin: 0; height: 100%; background: #000; color: #eee; font: 14px 
 .overlay[hidden] { display: none; }
 .overlay-card { text-align: center; padding: 24px 32px; border: 1px solid #444; border-radius: 12px; background: #111; }
 .overlay-title { font-size: 28px; font-weight: 600; margin-bottom: 8px; }
-#bar { position: fixed; left: 0; right: 0; bottom: 0; height: 56px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #151515; border-top: 1px solid #333; }
-#bar button, #bar .link { min-width: 56px; height: 44px; border: 1px solid #444; border-radius: 8px; background: #222; color: #eee; font-size: 20px; line-height: 44px; text-align: center; text-decoration: none; }
-#bar button:active { background: #444; }
+#bar { position: fixed; left: 0; right: 0; bottom: 0; height: 56px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: #121212; border-top: 1px solid #262626; }
+#bar button, #bar .link { min-width: 52px; height: 40px; border: 1px solid #2e2e2e; border-radius: 10px; background: #1d1d1d; color: #ddd; font-size: 18px; line-height: 38px; text-align: center; text-decoration: none; }
+#bar button:active { background: #333; }
 .stats { flex: 1; text-align: center; font-variant-numeric: tabular-nums; color: #9a9; font-size: 13px; }
 .kbd { position: fixed; left: -9999px; top: 0; opacity: 0; }
 body.diag { overflow: auto; padding: 16px; }
@@ -31,4 +31,35 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 .state-action:active { background: #2c5a42; }
 .state-action[hidden] { display: none; }
 /* 폰 화면이 꺼져 있는 동안 📵 버튼이 그 사실을 들고 있게 한다 (전원 버튼으로 바뀌어도 서버 상태를 따른다). */
-#btn-screen.off { border-color: #a63; background: #3a2a18; }
+/* 📵 가 켜져 있는 동안: 상자가 없으니 글리프 자체가 색으로 말한다. */
+#bar #btn-screen.off { color: #e0a44a; background: #33240f; }
+
+/* 차의 홈 / 최근앱 시트. 운전 중에 보는 것이므로 타깃을 크게 잡는다(한 칸 최소 120x120). */
+.sheet { flex-direction: column; align-items: stretch; justify-content: flex-start; background: rgba(8,8,8,.94); padding: 12px; gap: 10px; }
+.sheet-head { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.sheet-title { font-size: 22px; font-weight: 600; }
+.sheet-find { flex: 1; min-width: 0; height: 44px; padding: 0 12px; border: 1px solid #444; border-radius: 8px; background: #1a1a1a; color: #eee; font-size: 17px; }
+.sheet-close { min-width: 56px; height: 44px; border: 1px solid #444; border-radius: 8px; background: #222; color: #eee; font-size: 20px; }
+.sheet-close:active { background: #444; }
+.sheet-empty { padding: 24px; text-align: center; color: #aaa; font-size: 17px; }
+.sheet-empty[hidden] { display: none; }
+.grid { flex: 1 1 auto; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; align-content: start; }
+.tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; padding: 10px 6px; border: 1px solid #333; border-radius: 12px; background: #161616; color: #eee; font-size: 14px; text-align: center; }
+.tile:active { background: #2a2a2a; }
+.tile img { width: 56px; height: 56px; }
+.tile .fallback { width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: #2b3a4a; font-size: 24px; font-weight: 600; }
+.tile .name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile.away { border-color: #7a5a2a; }
+.tile .where { font-size: 12px; color: #d8a24a; }
+
+/* 안드로이드 3버튼 글리프. 선만 그리고 채우지 않는다 — 폰의 것과 같은 인상이라야 손이 먼저 찾는다. */
+/* 폰의 탐색 막대: 테두리도 바탕도 없는 흰 선 세 개. 누르는 자리는 손가락만 하되(56x44) 보이는
+   것은 글리프뿐이고, 누를 때만 둥근 자국이 잠깐 보인다. */
+.nav-group { display: flex; align-items: center; gap: 2px; }
+#bar button.nav { display: flex; align-items: center; justify-content: center; min-width: 56px; height: 44px; padding: 0; border: 0; border-radius: 22px; background: transparent; color: #f2f2f2; }
+#bar button.nav:active { background: #2b2b2b; }
+/* 오른쪽 도구들: 같은 선, 같은 굵기, 한 단계 낮은 밝기 — 탐색 막대가 먼저 읽히게. */
+#bar button.ic, #bar .link.ic { display: flex; align-items: center; justify-content: center; min-width: 46px; height: 40px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: #b6b6b6; }
+#bar button.ic:active, #bar .link.ic:active { background: #2b2b2b; }
+#bar .ic svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+#bar button.nav svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }

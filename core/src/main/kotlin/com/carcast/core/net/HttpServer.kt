@@ -40,6 +40,22 @@ class HttpServer(
     /** Called once per accepted TCP connection (after the 3-way handshake) with remote and local addresses. */
     var onAccept: ((remote: String, local: String) -> Unit)? = null
 
+    /**
+     * Connections accepted, errors accept() threw, and when the last one arrived. These are in
+     * /api/status for one reason: when the car says "it died", they say whether the car's connections
+     * were reaching the phone at all. Without them a dropped Wi-Fi link and a wedged server read
+     * exactly the same from the browser — both are "it stopped answering".
+     */
+    @Volatile var accepts = 0L
+        private set
+    @Volatile var acceptErrors = 0L
+        private set
+    @Volatile var lastAcceptAt = 0L
+        private set
+    /** False once the accept loop is gone: the process lives but nobody can connect any more. */
+    @Volatile var accepting = false
+        private set
+
     @Throws(IOException::class)
     fun start() {
         val s = ServerSocket()
@@ -59,11 +75,27 @@ class HttpServer(
     }
 
     private fun acceptLoop(s: ServerSocket) {
+        accepting = true
         while (running) {
-            val client = try { s.accept() } catch (e: IOException) { if (running) Log.w(TAG, "accept: $e"); break }
+            val client = try { s.accept() } catch (e: IOException) {
+                // This used to end the loop on any IOException, and that is a way for the server to die
+                // without exiting: accept() also throws for reasons that pass (EMFILE when too many
+                // sockets are open at once), and after one of those the process kept running, kept
+                // answering the sockets it already had, and never accepted another connection again —
+                // the shape of real-car reports #31-33. Only a closed socket ends the loop now.
+                if (!running || s.isClosed) break
+                acceptErrors++
+                Log.w(TAG, "accept: $e (${acceptErrors}회) — 계속 받는다")
+                try { Thread.sleep(ACCEPT_RETRY_MS) } catch (_: InterruptedException) { break }
+                continue
+            }
+            accepts++
+            lastAcceptAt = System.currentTimeMillis()
             onAccept?.invoke("${client.inetAddress.hostAddress}:${client.port}", "${client.localAddress.hostAddress}:${client.localPort}")
             pool.execute { handle(client) }
         }
+        accepting = false
+        Log.i(TAG, "accept loop ended after $accepts connections")
     }
 
     private fun handle(socket: Socket) {
@@ -136,5 +168,7 @@ class HttpServer(
         private const val TAG = "HttpServer"
         /** Diagnostic reports from the car are a few KB; anything larger is not ours. */
         const val MAX_BODY = 256 * 1024
+        /** Breathing room after a failed accept, so a permanent failure cannot become a hot loop. */
+        private const val ACCEPT_RETRY_MS = 100L
     }
 }

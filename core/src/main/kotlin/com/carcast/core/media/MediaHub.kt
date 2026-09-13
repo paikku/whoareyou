@@ -28,6 +28,12 @@ open class MediaHub {
     @Volatile var onClientAttached: () -> Unit = {}
     /** Called the first time a client's queue is full and a frame is dropped (once per client). */
     @Volatile var onClientStalled: (remote: String, queued: Int) -> Unit = { _, _ -> }
+    /** Called when a client was dropped because it could not take the init segment. */
+    @Volatile var onClientDropped: (remote: String) -> Unit = {}
+
+    /** How many clients we let go of because they would not take an init segment. For /api/status. */
+    @Volatile var dropped = 0L
+        private set
 
     /**
      * What each car-side socket actually got. `sent`/`dropped` count media frames offered since the
@@ -53,10 +59,24 @@ open class MediaHub {
         onClientAttached()
     }
 
+    /**
+     * A new init segment (the encoder restarted — every app start does that). It cannot be dropped:
+     * a client without it cannot decode a single frame after it. But it also cannot be *waited* on —
+     * this runs on the encoder's output thread, and a car that stopped reading used to park it there
+     * for minutes (see WebSocketConnection.send). A socket that will not take the init within the
+     * grace period is let go; the car reconnects in a second and attach() gives it the whole picture.
+     */
     open fun onInit(packet: ByteArray) {
         initSegment = packet
         lastKey = null
-        for (c in clients) { c.waitingForKey = true; c.conn.send(packet) }
+        for (c in clients) {
+            c.waitingForKey = true
+            if (!c.conn.send(packet)) {
+                clients.remove(c)
+                dropped++
+                onClientDropped(c.conn.remote)
+            }
+        }
     }
 
     open fun onFrame(packet: ByteArray, keyframe: Boolean) {
