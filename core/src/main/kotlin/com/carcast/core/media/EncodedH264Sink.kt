@@ -25,6 +25,14 @@ class EncodedH264Sink(private val hub: MediaHub, private val nominalFrameUs: Lon
     @Volatile var keyframes = 0L
         private set
 
+    /**
+     * The codec string the SPS really carries ("avc1.<profile><constraints><level>"), not the one the
+     * web client declares. The client hardcodes Baseline 3.0 and Chrome accepts it, so only this tells
+     * us the encoder's actual profile — which decides whether a JS decoder (Baseline only) is an option.
+     */
+    @Volatile var codec: String? = null
+        private set
+
     /** The BUFFER_FLAG_CODEC_CONFIG buffer: SPS and PPS in Annex-B. Also accepted inline in a keyframe. */
     @Synchronized
     fun onCodecConfig(annexB: ByteArray) {
@@ -36,6 +44,7 @@ class EncodedH264Sink(private val hub: MediaHub, private val nominalFrameUs: Lon
         sps = s; pps = p
         val w = Fmp4Writer(s, p)
         writer = w
+        codec = w.codecString
         hub.onInit(MediaHub.packet(MediaHub.TYPE_INIT, 0, w.initSegment()))
         Log.i(TAG, "init segment: ${w.width}x${w.height} ${w.codecString}")
     }

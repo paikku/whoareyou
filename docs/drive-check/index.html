@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CarCast 드라이브 점검</title>
+<!--
+  차에서 기어를 D 에 넣었을 때 브라우저가 무엇을 멈추는지 눈으로 보는 페이지.
+
+  왜 별도 페이지이고 왜 https 인가:
+  - `VideoDecoder`(WebCodecs)는 스펙상 secure context 전용이다. 폰이 주는 http://100.99.9.9 에서는
+    기능이 있어도 항상 undefined 로 보인다 — 우리 진단 #7·#13 의 `WebCodecs VideoDecoder: false` 가
+    "차에 기능이 없다"는 뜻인지 "평문이라 가려졌다"는 뜻인지 지금까지 가릴 수 없었다. https 에서 한 번
+    보면 그 자리에서 갈린다.
+  - 이 페이지는 폰과 통신하지 않는다(https 페이지는 ws:// 를 열 수 없다 — mixed content). 순수하게
+    "이 브라우저가 무엇을 할 수 있고, D 에서 무엇을 멈추는가"만 본다. 폰 쪽은 /api/status 로 따로 본다.
+
+  쓰는 법: 정차 상태에서 브레이크를 밟고 D 로 옮긴 뒤 화면을 30 초 본다. 손댈 것 없다.
+  차에는 devtools 가 없으므로 모든 결과는 화면에 큰 글씨로 찍는다. 맨 아래 한 줄을 사진으로 남기면 된다.
+-->
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117; --panel: #161b22; --line: #30363d;
+    --fg: #e6edf3; --dim: #8b949e;
+    --ok: #3fb950; --bad: #f85149; --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px; background: var(--bg); color: var(--fg);
+    font: 16px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .card h2 { font-size: 13px; margin: 0 0 6px; color: var(--dim); font-weight: 600; letter-spacing: .3px; }
+  .big { font-size: 40px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .unit { font-size: 14px; color: var(--dim); font-weight: 400; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  canvas, video { width: 100%; height: auto; aspect-ratio: 16/9; background: #000; border-radius: 6px; display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td { padding: 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { color: var(--dim); padding-right: 10px; }
+  td:last-child { text-align: right; word-break: break-all; }
+  #log { font-size: 13px; max-height: 230px; overflow-y: auto; margin: 0; white-space: pre-wrap; }
+  #log b { color: var(--warn); }
+  #verdict { font-size: 17px; line-height: 1.5; }
+  #shot {
+    margin-top: 10px; padding: 10px 12px; border: 2px solid var(--line); border-radius: 10px;
+    background: #000; font-size: 15px; word-break: break-all;
+  }
+  section { margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>CarCast 드라이브 점검</h1>
+<div class="sub">정차 → 브레이크 → <b>D</b> → 30초 보기 → P. 손댈 것 없음. 맨 아래 줄을 사진으로.</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>① 캔버스 (rAF)</h2>
+    <div class="big"><span id="rafFps">–</span><span class="unit"> fps</span></div>
+    <div class="sub" style="margin:0">프레임 <span id="rafFrames">0</span> · 최대공백 <span id="rafGap">0</span>ms</div>
+    <canvas id="cv" width="480" height="270"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>② 타이머 (setInterval 100ms)</h2>
+    <div class="big"><span id="tick">0</span></div>
+    <div class="sub" style="margin:0">최대공백 <span id="tickGap">0</span>ms</div>
+    <p class="sub" style="margin:8px 0 0">①은 멈추고 ②는 도는가? → 페이지가 백그라운드로 눌린 것.<br>둘 다 멈추면 → 페이지 자체가 정지·종료.</p>
+  </div>
+
+  <div class="card">
+    <h2>③ &lt;video&gt; (대조군)</h2>
+    <div class="big"><span id="vState">–</span></div>
+    <div class="sub" style="margin:0">t=<span id="vTime">0.00</span>s · <span id="vFps">–</span> fps</div>
+    <video id="vd" muted playsinline autoplay></video>
+    <p class="sub" style="margin:8px 0 0">①은 도는데 이것만 멈추면 → 테슬라가 <code>video.pause()</code> 를 건 것. 우리 MSE 경로가 죽는 이유.</p>
+  </div>
+
+  <div class="card">
+    <h2>④ 판정</h2>
+    <div id="verdict">측정 중…</div>
+  </div>
+</div>
+
+<section class="card">
+  <h2>브라우저 능력</h2>
+  <table id="caps"></table>
+</section>
+
+<section class="card">
+  <h2>JPEG 처리량 (MJPEG 안이 현실적인가)</h2>
+  <div class="big"><span id="jpegFps">–</span><span class="unit"> fps · <span id="jpegKb">–</span>KB/프레임 · 30fps 환산 <span id="jpegMbps">–</span>Mbps</span></div>
+  <p class="sub" style="margin:6px 0 0">1280×720 JPEG 를 <code>createImageBitmap</code> 으로 풀어 캔버스에 그리는 속도. 지금 H.264 는 4Mbps.</p>
+</section>
+
+<section class="card">
+  <h2>이벤트 로그 (벽시계)</h2>
+  <pre id="log"></pre>
+</section>
+
+<div id="shot">준비 중…</div>
+
+<script>
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const t0 = Date.now();
+const clock = () => new Date().toTimeString().slice(0, 8);
+const elapsed = () => ((Date.now() - t0) / 1000).toFixed(0);
+
+// ── 이벤트 로그 ────────────────────────────────────────────────────────────────
+// 차에는 devtools 가 없다. 기어를 넣는 그 순간에 무엇이 왔는지가 이 화면의 핵심이므로
+// 벽시계 시각을 붙여 최신이 위로 오게 쌓는다.
+const logLines = [];
+function log(msg, loud) {
+  logLines.unshift(`${clock()} (+${elapsed()}s) ${loud ? '<b>' + msg + '</b>' : msg}`);
+  if (logLines.length > 120) logLines.pop();
+  $('log').innerHTML = logLines.join('\n');
+}
+log('페이지 시작');
+
+// ── ① 캔버스: requestAnimationFrame ────────────────────────────────────────────
+const cv = $('cv');
+const ctx = cv.getContext('2d');
+let rafFrames = 0, rafLast = performance.now(), rafGap = 0;
+const rafWindow = [];
+
+function draw(now) {
+  const dt = now - rafLast;
+  // 1초 넘게 건너뛰었으면 그 사이 무언가가 우리를 멈춰 세운 것 — 시각과 함께 남긴다.
+  if (dt > 1000) { rafGap = Math.max(rafGap, Math.round(dt)); log(`rAF 공백 ${Math.round(dt)}ms`, true); }
+  rafLast = now;
+  rafFrames++;
+
+  rafWindow.push(now);
+  while (rafWindow.length && now - rafWindow[0] > 1000) rafWindow.shift();
+
+  const w = cv.width, h = cv.height;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+
+  // 도는 막대 하나 + 큰 프레임 번호. 팔 길이에서 "살아 있나"가 한눈에 보여야 한다.
+  const a = (now / 1000) * Math.PI;
+  ctx.strokeStyle = '#3fb950'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(w / 2, h / 2);
+  ctx.lineTo(w / 2 + Math.cos(a) * h * 0.34, h / 2 + Math.sin(a) * h * 0.34);
+  ctx.stroke();
+
+  ctx.fillStyle = '#e6edf3';
+  ctx.font = 'bold 44px ui-monospace, monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(String(rafFrames), w / 2, h / 2);
+
+  $('rafFrames').textContent = rafFrames;
+  $('rafFps').textContent = rafWindow.length;
+  $('rafGap').textContent = rafGap;
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ── ② 타이머: rAF 와 대조 ──────────────────────────────────────────────────────
+// rAF 는 페이지가 가려지면 멈추지만 타이머는 (느려질지언정) 계속 돈다. 둘을 나란히 두면
+// "백그라운드로 눌렸다"와 "전부 멎었다"가 갈린다.
+let ticks = 0, tickLast = Date.now(), tickGap = 0;
+setInterval(() => {
+  const now = Date.now();
+  const dt = now - tickLast;
+  if (dt > 1000) { tickGap = Math.max(tickGap, dt); log(`타이머 공백 ${dt}ms`, true); }
+  tickLast = now;
+  ticks++;
+  $('tick').textContent = ticks;
+  $('tickGap').textContent = tickGap;
+}, 100);
+
+// ── ③ <video> 대조군 ──────────────────────────────────────────────────────────
+// 외부 파일 없이 진짜 <video> 를 재생시켜야 한다: 캔버스를 captureStream 으로 물려
+// srcObject 에 넣는다. 테슬라의 정지는 요소 단위(video.pause())이므로 이걸로도 걸린다.
+const vd = $('vd');
+let vFrames = 0, vFpsWindow = [], weStartedPlaying = false;
+
+try {
+  const stream = cv.captureStream ? cv.captureStream(30) : null;
+  if (!stream) throw new Error('captureStream 없음');
+  vd.srcObject = stream;
+  vd.play().then(() => { weStartedPlaying = true; log('video 재생 시작'); })
+           .catch((e) => log('video play() 실패: ' + e));
+} catch (e) {
+  log('video 대조군 사용 불가: ' + e);
+  $('vState').textContent = 'N/A';
+  $('vState').className = 'warn';
+}
+
+// 우리가 멈춘 적이 없는데 pause 가 오면 그게 곧 테슬라의 개입이다 — 가장 중요한 한 줄.
+vd.addEventListener('pause', () => log('⚠ video pause 이벤트 — 우리가 부른 적 없음', true));
+vd.addEventListener('play', () => log('video play 이벤트'));
+vd.addEventListener('waiting', () => log('video waiting'));
+vd.addEventListener('stalled', () => log('video stalled'));
+vd.addEventListener('emptied', () => log('video emptied', true));
+vd.addEventListener('error', () => log('video error', true));
+
+if (vd.requestVideoFrameCallback) {
+  const onFrame = (now) => {
+    vFrames++;
+    vFpsWindow.push(now);
+    while (vFpsWindow.length && now - vFpsWindow[0] > 1000) vFpsWindow.shift();
+    vd.requestVideoFrameCallback(onFrame);
+  };
+  vd.requestVideoFrameCallback(onFrame);
+}
+
+setInterval(() => {
+  $('vTime').textContent = vd.currentTime.toFixed(2);
+  $('vFps').textContent = vd.requestVideoFrameCallback ? vFpsWindow.length : '?';
+  const paused = vd.paused;
+  $('vState').textContent = paused ? '정지' : '재생';
+  $('vState').className = 'big ' + (paused && weStartedPlaying ? 'bad' : paused ? 'warn' : 'ok');
+}, 250);
+
+// ── 페이지 생애주기 이벤트 ─────────────────────────────────────────────────────
+document.addEventListener('visibilitychange', () => log(`visibilitychange → hidden=${document.hidden}`, true));
+addEventListener('resize', () => log(`resize → ${innerWidth}x${innerHeight}`));
+addEventListener('online', () => log('online', true));
+addEventListener('offline', () => log('offline', true));
+addEventListener('pagehide', () => log('pagehide', true));
+addEventListener('freeze', () => log('freeze', true));
+addEventListener('resume', () => log('resume', true));
+
+// ── 브라우저 능력표 ────────────────────────────────────────────────────────────
+const caps = [];
+function cap(name, value, note) {
+  caps.push({ name, value, note });
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${name}</td><td class="${value === true ? 'ok' : value === false ? 'bad' : ''}">` +
+                 `${value === true ? 'O' : value === false ? 'X' : value}${note ? ` <span class="sub">${note}</span>` : ''}</td>`;
+  $('caps').appendChild(tr);
+  return good;
+}
+
+const has = (name) => typeof window[name] !== 'undefined';
+const secure = isSecureContext;
+
+cap('secure context', secure, location.protocol);
+cap('WebCodecs VideoDecoder', has('VideoDecoder'));
+cap('WebCodecs VideoEncoder', has('VideoEncoder'));
+cap('MediaSource', has('MediaSource'));
+try {
+  cap('MSE avc1.42E01E', MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"'));
+  cap('MSE avc1.640028', MediaSource.isTypeSupported('video/mp4; codecs="avc1.640028"'));
+} catch (e) { cap('MSE isTypeSupported', String(e)); }
+cap('requestVideoFrameCallback', 'requestVideoFrameCallback' in HTMLVideoElement.prototype);
+cap('canvas.captureStream', typeof cv.captureStream === 'function');
+cap('createImageBitmap', has('createImageBitmap'));
+cap('OffscreenCanvas', has('OffscreenCanvas'));
+cap('WebAssembly', has('WebAssembly'));
+cap('WebGL2', (() => { try { return !!document.createElement('canvas').getContext('webgl2'); } catch { return false; } })());
+cap('hardwareConcurrency', String(navigator.hardwareConcurrency ?? '?'));
+cap('deviceMemory', String(navigator.deviceMemory ?? '?') + ' GB');
+cap('viewport', `${innerWidth}x${innerHeight} @${devicePixelRatio}`);
+cap('UA', navigator.userAgent);
+
+// WebCodecs 가 있으면 우리 스트림 그대로(avc1.42E01E, 1280x720) 받아 주는지까지 물어본다.
+// Baseline 과 High 를 둘 다 묻는다: 우리 인코더는 KEY_PROFILE 을 안 걸고 벤더 기본값을 쓰므로
+// (H264Encoder.java:68) 실제 프로파일이 무엇이든 받아 주는지 알아야 한다.
+let webcodecsAvc = null;
+if (has('VideoDecoder') && VideoDecoder.isConfigSupported) {
+  const probe = (label, codec, store) =>
+    VideoDecoder.isConfigSupported({ codec, codedWidth: 1280, codedHeight: 720 })
+      .then((r) => { if (store) webcodecsAvc = !!r.supported; cap(label, !!r.supported); })
+      .catch((e) => { if (store) webcodecsAvc = false; cap(label, 'error: ' + e); })
+      .then(updateVerdict);
+  probe('VideoDecoder avc1.42E01E 720p', 'avc1.42E01E', true);
+  probe('VideoDecoder avc1.640028 720p', 'avc1.640028', false);
+}
+
+// ── JPEG 처리량 벤치 (안 c 의 현실성) ─────────────────────────────────────────
+// 폰이 H.264 대신 JPEG 프레임을 보내는 안을 고르려면, 차가 720p JPEG 를 몇 장이나 풀 수 있는지
+// 알아야 한다. 순수 로컬 측정이라 네트워크와 무관하다.
+let jpegFps = null, jpegKb = null;
+(async function jpegBench() {
+  try {
+    const src = document.createElement('canvas');
+    src.width = 1280; src.height = 720;
+    const sctx = src.getContext('2d');
+    // 우리가 실제로 보내는 것은 안드로이드 앱 화면이다. 순수 노이즈로 재면 JPEG 가 압축을 전혀
+    // 못 해 KB/프레임이 몇 배로 뻥튀기되고, 그 숫자로 안 (c) 를 잘못 기각하게 된다. 그래서 앱 화면을
+    // 흉내낸다 — 평평한 패널, 목록, 글자, 그리고 사진 한 장 몫의 그라디언트.
+    sctx.fillStyle = '#101418'; sctx.fillRect(0, 0, 1280, 720);
+    const grad = sctx.createLinearGradient(0, 0, 1280, 720);
+    grad.addColorStop(0, '#1f6feb'); grad.addColorStop(0.5, '#8957e5'); grad.addColorStop(1, '#f0883e');
+    sctx.fillStyle = grad; sctx.fillRect(40, 40, 1200, 260);
+    sctx.fillStyle = '#161b22';
+    for (let r = 0; r < 6; r++) sctx.fillRect(40, 330 + r * 62, 1200, 52);
+    sctx.fillStyle = '#e6edf3';
+    sctx.font = 'bold 64px sans-serif';
+    sctx.fillText('CarCast', 70, 150);
+    sctx.font = '28px sans-serif';
+    for (let r = 0; r < 6; r++) sctx.fillText('항목 ' + r + ' — 목록 한 줄의 본문 텍스트입니다', 70, 368 + r * 62);
+
+    const blob = await new Promise((res) => src.toBlob(res, 'image/jpeg', 0.6));
+    if (!blob) throw new Error('toBlob 실패');
+    jpegKb = Math.round(blob.size / 1024);
+    $('jpegKb').textContent = jpegKb;
+
+    const dst = document.createElement('canvas');
+    dst.width = 1280; dst.height = 720;
+    const dctx = dst.getContext('2d');
+
+    // 시간과 횟수 둘 다로 끊는다: 시간만 보면 느린 기기에서 오래 붙잡고, 횟수만 보면 빠른 기기에서
+    // 표본이 모자란다. 걸린 시간은 실제로 재서 나눈다.
+    const started = performance.now();
+    let n = 0;
+    while (n < 150 && performance.now() - started < 2500) {
+      const bmp = await createImageBitmap(blob);
+      dctx.drawImage(bmp, 0, 0);
+      bmp.close?.();
+      n++;
+    }
+    const secs = Math.max((performance.now() - started) / 1000, 0.001);
+    jpegFps = Math.round(n / secs);
+    $('jpegFps').textContent = jpegFps;
+    $('jpegMbps').textContent = ((blob.size * 8 * 30) / 1e6).toFixed(1);
+    log(`JPEG 벤치: ${jpegFps}fps, ${jpegKb}KB/프레임`);
+  } catch (e) {
+    $('jpegFps').textContent = 'X';
+    log('JPEG 벤치 실패: ' + e);
+  }
+  updateVerdict();
+})();
+
+// ── ④ 판정 + 촬영용 한 줄 ─────────────────────────────────────────────────────
+function updateVerdict() {
+  const rafAlive = rafWindow.length > 0;
+  const videoPaused = vd.paused && weStartedPlaying;
+
+  const lines = [];
+  if (!secure) {
+    lines.push('<span class="warn">평문(http)으로 열렸습니다 — WebCodecs 판정 불가. https 주소로 여세요.</span>');
+  } else if (has('VideoDecoder')) {
+    lines.push('<span class="ok">WebCodecs 있음 → 안 (a) 살아 있음.</span> 남은 문제는 폰에 https+wss 를 세우는 것.');
+  } else {
+    lines.push('<span class="bad">https 인데도 WebCodecs 없음 → 안 (a) 탈락.</span> 안 (b) 소프트 디코드로.');
+  }
+
+  if (rafAlive && videoPaused) {
+    lines.push('<span class="bad">&lt;video&gt; 만 정지, 캔버스는 살아 있음</span> → 예상대로 렌더러 교체가 답.');
+  } else if (!rafAlive) {
+    lines.push('<span class="bad">캔버스도 멈춤</span> → canvas 우회로도 안 됨. 다시 설계해야 함.');
+  } else {
+    lines.push('&lt;video&gt; 재생 중 — 아직 P 이거나 제한이 안 걸린 상태.');
+  }
+
+  if (jpegFps !== null) {
+    lines.push(jpegFps >= 30
+      ? `JPEG ${jpegFps}fps → 안 (c) 도 디코드는 감당 (대역폭은 별개).`
+      : `<span class="warn">JPEG ${jpegFps}fps</span> → 안 (c) 는 30fps 못 냄.`);
+  }
+  $('verdict').innerHTML = lines.join('<br>');
+
+  $('shot').textContent =
+    `secure=${secure} VideoDecoder=${has('VideoDecoder')} avc720p=${webcodecsAvc ?? '측정중'}` +
+    ` | rAF=${rafWindow.length}fps/${rafFrames}f gap=${rafGap}ms | tick=${ticks} gap=${tickGap}ms` +
+    ` | video=${vd.paused ? 'PAUSED' : 'playing'} t=${vd.currentTime.toFixed(1)}` +
+    ` | jpeg=${jpegFps ?? '측정중'}fps/${jpegKb ?? '?'}KB | hidden=${document.hidden} ${innerWidth}x${innerHeight} +${elapsed()}s`;
+}
+setInterval(updateVerdict, 500);
+</script>
+</body>
+</html>

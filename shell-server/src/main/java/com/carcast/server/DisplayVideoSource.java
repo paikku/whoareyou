@@ -297,6 +297,10 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("displayOwnGroup", display.has(DisplayCapture.FLAG_OWN_DISPLAY_GROUP));
         m.put("displayAlwaysUnlocked", display.has(DisplayCapture.FLAG_ALWAYS_UNLOCKED));
         m.put("encoder", encoder != null ? encoder.name() : null);
+        // The profile the SPS really carries. The web client declares Baseline 3.0 regardless, so this
+        // is the only place the encoder's actual profile shows up — and it decides whether a JS decoder
+        // (Baseline only) can be a fallback for the car's Drive mode, where <video> is paused for us.
+        m.put("codec", sink != null ? sink.getCodec() : null);
         m.put("frames", sink != null ? sink.getFrames() : 0);
         m.put("keyframes", sink != null ? sink.getKeyframes() : 0);
         m.put("app", lastApp);
