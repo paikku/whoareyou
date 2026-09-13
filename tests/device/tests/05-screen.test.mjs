@@ -258,10 +258,19 @@ test('패널을 끄는 세 가지 길 중 이 기기에서 무엇이 되나', { 
   if (!(await isDisplaySource())) return t.skip('클립 모드');
   const results = {};
   await ensureApp();
-  // 흔들지 않으면 정지 화면이라 3초에 한두 조각뿐이고, 그 숫자로는 "살아 있다"와 "거의 죽었다"를
-  // 가를 수 없다. 흔들면 수백 조각이 나오므로 끊긴 경우가 분명해진다.
+  // 흔들지 않으면 정지 화면이라 몇 초에 한두 조각뿐이고, 그 숫자로는 "살아 있다"와 "거의 죽었다"를
+  // 가를 수 없다. 흔들면 픽셀이 계속 바뀌므로 끊긴 경우가 분명해진다.
   const stop = await wiggle();
   try {
+    // 다만 흔들기가 **늘** 통하지는 않는다: VD 에 뜬 화면이 스크롤되지 않으면 끌어도 픽셀이 안 바뀐다
+    // (run #26 은 4초에 43~50조각, run #27 은 1조각이었다 — 같은 코드로). 그래서 절대 숫자를 기준으로
+    // 삼지 않고, **화면이 켜진 채로 먼저 한 번 재서** 그것과 비교한다. 기준선 자체가 낮으면 이 기기·이
+    // 순간에는 답할 수 없는 질문이므로 건너뛴다. 못 재는 것과 끊긴 것은 다르다.
+    const baseline = (await collectVideo(4_000)).filter((p) => p.type !== 0).length;
+    t.diagnostic(`기준선(화면 켜진 채, 흔드는 중) 4초에 ${baseline}조각`);
+    if (baseline < 10) {
+      return t.skip(`흔들어도 화면이 움직이지 않는다(4초에 ${baseline}조각) — 끊김 여부를 판정할 수 없다`);
+    }
     for (const via of ['power-mode', 'cmd-display', 'brightness']) {
       const off = await api(`/api/screen?on=0&via=${via}`, { method: 'POST' });
       let frames = 0;
@@ -278,8 +287,11 @@ test('패널을 끄는 세 가지 길 중 이 기기에서 무엇이 되나', { 
     assert.equal(results['power-mode'].off, true, '기본 경로(SurfaceControl)로 끌 수가 없다');
     assert.equal(results['power-mode'].on, true, '기본 경로(SurfaceControl)로 되돌릴 수가 없다');
     for (const [via, r] of Object.entries(results)) {
-      // 흔드는 중이므로 되는 길이라면 수십~수백 조각이 나온다. 한 자릿수면 사실상 멈춘 것이다.
-      if (r.off) assert.ok(r.frames > 10, `${via} 로 껐더니 4초에 ${r.frames}조각 — 가상 디스플레이가 멈췄다`);
+      // 기준선의 절반이면 충분하다. 묻는 것은 "인코더가 계속 도는가"이지 프레임 수가 아니다.
+      if (r.off) {
+        assert.ok(r.frames * 2 >= baseline,
+          `${via} 로 껐더니 4초에 ${r.frames}조각 — 켜진 채였을 때는 ${baseline}조각이었다. 가상 디스플레이가 멈췄다`);
+      }
     }
     // 양쪽이 다 되는 길만 "쓸 수 있는 길"이다.
     const usable = Object.entries(results).filter(([, r]) => r.off && r.on).map(([v]) => v);
