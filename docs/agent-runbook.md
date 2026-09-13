@@ -110,6 +110,8 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 - 끄기: **핫스팟 → 서버 → 세션(VPN)**, 켜기: **세션 → 서버 → 핫스팟**
 - 서버: `Hotspot.java` — `TetheringManager.startTethering/stopTethering` 리플렉션,
   `setExemptFromEntitlementCheck(true)` + `tether_dun_required=0`(통신사 잠금 우회, Castla 가 찾은 것).
+  **`tether_dun_required` 는 되돌리지 않는다** — AP 가 떠 있는 동안 되돌리면 방금 건너뛴 검사가 다시 돌고,
+  그때 끊기는 것은 주행 중인 차의 연결이다. 바꾸기 전 값은 매번 `detail` 에 적어 남긴다.
   `POST /api/hotspot` 은 **loopback 전용** — 차는 그 핫스팟을 타고 들어오므로 자기 발밑을 끊게 둘 수 없다
 - 앱: `BulkControl.kt`(순서와 그 이유), `StreamService.ACTION_ALL_ON/ALL_OFF`, `CarCastWidget.kt`
 - 상태: `/api/status.hotspot` 의 `on` `known` `via` `controllable` — **`known=false` 는 "꺼짐"이 아니라

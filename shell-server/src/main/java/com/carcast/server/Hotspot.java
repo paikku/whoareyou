@@ -39,6 +39,12 @@ import java.util.concurrent.TimeUnit;
  * Castla found necessary on carrier-locked Samsung devices (docs/prior-art.md §4); without them a carrier
  * build answers the request with TETHER_ERROR_PROVISIONING_FAILED. Both are best effort and reported.
  *
+ * Note that {@code tether_dun_required} is <b>not</b> restored, unlike the settings {@link ScreenPower}
+ * borrows. Putting it back while the AP is up invites the framework to re-run the very check we just
+ * skipped, and the thing that would drop is the car's link — mid-drive. What it was before is reported in
+ * {@code detail} on every switch, so the change is visible rather than silent; a phone that wants it back
+ * needs one {@code settings put global tether_dun_required 1} with the hotspot off.
+ *
  * Everything here is reflection against hidden API, so every step reports what it did: a device that
  * refuses must say so in /api/hotspot rather than look like a hotspot that did not come up.
  */
