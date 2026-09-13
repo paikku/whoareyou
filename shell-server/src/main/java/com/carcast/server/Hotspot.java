@@ -140,24 +140,43 @@ final class Hotspot {
             lastError = "no tethering service";
             return reply(false, "no tethering service (uid " + uid() + "; TETHER_PRIVILEGED is the shell's, not an app's)", before);
         }
-        String detail;
+        Outcome outcome;
         try {
-            detail = on ? doStart(tm, wait) : doStop(tm, wait);
+            outcome = on ? doStart(tm, wait) : doStop(tm, wait);
         } catch (Throwable t) {
             lastError = String.valueOf(t);
             return reply(false, "reflection failed: " + t, freshState());
         }
         State after = freshState();
-        boolean ok = !after.known || after.on == on;
+        // Three ways to be satisfied, in order of how much they prove: the framework said it worked, the
+        // phone now reads the way we asked, or nobody would tell us and the call itself raised nothing.
+        // The AP can take longer to come up than the caller was willing to wait, so a confirmed callback
+        // must not be overruled by a state that has not caught up yet.
+        boolean ok = outcome.confirmed || (after.known ? after.on == on : outcome.accepted);
         if (!ok) {
-            lastError = detail;
+            lastError = outcome.detail;
         }
-        return reply(ok, detail, after);
+        return reply(ok, outcome.detail, after);
+    }
+
+    /** What a switch attempt amounted to: what we were told, and what we can say about it. */
+    private static final class Outcome {
+        /** The framework, or the phone's own state, said the switch happened. */
+        final boolean confirmed;
+        /** The call was made and raised nothing — all there is to go on when the phone will not report. */
+        final boolean accepted;
+        final String detail;
+
+        Outcome(boolean confirmed, boolean accepted, String detail) {
+            this.confirmed = confirmed;
+            this.accepted = accepted;
+            this.detail = detail;
+        }
     }
 
     // --- doing it -------------------------------------------------------------------------------
 
-    private static String doStart(Object tm, long waitMs) throws Exception {
+    private static Outcome doStart(Object tm, long waitMs) throws Exception {
         String dun = clearDunRequirement();
         Class<?> requestBuilder = Class.forName("android.net.TetheringManager$TetheringRequest$Builder");
         Object builder = requestBuilder.getConstructor(int.class).newInstance(TETHERING_WIFI);
@@ -200,10 +219,14 @@ final class Hotspot {
         Executor direct = Runnable::run;
         start.invoke(tm, request, direct, callback);
         done.await(waitMs, TimeUnit.MILLISECONDS);
-        return "startTethering: " + outcome[0] + "; entitlement: " + exempt + ", " + noUi + "; dun: " + dun;
+        String detail = "startTethering: " + outcome[0] + "; entitlement: " + exempt + ", " + noUi + "; dun: " + dun;
+        boolean started = "started".equals(outcome[0]);
+        boolean failed = outcome[0].startsWith("failed");
+        // A reported failure is a real answer: never fall back to "the call raised nothing" after one.
+        return new Outcome(started, !failed, detail);
     }
 
-    private static String doStop(Object tm, long waitMs) throws Exception {
+    private static Outcome doStop(Object tm, long waitMs) throws Exception {
         // stopTethering(int) has no callback; poll the state instead so the caller learns when it is really down.
         tm.getClass().getMethod("stopTethering", int.class).invoke(tm, TETHERING_WIFI);
         long deadline = System.currentTimeMillis() + waitMs;
@@ -212,7 +235,9 @@ final class Hotspot {
             Thread.sleep(250);
             s = freshState();
         }
-        return "stopTethering: " + (s.known ? (s.on ? "still up after " + waitMs + "ms" : "down") : "state unknown");
+        boolean down = s.known && !s.on;
+        return new Outcome(down, true,
+                "stopTethering: " + (s.known ? (s.on ? "still up after " + waitMs + "ms" : "down") : "state unknown"));
     }
 
     /**

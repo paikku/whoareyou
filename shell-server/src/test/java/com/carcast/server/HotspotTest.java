@@ -77,6 +77,24 @@ public class HotspotTest {
         assertTrue(Hotspot.route("POST", null, "127.0.0.1:1").contains("\"ok\":false"));
     }
 
+    /**
+     * With no tethering service nothing can be confirmed and nothing can be accepted, so both a start and a
+     * stop have to come back as failures — the bulk sequence reads this to decide whether to tell the user
+     * the hotspot was dealt with.
+     */
+    @Test
+    public void neitherDirectionClaimsSuccessWithoutAService() {
+        Map<String, String> on = new HashMap<>();
+        on.put("on", "1");
+        Map<String, String> off = new HashMap<>();
+        off.put("on", "0");
+        for (Map<String, String> q : new Map[] {on, off}) {
+            String json = Hotspot.route("POST", q, "127.0.0.1:1");
+            assertTrue(json, json.contains("\"ok\":false"));
+            assertTrue(json, json.contains("no tethering service"));
+        }
+    }
+
     /** A junk wait= from a caller must not fail the request; it falls back to the default. */
     @Test
     public void badWaitIsIgnoredRatherThanFatal() {
