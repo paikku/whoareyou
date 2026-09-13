@@ -46,6 +46,21 @@ test('켜기 요청이 무엇을 하든 서버는 살아남는다', { timeout: 9
     assert.equal(after.running, true, '핫스팟 요청 뒤 서버가 죽었다');
     assert.equal(after.uid, before.uid, '서버가 다른 프로세스로 바뀌었다 — 죽었다가 다시 떴다는 뜻');
   }
+
+  // 이 기기가 테더링 변경을 아예 거부했다면(AOSP 가 그렇다 — 검증 기록의 열린 질문 0번), 그것은
+  // 다시 시도할 실패가 아니라 그 빌드의 성질이다. 서버는 그 사실을 계속 들고 있어야 하고,
+  // `controllable` 은 "서비스가 응답한다"가 아니라 **"정말로 바꿀 수 있다"**를 뜻해야 한다 —
+  // 앱이 그 둘을 보고 "설정에서 직접"으로 안내할지를 정하기 때문이다.
+  const denied = typeof on.detail === 'string' && on.detail.includes('NO_CHANGE_TETHERING_PERMISSION');
+  const h = await api('/api/hotspot');
+  t.diagnostic(`권한 거부 감지=${denied} → permissionDenied=${h.permissionDenied} controllable=${h.controllable}`);
+  if (denied) {
+    assert.equal(h.permissionDenied, true, '테더링 권한이 없다고 답해 놓고 그 사실을 잊었다');
+    assert.equal(h.controllable, false,
+      '바꿀 수 없는데 controllable=true 다 — 앱이 계속 시도하며 사용자를 설정으로 안내하지 못한다');
+  } else {
+    assert.notEqual(h.permissionDenied, true, '권한 오류가 없었는데 권한 거부로 기록했다');
+  }
 });
 
 test('바탕화면 위젯 provider 가 플랫폼에 등록돼 있다', async (t) => {
