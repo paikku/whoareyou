@@ -266,18 +266,26 @@ test('패널을 끄는 세 가지 길 중 이 기기에서 무엇이 되나', { 
       const off = await api(`/api/screen?on=0&via=${via}`, { method: 'POST' });
       let frames = 0;
       if (off.ok) frames = (await collectVideo(4_000)).filter((p) => p.type !== 0).length;
-      await api(`/api/screen?on=1&via=${via}`, { method: 'POST' }).catch(() => {});
+      // **되돌리는 것까지가 그 길이다.** 끄기만 보고 "된다"고 적으면 반쪽이다: 실측에서
+      // `cmd display power-on 0` 이 255 로 실패하는데 power-off 는 성공한 적이 있다(run #25).
+      // 그런 길은 쓰면 폰이 꺼진 채로 남는다.
+      const back = await api(`/api/screen?on=1&via=${via}`, { method: 'POST' }).catch(() => ({ ok: false }));
+      // 무슨 일이 있어도 화면은 켜 놓고 다음으로 간다.
       await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});
-      results[via] = { ok: off.ok, via: off.via, frames };
-      t.diagnostic(`${via}: ok=${off.ok} (서버가 쓴 길=${off.via}) 끈 동안 프레임=${frames}`);
+      results[via] = { off: off.ok, on: back.ok === true, frames };
+      t.diagnostic(`${via}: 끄기=${off.ok} 켜기=${back.ok} 끈 동안 프레임=${frames}`);
     }
-    assert.equal(results['power-mode'].ok, true, '기본 경로(SurfaceControl)가 이 기기에서 안 된다');
+    assert.equal(results['power-mode'].off, true, '기본 경로(SurfaceControl)로 끌 수가 없다');
+    assert.equal(results['power-mode'].on, true, '기본 경로(SurfaceControl)로 되돌릴 수가 없다');
     for (const [via, r] of Object.entries(results)) {
       // 흔드는 중이므로 되는 길이라면 수십~수백 조각이 나온다. 한 자릿수면 사실상 멈춘 것이다.
-      if (r.ok) assert.ok(r.frames > 10, `${via} 로 껐더니 4초에 ${r.frames}조각 — 가상 디스플레이가 멈췄다`);
+      if (r.off) assert.ok(r.frames > 10, `${via} 로 껐더니 4초에 ${r.frames}조각 — 가상 디스플레이가 멈췄다`);
     }
-    const working = Object.entries(results).filter(([, r]) => r.ok).map(([v]) => v);
-    t.diagnostic(`이 기기에서 되는 길: ${working.join(', ')}`);
+    // 양쪽이 다 되는 길만 "쓸 수 있는 길"이다.
+    const usable = Object.entries(results).filter(([, r]) => r.off && r.on).map(([v]) => v);
+    const halfway = Object.entries(results).filter(([, r]) => r.off && !r.on).map(([v]) => v);
+    t.diagnostic(`이 기기에서 쓸 수 있는 길: ${usable.join(', ') || '(없음)'}`);
+    if (halfway.length) t.diagnostic(`끄기만 되고 되돌리지 못하는 길(쓰면 안 된다): ${halfway.join(', ')}`);
   } finally {
     stop();
     await api('/api/screen?on=1', { method: 'POST' }).catch(() => {});

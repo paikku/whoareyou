@@ -52,6 +52,7 @@ final class ScreenPower {
     private volatile boolean forcedOff;
     /** What `dumpsys display` last said the panel is doing: ON / OFF / DOZE / null when unread. */
     private volatile String panelState;
+    private volatile long lastPanelReadMs;
     /** How many times the user's power button contradicted our bookkeeping (see the watcher). */
     private volatile int reconciled;
     private volatile boolean lastInteractive = true;
@@ -114,6 +115,7 @@ final class ScreenPower {
 
     private static final long KEEP_ACTIVE_INTERVAL_MS = 5_000;
     private static final long KEEP_ACTIVE_CHECK_DELAY_MS = 3_000;
+    private static final long PANEL_READ_INTERVAL_MS = 1_000;
     /** If logcat cannot be read, give up after a few tries instead of spawning a process forever. */
     private static final int KEEP_ACTIVE_CHECK_TRIES = 3;
 
@@ -286,7 +288,11 @@ final class ScreenPower {
                 onWentToSleep();
             }
         }
-        if (forcedOff) {
+        // Only for the record, and it costs a whole `dumpsys power` process. When the car is watching we
+        // sample four times a second (to notice a sleep fast), and spawning a process at that rate slows
+        // the phone down enough to be visible in the tests themselves - so read it at most once a second.
+        if (forcedOff && System.currentTimeMillis() - lastPanelReadMs >= PANEL_READ_INTERVAL_MS) {
+            lastPanelReadMs = System.currentTimeMillis();
             panelState = readPanelState();
         }
         pokeVirtualDisplay();

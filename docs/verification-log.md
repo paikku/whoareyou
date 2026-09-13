@@ -325,7 +325,7 @@ logcat 의 `Ignoring call to PowerManager.userActivity()` 유무로 해야 하�
 | 물음 | 답 (가상 폰, Android 16) |
 |---|---|
 | **잠금화면이 떠 있으면 차 화면이 덮이나** | **아니다.** `dumpsys` 가 `isKeyguardShowing=true` 라고 말하는 상태에서 20초 구간별 **244 / 241 / 242** 조각. §4 가 말한 면제(`ALWAYS_UNLOCKED`)가 **실제로 듣는다** — 적어도 AOSP 에서는 |
-| 패널을 끄는 세 길 중 무엇이 되나 | **셋 다 된다**: `power-mode`(SurfaceControl) · `cmd-display`(`cmd display power-off 0`) · `brightness`(밝기 0). `/api/screen?via=` 로 하나씩 강제해 확인했다 — 폴백이 코드로만 존재하지 않는다는 뜻 |
+| 패널을 끄는 세 길 중 무엇이 되나 | 셋 다 **끄기는** 된다. 단 run #25 에서 `cmd display power-on 0` 이 255 로 실패했다(끄기는 성공) — **끄기만 보고 "된다"고 적으면 반쪽이고, 그런 길을 쓰면 폰이 꺼진 채로 남는다.** 그래서 검사가 양방향을 따로 기록하도록 고쳤다. scrcpy 가 Android 15 의 `requestDisplayPower` 를 꺼 두는 이유(#5530)와 같은 자리로 보인다 |
 | 폰이 잠든 것을 얼마나 빨리 아나 | **60ms**. 감시 주기를 250ms 로 줄인 결과(전에는 최대 1000ms). 셸은 `ACTION_SCREEN_OFF` 를 못 받으므로 이 간격이 곧 운전자가 멈춘 그림을 보는 시간이다 |
 
 **아직 남은 것(하네스 밖):** 패널이 눈으로 보기에 진짜 어두운가, One UI 8 에서도 같은 답인가
