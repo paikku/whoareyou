@@ -22,20 +22,30 @@ test('받은 연결 수와 accept 오류를 보고한다', async () => {
   assert.equal(s.acceptErrors, 0, `accept 가 ${s.acceptErrors}번 실패했다`);
 });
 
+/** 소켓 하나를 연다. 열리지 않으면 매달려 있지 않고 실패한다 — 검사가 멈추면 CI 가 통째로 멈춘다. */
+function open(path, timeoutMs = 10_000) {
+  const ws = new WebSocket(`${WS_BASE}${path}`);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { try { ws.terminate(); } catch { /* 이미 닫힘 */ } reject(new Error(`${path} 가 ${timeoutMs}ms 안에 안 열렸다`)); }, timeoutMs);
+    ws.on('open', () => { clearTimeout(timer); resolve(ws); });
+    ws.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+
 test('안 읽는 손님이 하나 붙어 있어도, 읽는 손님의 그림은 계속 온다', async () => {
   const first = await ensureApp();
   const pkg = (first.app ?? '').split('/')[0] || process.env.TEST_APP || 'com.android.settings';
   const stop = await wiggle();
+  let deaf = null;
+  let live = null;
   try {
     // 안 읽는 손님: 붙기만 하고 소켓을 멈춰 둔다(노드가 커널 버퍼를 비우지 않는다).
-    const deaf = new WebSocket(`${WS_BASE}/ws/video`);
-    await new Promise((r, e) => { deaf.on('open', r); deaf.on('error', e); });
+    deaf = await open('/ws/video');
     deaf.pause();
 
-    const live = new WebSocket(`${WS_BASE}/ws/video`);
+    live = await open('/ws/video');
     let frames = 0;
     live.on('message', () => { frames++; });
-    await new Promise((r, e) => { live.on('open', r); live.on('error', e); });
 
     await sleep(2000);
     const before = frames;
@@ -50,9 +60,10 @@ test('안 읽는 손님이 하나 붙어 있어도, 읽는 손님의 그림은 �
     const s = await status();
     assert.equal(s.running, true, '서버가 응답을 멈췄다');
     assert.equal(s.accepting, true, 'accept 루프가 죽었다');
-    try { deaf.terminate(); } catch { /* 이미 닫힘 */ }
-    try { live.close(); } catch { /* 이미 닫힘 */ }
   } finally {
+    // 단언이 깨져도 소켓은 반드시 닫는다. 열린 채로 두면 노드가 끝나지 않고, 검사 하나의
+    // 실패가 CI 전체의 멈춤이 된다.
+    for (const ws of [deaf, live]) { try { ws?.terminate(); } catch { /* 이미 닫힘 */ } }
     stop();
   }
 });
