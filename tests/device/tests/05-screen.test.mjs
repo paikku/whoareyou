@@ -108,6 +108,13 @@ test('유휴 타이머 손잡이가 걸려 있다 (충전과 무관하게 듣는
   const s = await status();
   if (!s.screenOffTimeout) return t.skip('screen_off_timeout 없이 기동된 서버');
   t.diagnostic(`screen_off_timeout=${s.screenOffTimeout} (원래 ${s.screenOffTimeoutWas})`);
+  // **줄이는 일은 없어야 한다.** 이 손잡이는 폰이 자는 것을 막으려고 있는데, 이미 더 길게 잡아 둔
+  // 폰(실측 S26U: 43200000 = 12시간)에 우리 값을 덮어쓰면 그 폰은 더 빨리 자게 된다 — 손잡이가
+  // 해를 끼치는 쪽으로 도는 것이다. 원래 값이 더 길면 건드리지 않고 그대로 둔다.
+  if (s.screenOffTimeoutWas != null) {
+    assert.ok(Number(s.screenOffTimeout) >= Number(s.screenOffTimeoutWas),
+      `원래 ${s.screenOffTimeoutWas} 였던 것을 ${s.screenOffTimeout} 로 **줄였다**`);
+  }
   if (!adbAvailable) return t.skip('adb 없음');
   assert.equal(adbShell('settings get system screen_off_timeout'), String(s.screenOffTimeout),
     '서버는 걸었다고 하는데 기기의 설정값이 다르다');

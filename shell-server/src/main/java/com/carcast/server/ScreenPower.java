@@ -672,6 +672,16 @@ final class ScreenPower {
             // getAndPutValue: a crash between writing and recording would leave our number in the
             // setting with nothing saying what it replaced. The extra round trip costs ~100ms of
             // startup, which is the harness's problem to wait for, not a reason to risk someone's phone.
+            // Never make it *shorter*. The knob exists to stop the phone sleeping while the car is
+            // watching; a phone whose owner already set a longer timeout (a real S26U had 43200000 -
+            // twelve hours) would be made worse by writing our 600000 over it. Leave it alone and say so.
+            long want = Long.parseLong(millis);
+            long have = parseOrZero(userValue);
+            if (have >= want) {
+                screenOffTimeout = userValue;
+                Ln.i(SCREEN_OFF_TIMEOUT + " is already " + userValue + " (>= " + millis + ") — leaving it alone");
+                return;
+            }
             if (recovered != null) {
                 screenOffTimeoutRecovered = true;
                 Ln.i("a previous run left " + SCREEN_OFF_TIMEOUT + " changed; the user's value is " + recovered);
@@ -693,6 +703,15 @@ final class ScreenPower {
      * it back, so finding one on startup means the last run did not get to finish.
      */
     private static final java.io.File TIMEOUT_STASH = new java.io.File("/data/local/tmp/carcast/screen_off_timeout.prev");
+
+    /** A setting that is missing or unparsable counts as 0 (= "sleeps immediately"), so we will raise it. */
+    private static long parseOrZero(String v) {
+        try {
+            return Long.parseLong(v.trim());
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
 
     private static String readStashedTimeout() {
         try {
