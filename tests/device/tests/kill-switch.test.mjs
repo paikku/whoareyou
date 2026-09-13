@@ -21,4 +21,8 @@ test('POST /api/stop → 서버가 내려간다, 그리고 건드린 설정을 �
   const now = adbShell('settings get system screen_off_timeout');
   t.diagnostic(`screen_off_timeout: 돌기 전 ${before.screenOffTimeoutWas} → 도는 동안 ${before.screenOffTimeout} → 지금 ${now}`);
   assert.equal(now, String(before.screenOffTimeoutWas), '서버가 내려갔는데 유휴 타이머가 원래대로 안 돌아왔다');
+  // 되돌렸으면 "아직 되돌릴 것이 남았다"는 기록도 사라져야 한다. 남아 있으면 다음 실행이 이미 정상인
+  // 값을 사용자 값으로 착각하고 또 되돌린다.
+  const stash = adbShell('cat /data/local/tmp/carcast/screen_off_timeout.prev 2>/dev/null || echo GONE');
+  assert.equal(stash, 'GONE', `되돌렸는데 기록이 남아 있다: ${stash}`);
 });

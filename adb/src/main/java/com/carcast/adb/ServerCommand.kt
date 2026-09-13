@@ -14,12 +14,23 @@ object ServerCommand {
         val args = buildString {
             append("port=").append(port)
             for ((k, v) in extra) {
-                require(Regex("[a-z]+").matches(k) && !v.contains(Regex("[\\s'\"]"))) { "bad option $k=$v" }
+                require(Regex("[a-z_]+").matches(k) && !v.contains(Regex("[\\s'\"]"))) { "bad option $k=$v" }
                 append(' ').append(k).append('=').append(v)
             }
         }
         return "CLASSPATH='$apkPath' exec app_process / $MAIN_CLASS $buildId $args"
     }
+
+    /**
+     * How long the phone may sit idle before Android turns its screen off, while our server runs.
+     *
+     * `stay_on_while_plugged_in` (which the server also sets) only works **while charging** - that is
+     * Android's rule, not ours - so a phone carried into the car on battery had nothing holding it up:
+     * it slept on its own timer and the car's picture died with it. This is the only knob that covers
+     * that case, and the server puts the old value back when it stops (and after a crash, on its next
+     * start - see ScreenPower.setScreenOffTimeout).
+     */
+    const val SCREEN_OFF_TIMEOUT_MS = 600_000
 
     /**
      * Detached form: the server outlives the adb stream, wireless debugging (which Android turns off
@@ -38,7 +49,10 @@ object ServerCommand {
         require(!logFile.contains(Regex("[\\s'\"*]"))) { "bad log path" }
         val dir = logFile.substringBeforeLast('/')
         val pid = "$dir/server.pid"
-        val inner = build(apkPath, buildId, port, mapOf("daemon" to "true")).removePrefix("CLASSPATH='$apkPath' exec ")
+        val inner = build(
+            apkPath, buildId, port,
+            linkedMapOf("daemon" to "true", "screen_off_timeout" to SCREEN_OFF_TIMEOUT_MS.toString()),
+        ).removePrefix("CLASSPATH='$apkPath' exec ")
         val serverPattern = "^app_process / " + MAIN_CLASS.replace(".", "\\.")
         // The pid file survives reboots while pids get reused, so only kill it if that pid still is our server.
         return "mkdir -p $dir; [ -f $pid ] && grep -q $MAIN_CLASS /proc/\$(cat $pid)/cmdline 2>/dev/null && kill \$(cat $pid) 2>/dev/null; " +

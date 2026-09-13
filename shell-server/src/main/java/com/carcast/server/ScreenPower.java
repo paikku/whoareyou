@@ -46,6 +46,8 @@ final class ScreenPower {
     private String previousStayOn;
     private String previousScreenOffTimeout;
     private String screenOffTimeout;
+    /** True when this run found a value left behind by a run that was killed before it could restore. */
+    private volatile boolean screenOffTimeoutRecovered;
     /** PowerManager keeps reporting the display as interactive after a SurfaceControl power-off, so track it here. */
     private volatile boolean forcedOff;
     /** What `dumpsys display` last said the panel is doing: ON / OFF / DOZE / null when unread. */
@@ -202,6 +204,9 @@ final class ScreenPower {
         m.put("lastSleepVdInteractive", lastSleepVdInteractive);
         m.put("screenOffTimeout", screenOffTimeout);
         m.put("screenOffTimeoutWas", previousScreenOffTimeout);
+        if (screenOffTimeoutRecovered) {
+            m.put("screenOffTimeoutRecovered", true);
+        }
         if (!panelOffMethod.isEmpty()) {
             m.put("panelOffMethod", panelOffMethod);
         }
@@ -640,11 +645,65 @@ final class ScreenPower {
             return;
         }
         try {
-            previousScreenOffTimeout = Settings.getAndPutValue("system", SCREEN_OFF_TIMEOUT, millis);
+            // Whose value is currently in the setting? If a previous run was killed before it could put
+            // the user's value back (adbd going away takes this process with it on phones where the
+            // cgroup escape fails - real S26U log, 2026-09-13), the setting still holds *ours*, and
+            // reading it now would enshrine our number as "the user's". The file written below is the
+            // only record of the real one, so it wins whenever it exists.
+            String recovered = readStashedTimeout();
+            String userValue = recovered != null ? recovered : Settings.getValue("system", SCREEN_OFF_TIMEOUT);
+            if (userValue == null || userValue.isEmpty()) {
+                // We could not read what to put back, so we do not touch it. A knob we cannot undo is
+                // not a knob, it is damage to someone's phone.
+                Ln.w("not changing " + SCREEN_OFF_TIMEOUT + ": could not read the current value");
+                return;
+            }
+            if (recovered != null) {
+                screenOffTimeoutRecovered = true;
+                Ln.i("a previous run left " + SCREEN_OFF_TIMEOUT + " changed; the user's value is " + recovered);
+            } else {
+                stashTimeout(userValue);
+            }
+            Settings.putValue("system", SCREEN_OFF_TIMEOUT, millis);
+            previousScreenOffTimeout = userValue;
             screenOffTimeout = millis;
-            Ln.i(SCREEN_OFF_TIMEOUT + " = " + millis + " (was " + previousScreenOffTimeout + ")");
+            Ln.i(SCREEN_OFF_TIMEOUT + " = " + millis + " (was " + userValue + ")");
         } catch (Throwable e) {
             Ln.w("Could not set " + SCREEN_OFF_TIMEOUT + ": " + e);
+        }
+    }
+
+    /**
+     * Where the user's own screen_off_timeout waits while ours is in place. Same directory as the
+     * server log, which the shell user owns; it exists only between changing the setting and putting
+     * it back, so finding one on startup means the last run did not get to finish.
+     */
+    private static final java.io.File TIMEOUT_STASH = new java.io.File("/data/local/tmp/carcast/screen_off_timeout.prev");
+
+    private static String readStashedTimeout() {
+        try {
+            if (!TIMEOUT_STASH.isFile()) {
+                return null;
+            }
+            byte[] b = java.nio.file.Files.readAllBytes(TIMEOUT_STASH.toPath());
+            String v = new String(b, java.nio.charset.StandardCharsets.UTF_8).trim();
+            Integer.parseInt(v); // a corrupt file must not become a setting
+            return v;
+        } catch (Throwable t) {
+            Ln.w("ignoring unreadable " + TIMEOUT_STASH + ": " + t);
+            return null;
+        }
+    }
+
+    private static void stashTimeout(String value) {
+        try {
+            java.io.File dir = TIMEOUT_STASH.getParentFile();
+            if (dir != null) {
+                dir.mkdirs();
+            }
+            java.nio.file.Files.write(TIMEOUT_STASH.toPath(), value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Throwable t) {
+            Ln.w("could not stash " + SCREEN_OFF_TIMEOUT + " (" + value + "): " + t);
         }
     }
 
@@ -676,7 +735,9 @@ final class ScreenPower {
             try {
                 Settings.putValue("system", SCREEN_OFF_TIMEOUT, previousScreenOffTimeout);
                 Ln.i(SCREEN_OFF_TIMEOUT + " restored to " + previousScreenOffTimeout);
-            } catch (SettingsException e) {
+                // Only now is the phone back to what its owner set, so only now may the record go.
+                java.nio.file.Files.deleteIfExists(TIMEOUT_STASH.toPath());
+            } catch (SettingsException | java.io.IOException e) {
                 Ln.w("Could not restore " + SCREEN_OFF_TIMEOUT + ": " + e);
             }
             previousScreenOffTimeout = null;
