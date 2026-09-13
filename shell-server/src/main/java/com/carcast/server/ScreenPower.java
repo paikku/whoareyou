@@ -548,15 +548,25 @@ final class ScreenPower {
 
     /**
      * When SurfaceControl refuses (it does on some ROMs), try what the others try before giving up:
-     * the {@code cmd display power-off} shell command Android 15 added, then dropping the panel's
-     * brightness to zero (Extinguish's fallback). A dark panel that is still composing is worse than
-     * a powered-off one, but it beats handing the driver a lit phone.
+     * dropping the panel's brightness to zero (Extinguish's fallback), then the {@code cmd display
+     * power-off} command Android 15 added. A dark panel that is still composing is worse than a
+     * powered-off one, but it beats handing the driver a lit phone - and turning it back on this way
+     * restores full brightness rather than whatever the user had, since there is no getter for the old
+     * value. Only ever reached when the real power switch was refused.
      */
     private boolean fallbackDisplayPower(boolean on) {
         return fallbackDisplayPower(on, null);
     }
 
     private boolean fallbackDisplayPower(boolean on, String only) {
+        // Order matters, and measurement decided it: on the Android 16 emulator `cmd display power-off 0`
+        // succeeds while `power-on 0` returns 255 (run #25, reproduced in #26). A path that can darken a
+        // phone but not light it again is the worst thing to reach for, so brightness - which is
+        // symmetric - is tried first, and cmd-display only as the last resort.
+        if (!"cmd-display".equals(only) && setPhysicalDisplaysBrightness(on ? 1.0f : 0.0f)) {
+            panelOffMethod = "brightness";
+            return true;
+        }
         if (!"brightness".equals(only) && Build.VERSION.SDK_INT >= AndroidVersions.API_35_ANDROID_15) {
             try {
                 String out = Command.execReadOutput("cmd", "display", on ? "power-on" : "power-off", "0");
@@ -568,12 +578,6 @@ final class ScreenPower {
             } catch (Exception e) {
                 Ln.w("cmd display power failed: " + e);
             }
-        }
-        // Turning it back on this way restores full brightness, not whatever the user had: there is no
-        // getter to read the old value first. Only ever reached when the real power switch was refused.
-        if (!"cmd-display".equals(only) && setPhysicalDisplaysBrightness(on ? 1.0f : 0.0f)) {
-            panelOffMethod = "brightness";
-            return true;
         }
         panelOffMethod = "none";
         return false;
