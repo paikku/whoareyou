@@ -46,6 +46,7 @@ public final class DisplayVideoSource implements VideoSource {
     private final DisplayCapture display;
     private final int bitRate;
     private final int maxFps;
+    private final boolean constrainedBaseline;
     private H264Encoder encoder;
     private EncodedH264Sink sink;
     private volatile String lastApp = "";
@@ -55,10 +56,12 @@ public final class DisplayVideoSource implements VideoSource {
     private volatile long fastWatchUntilMs;
     private Thread appWatcher;
 
-    public DisplayVideoSource(int width, int height, int dpi, boolean systemDecorations, int bitRate, int maxFps) {
+    public DisplayVideoSource(int width, int height, int dpi, boolean systemDecorations, int bitRate, int maxFps,
+                              boolean constrainedBaseline) {
         this.display = new DisplayCapture(width, height, dpi, systemDecorations);
         this.bitRate = bitRate;
         this.maxFps = maxFps;
+        this.constrainedBaseline = constrainedBaseline;
     }
 
     @Override
@@ -66,7 +69,7 @@ public final class DisplayVideoSource implements VideoSource {
         Workarounds.apply();
         sink = new EncodedH264Sink(hub, 33_333);
         EncodedH264Sink s = sink;
-        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, new H264Encoder.Output() {
+        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, constrainedBaseline, new H264Encoder.Output() {
             @Override
             public void onCodecConfig(byte[] annexB) {
                 s.onCodecConfig(annexB);
@@ -297,6 +300,7 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("displayOwnGroup", display.has(DisplayCapture.FLAG_OWN_DISPLAY_GROUP));
         m.put("displayAlwaysUnlocked", display.has(DisplayCapture.FLAG_ALWAYS_UNLOCKED));
         m.put("encoder", encoder != null ? encoder.name() : null);
+        m.put("encoderProfile", encoder != null ? encoder.profileNote() : null);
         // The profile the SPS really carries. The web client declares Baseline 3.0 regardless, so this
         // is the only place the encoder's actual profile shows up — and it decides whether a JS decoder
         // (Baseline only) can be a fallback for the car's Drive mode, where <video> is paused for us.

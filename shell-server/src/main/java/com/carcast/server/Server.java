@@ -10,7 +10,8 @@ import java.util.Map;
  *
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
- *     [display=1280x720/160] [bitrate=4000000] [fps=30] [decorations=false] [app=com.google.android.youtube] [source=clip]
+ *     [display=1280x720/160] [bitrate=4000000] [fps=30] [profile=baseline|default] [decorations=false]
+ *     [app=com.google.android.youtube] [source=clip]
  *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
  *     [screen_off_timeout=&lt;ms&gt;] [keep_active_fallback=false] [vd_wake=true]
  * </pre>
@@ -100,7 +101,11 @@ public final class Server {
                 int bitRate = Integer.parseInt(raw.getOrDefault("bitrate", "4000000"));
                 int fps = Integer.parseInt(raw.getOrDefault("fps", "30"));
                 boolean decorations = "true".equals(raw.get("decorations"));
-                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps);
+                // profile=baseline (default) asks the encoder for Constrained Baseline so a JS decoder on
+                // the car side can read the stream; profile=default leaves the vendor's choice (High on
+                // S26U) alone. A rejected request falls back on its own — see H264Encoder.open().
+                boolean constrainedBaseline = !"default".equals(raw.getOrDefault("profile", "baseline"));
+                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps, constrainedBaseline);
             } catch (RuntimeException e) {
                 System.err.println("carcast-server: bad display options: " + e.getMessage());
                 System.exit(2);

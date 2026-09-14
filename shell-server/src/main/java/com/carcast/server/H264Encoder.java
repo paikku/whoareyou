@@ -32,6 +32,7 @@ final class H264Encoder {
     private final int height;
     private final int bitRate;
     private final int maxFps;
+    private final boolean constrainedBaseline;
     private final Output output;
     private MediaCodec codec;
     private Surface inputSurface;
@@ -39,19 +40,61 @@ final class H264Encoder {
     private final AtomicBoolean stopped = new AtomicBoolean();
     @SuppressWarnings("FieldCanBeLocal")
     private volatile String name = "";
+    /** What actually happened to the profile request, for /api/status — the SPS is the final word. */
+    private volatile String profileNote = "";
 
-    H264Encoder(int width, int height, int bitRate, int maxFps, Output output) {
+    H264Encoder(int width, int height, int bitRate, int maxFps, boolean constrainedBaseline, Output output) {
         this.width = width;
         this.height = height;
         this.bitRate = bitRate;
         this.maxFps = maxFps;
+        this.constrainedBaseline = constrainedBaseline;
         this.output = output;
     }
 
-    /** Creates the codec and returns the surface the display must render into. */
+    /**
+     * Creates the codec and returns the surface the display must render into.
+     *
+     * The profile is normally the vendor's choice (S26U gives High: the SPS reads avc1.640020), and
+     * that is fine for MSE. It is not fine for a JS decoder on the car side, which only handles
+     * Baseline — and we need one, because Tesla stops feeding <video> the moment the gear leaves P
+     * (measured 2026-09-14, docs/drive-check). So [constrainedBaseline] asks for Baseline; vendors
+     * reject profile/level combinations they dislike, so a rejection falls back to the old behaviour
+     * rather than leaving the car with no picture at all.
+     */
     Surface open() throws IOException {
         codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         name = codec.getName();
+        if (constrainedBaseline) {
+            try {
+                MediaFormat wanted = format();
+                wanted.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline);
+                // A profile without a level is ignored by some encoders; 3.2 covers 720p60.
+                wanted.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel32);
+                codec.configure(wanted, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                profileNote = "constrained-baseline 요청 (SPS 확인 필요)";
+            } catch (Exception e) {
+                Ln.w("Video encoder: constrained-baseline rejected (" + e + ") — falling back to the vendor default");
+                try {
+                    codec.release();
+                } catch (Exception ignored) {
+                    // already unusable; the fresh codec below is what matters
+                }
+                codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+                name = codec.getName();
+                codec.configure(format(), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                profileNote = "constrained-baseline 거부됨 → 벤더 기본값";
+            }
+        } else {
+            codec.configure(format(), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            profileNote = "벤더 기본값";
+        }
+        inputSurface = codec.createInputSurface();
+        Ln.i("Video encoder: " + name + " " + width + "x" + height + " " + bitRate / 1000 + " kbps (" + profileNote + ")");
+        return inputSurface;
+    }
+
+    private MediaFormat format() {
         MediaFormat format = new MediaFormat();
         format.setString(MediaFormat.KEY_MIME, MediaFormat.MIMETYPE_VIDEO_AVC);
         format.setInteger(MediaFormat.KEY_WIDTH, width);
@@ -65,14 +108,15 @@ final class H264Encoder {
         format.setInteger(MediaFormat.KEY_PRIORITY, 0); // real-time
         format.setInteger(MediaFormat.KEY_LATENCY, 1);
         format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0);
-        // No KEY_PROFILE: vendors reject some combinations; the SPS decides the codec string the web client uses.
         if (maxFps > 0) {
             format.setFloat(KEY_MAX_FPS_TO_ENCODER, maxFps);
         }
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        inputSurface = codec.createInputSurface();
-        Ln.i("Video encoder: " + name + " " + width + "x" + height + " " + bitRate / 1000 + " kbps");
-        return inputSurface;
+        return format;
+    }
+
+    /** Whether Baseline was asked for and whether the encoder took it. The SPS in /api/status.codec decides. */
+    String profileNote() {
+        return profileNote;
     }
 
     void start() {
