@@ -312,8 +312,13 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         notPaired?.let { throw it }
         dropManualPortIfHopeless()
         throw IOException(
-            if (tried.isEmpty()) "adbd 접속 포트를 찾지 못함 — 개발자 옵션에서 무선 디버깅을 켜세요"
-            else "adbd에 붙지 못함. 시도한 포트:$tried\n무선 디버깅은 껐다 켤 때마다 포트가 바뀝니다 — 토글을 껐다 켜고 다시 시도해 보세요"
+            when {
+                tried.isNotEmpty() -> "adbd에 붙지 못함. 시도한 포트:$tried\n무선 디버깅은 껐다 켤 때마다 포트가 바뀝니다 — 토글을 껐다 켜고 다시 시도해 보세요"
+                // The toggle is on (the loop checked before coming here) and still nothing is advertised: that is
+                // not "switch it on". Seen once right after a fresh pairing (2026-09-14 21:46).
+                adbWifiEnabled() -> "무선 디버깅은 켜져 있는데 접속 포트가 광고되지 않음 — 토글을 껐다 켜거나, 무선 디버깅 화면의 'IP 주소 및 포트'의 포트를 '포트 수동…'에 입력하세요"
+                else -> "adbd 접속 포트를 찾지 못함 — 개발자 옵션에서 무선 디버깅을 켜세요"
+            }
         )
     }
 
