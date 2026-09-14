@@ -126,6 +126,7 @@ class StreamService : Service() {
             // M3: the app itself connects to adbd (wireless debugging) and runs the server as uid 2000.
             // Until that succeeds the PC command stays on screen as the fallback.
             val link = ShellServerLink(this, ::log)
+            link.onStateChange = { CarCastWidget.refresh(applicationContext) }
             shellLink = link
             link.start()
         }
@@ -182,10 +183,16 @@ class StreamService : Service() {
             .build()
     }
 
-    override fun onCreate() { super.onCreate(); instance = this }
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        // The sequence has no context of its own; the widget is redrawn from here on every step it reports.
+        BulkControl.onChange = { CarCastWidget.refresh(applicationContext) }
+    }
 
     override fun onDestroy() {
         stopSession()
+        BulkControl.onChange = null
         instance = null
         super.onDestroy()
     }
@@ -231,6 +238,9 @@ class StreamService : Service() {
         /** ADB link state for the screen: null when no session or the in-app server is used. */
         val linkState: String?
             get() = instance?.shellLink?.let { "${it.state}${if (it.detail.isNotEmpty()) " (${it.detail.take(60)})" else ""}" }
+        /** The same, in one short line for the widget; null when there is no link. */
+        val linkSummary: String?
+            get() = instance?.shellLink?.summary()
         @Volatile private var instance: StreamService? = null
 
         /** Simple in-memory log the activity polls; good enough until a real log view exists. */

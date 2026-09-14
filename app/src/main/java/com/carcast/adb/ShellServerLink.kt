@@ -40,6 +40,9 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private var thread: Thread? = null
     private val wake = Object()
 
+    /** Called after every [state]/[detail] change. The widget hangs off this; it has no process to poll from. */
+    @Volatile var onStateChange: (() -> Unit)? = null
+
     fun start() {
         if (active) { synchronized(wake) { wake.notifyAll() }; return }
         active = true
@@ -59,7 +62,22 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         thread?.interrupt(); thread = null
     }
 
-    private fun set(s: State, d: String) { state = s; detail = d }
+    private fun set(s: State, d: String) { state = s; detail = d; runCatching { onStateChange?.invoke() } }
+
+    /** One short Korean line for the widget: what the link is doing, or what it is waiting on. */
+    fun summary(): String = when (state) {
+        State.IDLE -> "adb 대기"
+        State.SERVER_UP -> if (detail.isEmpty()) "서버 응답 중" else "서버 응답 중 — $detail"
+        State.FINDING_PORT -> "adb 포트 찾는 중"
+        State.CONNECTING -> "adb 접속 중"
+        State.TCP_MODE -> "TCP 모드 전환 중"
+        State.NEEDS_PAIRING -> "페어링 필요 — 앱을 여세요"
+        State.NO_WIFI -> "Wi-Fi 없음 (TCP 모드도 없음)"
+        State.ADB_WIFI_OFF -> "무선 디버깅 꺼짐"
+        State.STARTING -> "서버 시작 중"
+        State.RETRYING -> "재시도 대기: ${detail.take(40)}"
+        State.STOPPED -> "중지됨"
+    }
 
     private fun loop() {
         var delay = 5_000L
@@ -155,6 +173,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         var port = 0
         openLink().use { l ->
             port = l.port
+            grantSecureSettings(l)
             // Only now that adb is confirmed working do we retire an old-build server (kill switch), then relaunch.
             if (replaceStale) {
                 log("이전 빌드 서버 종료 → 이 빌드로 교체")
@@ -358,6 +377,22 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
             "TCP 모드 포트 ${port}에 붙지 못함 (${last?.message}) — 폰에 'USB 디버깅을 허용하시겠습니까?'가 떴다면 '항상 허용'으로 수락하세요. " +
                 "adbd가 재시작되며 무선 디버깅이 꺼졌을 수 있으니 개발자 옵션에서 다시 켜면 이어집니다 (${prefs.tcpModeFailures}/${TCP_MODE_MAX_TRIES}회 실패)",
             last,
+        )
+    }
+
+    /**
+     * While we hold shell, hand the app the one permission that lets it switch USB debugging on by itself
+     * later, when there is no shell to ask ([UsbDebugging]). The grant survives reboots, so this is a
+     * one-time thing per install; it is repeated on every launch only because repeating it is free and a
+     * reinstall would otherwise leave the app believing it still had it.
+     */
+    private fun grantSecureSettings(l: AdbLink) {
+        if (UsbDebugging.canWrite(context)) return
+        val out = runCatching { l.shell(UsbDebugging.grantCommand(context.packageName) + " 2>&1").trim() }
+            .getOrElse { "명령 실패: ${it.message}" }
+        log(
+            if (UsbDebugging.canWrite(context)) "WRITE_SECURE_SETTINGS 부여됨 — 다음부터 USB 디버깅이 꺼져 있으면 앱이 스스로 켭니다"
+            else "WRITE_SECURE_SETTINGS 부여 실패 ($out) — USB 디버깅은 계속 손으로 켜야 합니다"
         )
     }
 

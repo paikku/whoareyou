@@ -125,6 +125,17 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 함께 cgroup 째 SIGKILL 된다(§3.5). `BulkControl.precondition()` 이 셋 중 무엇인지 먼저 말하고, 앱은 경고하되
 막지는 않는다 — TCP 모드가 켜진 폰에서는 이게 매일 쓰는 정상 경로다.
 
+**USB 디버깅은 앱이 켠다 (2026-09-14):** 일괄 켜기의 1/3 단계가 `UsbDebugging.ensureOn()` 이다. 그게 되는 이유는
+`ShellServerLink` 가 shell 을 쥘 때마다 `pm grant com.carcast android.permission.WRITE_SECURE_SETTINGS` 를 실행해
+두기 때문이고(재부팅을 넘어 유지), 그래서 재부팅 직후처럼 shell 이 없는 순간에도 앱이 `adb_enabled` 를 쓸 수 있다.
+무선 디버깅은 건드리지 않는다 — adbd 를 살려 두는 건 USB 토글이고, TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로
+되살아난다(재부팅 전까지). 결과는 `Outcome` 넷 중 하나로 로그와 위젯에 남는다; `NO_PERMISSION`/`REFUSED` 일 때만 위젯이
+"USB 디버깅을 켜 주세요" 를 붙인다.
+
+**위젯은 진행 중인 단계를 그대로 보여 준다:** `BulkControl.step`(예: `3/3 서버 응답 대기 12/30초`)과 `lastFailure`,
+그리고 세션은 있는데 서버가 없을 때는 `ShellServerLink.summary()`(무선 디버깅 꺼짐 / 페어링 필요 / 재시도 대기 …).
+둘 다 `onChange`/`onStateChange` 콜백으로 `CarCastWidget.refresh()` 를 부른다 — 위젯은 폴링하지 못하므로.
+
 ## 4. 새 상황을 추가하는 법
 
 `tests/e2e/tests/lifecycle/actions.ts` 에 동작 하나를 더하면 시나리오와 무작위 탐색 양쪽에 자동으로 들어간다.

@@ -301,7 +301,8 @@ class MainActivity : AppCompatActivity() {
      */
     private fun bulkOn() {
         val go: () -> Unit = {
-            if (BulkControl.precondition(this) == BulkControl.Survival.NONE) {
+            // Once the app may write the toggle, "on" switches USB debugging on itself, so there is nothing to warn about.
+            if (BulkControl.precondition(this) == BulkControl.Survival.NONE && !com.carcast.adb.UsbDebugging.canWrite(this)) {
                 androidx.appcompat.app.AlertDialog.Builder(this)
                     .setMessage(R.string.bulk_on_warn_none)
                     .setPositiveButton(R.string.bulk_on) { _, _ -> sendBulk(StreamService.ACTION_ALL_ON) }
