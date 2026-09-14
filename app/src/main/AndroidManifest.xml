@@ -58,5 +58,20 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Pairs with the phone's own wireless debugging to start the streaming server" />
         </service>
+
+        <!--
+          차가 보낸 리포트를 **파일로** 공유하기 위한 것. 예전에는 JSON 을 통째로 Intent 의 EXTRA_TEXT
+          에 실었는데, 리포트가 쌓이자(상한 50 건) 수백 KB 가 되어 Binder 한도에 걸렸고 버튼을 눌러도
+          아무 일도 일어나지 않았다. 첨부로 보내면 크기가 문제되지 않는다.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shared_files" />
+        </provider>
     </application>
 </manifest>

@@ -46,4 +46,28 @@ class ReportStoreTest {
         assertEquals(ReportStore.MAX, store.size)
         assertEquals("${ReportStore.MAX + 4}", store.last!!.summary)
     }
+
+    /**
+     * 리포트 본문에는 server.lastReport.summary 가 최상위 summary 보다 **앞에** 들어 있다. 첫 매치를
+     * 집던 예전 코드는 그 옛 요약을 저장했고, 그것이 다음 리포트에 다시 실리면서 목록 전체가 한 문자열로
+     * 굳었다(실차 #35~#55). 최상위만 봐야 한다.
+     */
+    @Test
+    fun takesTheTopLevelSummaryNotTheNestedOne() {
+        val body = """{"kind":"session","server":{"lastReport":{"id":41,"summary":"옛날 요약"}},"summary":"이번 요약"}"""
+        assertEquals("이번 요약", ReportStore.topLevelSummary(body))
+        assertEquals("이번 요약", ReportStore().add(body, "10.0.0.1:1")!!.summary)
+    }
+
+    @Test
+    fun summaryScannerSurvivesBracesAndEscapesInsideStrings() {
+        val body = """{"note":"{\"nested\": not a brace}","summary":"따옴표 \" 와 중괄호 } 를 담은 요약"}"""
+        assertEquals("따옴표 \" 와 중괄호 } 를 담은 요약", ReportStore.topLevelSummary(body))
+    }
+
+    @Test
+    fun summaryIsEmptyWhenThereIsNoTopLevelOne() {
+        assertEquals("", ReportStore.topLevelSummary("""{"server":{"summary":"안쪽뿐"}}"""))
+        assertEquals("", ReportStore.topLevelSummary("""{"summary":42}"""))
+    }
 }

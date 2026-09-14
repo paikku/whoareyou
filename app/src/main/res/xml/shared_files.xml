@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 공유용으로만 쓰는 캐시 하위 폴더. 리포트 JSON 을 여기 써서 첨부한다. -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>
