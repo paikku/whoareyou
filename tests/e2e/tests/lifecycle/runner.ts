@@ -4,6 +4,7 @@
 import type { Page } from '@playwright/test';
 import { Action, Ctx, wiggle } from './actions';
 import { Probe, clientStats, disagreements, probe, sleep } from './probe';
+import { startPlayback } from '../helpers';
 
 // 이만큼 프레임이 더 디코드되면 "돌아왔다"고 본다 (한 장은 우연일 수 있다).
 // 가상 폰에서는 정지 화면에서 초당 0.3프레임까지 떨어지므로 한 장이라도 오면 살아난 것으로 센다 —
@@ -93,7 +94,7 @@ export async function applyAndMeasure(ctx: Ctx, action: Action): Promise<Step> {
  */
 export async function openCarPage(page: Page, base: string): Promise<boolean> {
   await page.goto('/');
-  await page.locator('#overlay').click({ position: { x: 100, y: 100 } });
+  await startPlayback(page);
   const stop = await wiggle(base).catch(() => null);
   try {
     const want = NO_THROUGHPUT ? 0 : 5;
@@ -116,7 +117,7 @@ export async function reset(ctx: Ctx): Promise<void> {
   try { await post(`/api/app?name=${encodeURIComponent(app.pkg)}`); } catch { /* 아래에서 걸린다 */ }
   const s = await clientStats(page);
   if (!s?.started) {
-    await page.locator('#overlay').click({ position: { x: 100, y: 100 } }).catch(() => {});
+    await startPlayback(page).catch(() => {});
   }
   await sleep(1500);
   void base;

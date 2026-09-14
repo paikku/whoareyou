@@ -12,6 +12,7 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.carcast.BuildConfig
 import com.carcast.Config
 import com.carcast.R
@@ -25,6 +26,7 @@ import com.carcast.service.NetDiag
 import com.carcast.service.SelfTest
 import com.carcast.service.StreamService
 import com.carcast.vpn.CarVpnService
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -206,17 +208,36 @@ class MainActivity : AppCompatActivity() {
     private fun shareCarReports() {
         shareReports.isEnabled = false
         Thread {
-            val text = runCatching { StreamService.fetchLocal("/api/reports") }
+            // 텍스트를 Intent 에 통째로 싣던 예전 방식은 리포트가 쌓이자(상한 50 건, 펼치면 수백 KB)
+            // Binder 한도에 걸려 **아무 일도 일어나지 않았다**. 파일로 첨부하면 크기가 문제되지 않는다.
+            // 넉넉한 타임아웃도 같이 준다 — 그만한 응답을 1 초 안에 읽으라는 것도 무리였다.
+            val body = runCatching { StreamService.fetchLocal("/api/reports", timeoutMs = 15_000) }
                 .map { runCatching { JSONArray(it).toString(2) }.getOrDefault(it) }
                 .getOrElse { "서버 응답 없음 (127.0.0.1:${Config.HTTP_PORT}): $it" }
+            val file = runCatching { writeSharedFile(body) }.getOrNull()
             runOnUiThread {
                 shareReports.isEnabled = true
-                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                val send = Intent(Intent.ACTION_SEND)
                     .putExtra(Intent.EXTRA_SUBJECT, "CarCast car reports ${BuildConfig.GIT_SHA}")
-                    .putExtra(Intent.EXTRA_TEXT, text)
+                if (file != null) {
+                    val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+                    send.setType("application/json")
+                        .putExtra(Intent.EXTRA_STREAM, uri)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        // 첨부를 못 여는 앱도 있으니 한 줄 요약은 본문으로도 같이 보낸다.
+                        .putExtra(Intent.EXTRA_TEXT, lastReportLine(StreamService.shellStatus))
+                } else {
+                    send.setType("text/plain").putExtra(Intent.EXTRA_TEXT, body)
+                }
                 startActivity(Intent.createChooser(send, getString(R.string.share_reports)))
             }
         }.apply { isDaemon = true }.start()
+    }
+
+    /** 공유용 캐시 파일 하나. 매번 덮어써서 쌓이지 않는다(FileProvider 경로: res/xml/shared_files.xml). */
+    private fun writeSharedFile(body: String): File {
+        val dir = File(cacheDir, "shared").apply { mkdirs() }
+        return File(dir, "carcast-reports-${BuildConfig.GIT_SHA}.json").apply { writeText(body) }
     }
 
     /**

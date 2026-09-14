@@ -77,13 +77,28 @@ class StreamSession(
 
     private fun event(s: String) { Log.i(TAG, s); onEvent(s) }
 
+    /** 마지막으로 남긴 원격 accept 의 "호스트 → 로컬주소", 그리고 그 뒤로 같은 짝이 몇 번 왔는지. */
+    private var lastAcceptRoute = ""
+    private var sameRouteAccepts = 0L
+
     @Throws(IOException::class)
     fun start() {
         if (running) return
         val server = HttpServer(assets, port, ::onWebSocket, ::onApi)
         // The app polls /api/status over loopback every 2 s; only remote (car/laptop) connections are events.
+        //
+        // 그런데 차의 페이지도 2 초마다 /api/status 를 부르고, 응답은 Connection: close 다 — 즉 원격
+        // accept 도 초당 한 번꼴로 쏟아진다. 한 줄씩 남기면 /api/log 의 300 줄이 6~10 분이면 다 밀려
+        // 나가서, 정작 보려던 사건(안 읽는 클라이언트, 소스 실패)이 사라진다. 그래서 **어디서 어디로**
+        // 가 달라질 때만 남기고, 같은 짝이 이어지면 세어 두었다가 가끔 한 줄로 알린다.
         server.onAccept = { remote, local ->
-            if (remote.startsWith("127.")) Log.d(TAG, "accept $remote → $local") else event("accept $remote → $local")
+            if (remote.startsWith("127.")) {
+                Log.d(TAG, "accept $remote → $local")
+            } else {
+                val route = "${remote.substringBeforeLast(':')} → $local" // 포트는 매번 달라진다
+                val n = if (route == lastAcceptRoute) ++sameRouteAccepts else { lastAcceptRoute = route; sameRouteAccepts = 1; 1L }
+                if (n == 1L) event("accept $route") else if (n % ACCEPT_LOG_EVERY == 0L) event("accept $route (${n}회째)")
+            }
         }
         server.start()
         http = server
@@ -250,6 +265,8 @@ class StreamSession(
 
     companion object {
         private const val TAG = "StreamSession"
+        /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
+        private const val ACCEPT_LOG_EVERY = 100L
         const val TEST_CLIP = "test-720p30.cmp4"
         /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to `auto`. */
         val RESTART_MODES = setOf("auto", "always", "never")

@@ -7,6 +7,9 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "tinyh264": "^0.0.7"
+  },
   "devDependencies": {
     "esbuild": "^0.28.2",
     "typescript": "^5.6.0"

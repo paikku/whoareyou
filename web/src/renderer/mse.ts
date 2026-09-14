@@ -45,6 +45,7 @@ export function mseSupported(mime: string = H264_MIME): boolean {
 
 export class MseRenderer implements Renderer {
   readonly name = 'mse';
+  readonly needsGesture = true;
   private readonly video: HTMLVideoElement;
   private ms: MediaSource | null = null;
   private sb: SourceBuffer | null = null;

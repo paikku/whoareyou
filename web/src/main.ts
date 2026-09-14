@@ -3,6 +3,7 @@ import { KEYCODE, KeyAction, MediaType, encodeKey, encodeText, parseMediaPacket 
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { MseRenderer, mseSupported } from './renderer/mse';
 import { MjpegRenderer } from './renderer/mjpeg';
+import { H264Renderer, h264Supported } from './renderer/h264';
 import type { Renderer } from './renderer/types';
 import { TouchInput } from './input';
 
@@ -10,6 +11,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const stage = $('stage');
 const video = $<HTMLVideoElement>('video');
 const canvas = $<HTMLCanvasElement>('mjpeg');
+const glCanvas = $<HTMLCanvasElement>('gl');
 const overlay = $('overlay');
 const overlayMsg = $('overlay-msg');
 const statsEl = $('stats');
@@ -18,14 +20,30 @@ const kbd = $<HTMLInputElement>('kbd');
 const params = new URLSearchParams(location.search);
 const forced = params.get('renderer');
 
+/**
+ * 기본은 h264(캔버스)다.
+ *
+ * <video> 는 기어가 P 를 벗어나는 순간 프레임 공급이 끊긴다(실측 2026-09-14, docs/drive-check).
+ * 차는 대부분의 시간을 D 로 보내므로, 그때만 갈아타는 것은 두 경로를 유지하면서 정작 대부분의
+ * 시간에는 쓰지도 않는 쪽을 기본으로 두는 셈이다. 게다가 갈아타려면 MSE 로도 읽히게 Baseline 을
+ * 유지해야 해서 화질 이득도 없고, 전환을 감지하는 데 스톨 두 번(4~6 초)이 든다.
+ *
+ * 그래서 처음부터 D 에서 쓰는 그 경로로 간다. 실측으로 30fps·6ms 이고, MSE(80~140ms)보다 오히려
+ * 지연이 낮다 — 버퍼를 쌓지 않기 때문이다. MSE 는 `?renderer=mse` 로 남겨 둔다.
+ */
 function pickRenderer(): Renderer {
-  if (forced === 'mjpeg' || (forced !== 'mse' && !mseSupported())) return new MjpegRenderer(canvas);
-  return new MseRenderer(video);
+  if (forced === 'mse') return new MseRenderer(video);
+  if (forced === 'mjpeg') return new MjpegRenderer(canvas);
+  if (forced === 'h264' || h264Supported()) return new H264Renderer(glCanvas);
+  // 워커나 WebGL2 가 없는 브라우저: 주차 중에라도 보이도록 <video> 로 물러난다.
+  return mseSupported() ? new MseRenderer(video) : new MjpegRenderer(canvas);
 }
 
 let renderer = pickRenderer();
 renderer.attach(stage);
-overlayMsg.textContent = `화면을 터치하면 시작합니다 (${renderer.name})`;
+overlayMsg.textContent = renderer.needsGesture
+  ? `화면을 터치하면 시작합니다 (${renderer.name})`
+  : `연결하는 중… (${renderer.name})`;
 
 let touchRef: TouchInput | null = null;
 const control = new ReconnectingWs(wsUrl('/ws/control'), {
@@ -73,9 +91,8 @@ const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ?
 });
 videoWs.start();
 
-// Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the MSE
-// pipeline is wedged (seen on the laptop: frames stop, lag grows). A fresh socket makes the phone
-// resend the init segment and a keyframe, which rebuilds the pipeline — the same path as a reconnect.
+// Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the pipeline is
+// wedged. A fresh socket makes the phone resend the init segment and a keyframe, which rebuilds it.
 // No packets at all is not a stall: the phone's encoder goes quiet on a static screen.
 let wdPackets = 0;
 let wdFrames = 0;
@@ -105,6 +122,10 @@ const start = async () => {
 };
 overlay.addEventListener('pointerdown', start, { once: true });
 stage.addEventListener('pointerdown', start, { once: true });
+
+// 캔버스 렌더러는 제스처를 기다릴 이유가 없다 — 차에 타면 화면이 이미 나와 있어야 한다.
+// (오디오가 붙는 날에는 그때 소리를 위한 제스처를 따로 받는다. M6)
+if (!renderer.needsGesture) void start();
 
 // 뒤로가기만 폰으로 보낸다. BACK 은 이벤트가 실린 디스플레이에서 처리되므로 차 화면의 앱에 제대로 간다.
 for (const btn of document.querySelectorAll<HTMLButtonElement>('#bar button[data-key]')) {

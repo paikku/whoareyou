@@ -6,8 +6,9 @@ import { expect, test } from '@playwright/test';
 test.skip(!!process.env.NO_THROUGHPUT, '가상 폰에서는 디코드 처리량을 물을 수 없다');
 import { sleep, startPlayback, stats } from './helpers';
 
+// MSE 는 이제 기본이 아니다(드라이브 모드에서 <video> 가 멈추므로) — 손으로 골라 확인한다.
 test('MSE renderer decodes the live stream at >= 25 fps with < 300 ms lag', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/?renderer=mse');
   await expect(page.locator('#overlay')).toBeVisible();
   await startPlayback(page);
   await expect(page.locator('#overlay')).toBeHidden();
@@ -40,4 +41,24 @@ test('mjpeg renderer can be forced via ?renderer=mjpeg', async ({ page }) => {
   const s = await stats(page);
   expect(s.renderer).toBe('mjpeg');
   expect(s.controlWs.open || s.controlWs.connects > 0 || s.controlWs.failures >= 0).toBe(true);
+});
+
+// 기본 렌더러. 테슬라는 기어가 P 를 벗어나면 <video> 에 프레임 공급을 끊지만 캔버스는 그대로
+// 돈다(실측 2026-09-14, docs/drive-check). 차는 대부분 D 이므로 처음부터 이 경로로 간다.
+//
+// 그래서 **첫 제스처가 필요 없다** — 여기서는 아무것도 누르지 않고, 오버레이가 스스로 걷히고
+// 그림이 나오는 데까지를 본다. 차에 타면 화면이 이미 나와 있어야 한다.
+test('기본은 h264 — 아무것도 누르지 않아도 캔버스에 그려진다', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#overlay')).toBeHidden();
+  await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 10, null, { timeout: 30_000 });
+
+  const a = await stats(page);
+  await sleep(5000);
+  const b = await stats(page);
+  expect(b.renderer).toBe('h264');
+  expect(b.lastError).toBe('');
+  // 5 초면 30fps 에서 150 장. 소프트 디코딩이라 여유를 두고 본다.
+  expect(b.framesDecoded - a.framesDecoded).toBeGreaterThan(100);
+  expect(b.videoWs.open).toBe(true);
 });

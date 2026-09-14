@@ -10,6 +10,8 @@
 <div id="stage">
   <video id="video" playsinline muted></video>
   <canvas id="mjpeg" hidden></canvas>
+  <!-- 소프트 H.264 렌더러의 출력면. 2D 와 WebGL 컨텍스트는 한 캔버스에 같이 못 붙어 따로 둔다. -->
+  <canvas id="gl" hidden></canvas>
   <div id="overlay" class="overlay">
     <div class="overlay-card">
       <div class="overlay-title">CarCast</div>
