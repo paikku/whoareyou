@@ -17,12 +17,16 @@ import android.provider.Settings
  * shell whenever it launches the server, so it grants itself then ([grantCommand]); from that point on the
  * toggle can be switched with no adb at all — including right after a reboot, when there is none.
  *
- * Only the USB toggle is touched. Wireless debugging is not: Android switches that one off on its own when
- * Wi-Fi drops, and it is not what keeps adbd alive.
+ * The Wireless debugging toggle (`adb_wifi_enabled`) is the same kind of setting and gets the same treatment
+ * ([ensureWirelessOn]), for a different moment: after a reboot the TCP-mode port is gone (its property does
+ * not persist) and wireless debugging is the only way back to adbd — and Android has switched it off at boot.
+ * Whether AdbService honours a write from us the way it honours the Developer options switch is exactly what
+ * this is in here to find out; the read-back says which (docs/verification-log.md).
  */
 object UsbDebugging {
     const val PERMISSION = "android.permission.WRITE_SECURE_SETTINGS"
     private const val SETTING = "adb_enabled"
+    private const val WIRELESS = "adb_wifi_enabled"
 
     /** What one call to [ensureOn] did, so the log and the widget can say it in one line. */
     enum class Outcome {
@@ -45,11 +49,24 @@ object UsbDebugging {
         context.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED
 
     /** Switches the toggle on if it is off. Reads it back rather than trusting the write: a refusal is silent. */
-    fun ensureOn(context: Context): Outcome {
-        if (enabled(context)) return Outcome.ALREADY_ON
+    fun ensureOn(context: Context): Outcome = ensure(context, SETTING)
+
+    fun wirelessEnabled(context: Context): Boolean = runCatching {
+        Settings.Global.getInt(context.contentResolver, WIRELESS, 0) == 1
+    }.getOrDefault(false)
+
+    /**
+     * Same for Wireless debugging. Only meaningful on Wi-Fi — the platform side needs a network to bind to —
+     * so the caller checks that first; here the setting is written and read back like the other one.
+     */
+    fun ensureWirelessOn(context: Context): Outcome = ensure(context, WIRELESS)
+
+    private fun ensure(context: Context, setting: String): Outcome {
+        val on = { runCatching { Settings.Global.getInt(context.contentResolver, setting, 0) == 1 }.getOrDefault(false) }
+        if (on()) return Outcome.ALREADY_ON
         if (!canWrite(context)) return Outcome.NO_PERMISSION
-        val wrote = runCatching { Settings.Global.putInt(context.contentResolver, SETTING, 1) }.getOrDefault(false)
-        return if (wrote && enabled(context)) Outcome.TURNED_ON else Outcome.REFUSED
+        val wrote = runCatching { Settings.Global.putInt(context.contentResolver, setting, 1) }.getOrDefault(false)
+        return if (wrote && on()) Outcome.TURNED_ON else Outcome.REFUSED
     }
 
     /** The one-time shell command that makes [ensureOn] possible. Idempotent; prints nothing on success. */
@@ -61,5 +78,12 @@ object UsbDebugging {
         Outcome.TURNED_ON -> "USB 디버깅: 꺼져 있어서 켰음 (adbd 기동)"
         Outcome.NO_PERMISSION -> "USB 디버깅: 꺼져 있고 앱이 켤 권한이 아직 없음 — 개발자 옵션에서 켜 주세요 (서버가 한 번 뜨면 앱이 권한을 받아 다음부터는 스스로 켭니다)"
         Outcome.REFUSED -> "USB 디버깅: 앱이 켰지만 폰이 되돌림 — 개발자 옵션에서 직접 켜 주세요"
+    }
+
+    fun describeWireless(o: Outcome): String = when (o) {
+        Outcome.ALREADY_ON -> "무선 디버깅: 이미 켜져 있음"
+        Outcome.TURNED_ON -> "무선 디버깅: 꺼져 있어서 켰음 — 접속 포트가 광고되는지 봅니다"
+        Outcome.NO_PERMISSION -> "무선 디버깅: 꺼져 있고 앱이 켤 권한이 아직 없음 — 개발자 옵션에서 켜 주세요"
+        Outcome.REFUSED -> "무선 디버깅: 앱이 켰지만 폰이 되돌림 — 개발자 옵션에서 직접 켜 주세요 (실측 기록 대상)"
     }
 }

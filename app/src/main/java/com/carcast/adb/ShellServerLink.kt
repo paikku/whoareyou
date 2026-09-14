@@ -141,9 +141,18 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                     continue
                 }
                 if (!adbWifiEnabled()) {
-                    // Android switches wireless debugging off whenever Wi-Fi drops; the toggle stays off until the user flips it.
+                    // Android switches wireless debugging off whenever Wi-Fi drops and at every boot. We are on
+                    // Wi-Fi here, so try switching it back on ourselves (WRITE_SECURE_SETTINGS, once granted);
+                    // if the phone takes it, the next pass finds the port. Tried once per off-episode, so a
+                    // phone that reverts the write gets one REFUSED line, not one every three seconds.
+                    if (!adbOffWarned) {
+                        adbOffWarned = true
+                        val o = UsbDebugging.ensureWirelessOn(context)
+                        log(UsbDebugging.describeWireless(o))
+                        if (o == UsbDebugging.Outcome.TURNED_ON) { set(State.ADB_WIFI_OFF, "무선 디버깅 켜는 중"); waitFor(2_000L); continue }
+                        log("무선 디버깅이 꺼져 있음 (Wi-Fi가 끊길 때 자동으로 꺼짐) — '무선 디버깅 설정' 버튼으로 열어 켜면 바로 이어집니다")
+                    }
                     set(State.ADB_WIFI_OFF, "무선 디버깅 꺼짐 — 개발자 옵션에서 켜세요")
-                    if (!adbOffWarned) { adbOffWarned = true; log("무선 디버깅이 꺼져 있음 (Wi-Fi가 끊길 때 자동으로 꺼짐) — '무선 디버깅 설정' 버튼으로 열어 켜면 바로 이어집니다") }
                     waitFor(3_000L); delay = 5_000L
                     continue
                 }
