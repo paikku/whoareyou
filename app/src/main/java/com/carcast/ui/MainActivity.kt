@@ -222,13 +222,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderSetup(st: SetupSteps.State) {
         val running = StreamService.running
-        setupWireless.text = stepLabel(1, st.wireless, getString(if (st.wireless) R.string.setup_wireless_done else R.string.setup_wireless))
+        setupWireless.text = stepLabel(
+            1, st.wireless,
+            getString(when { st.wirelessByApp -> R.string.setup_wireless_by_app; st.wireless -> R.string.setup_wireless_done; else -> R.string.setup_wireless }),
+        )
         setupPair.text = stepLabel(2, st.paired, getString(if (st.paired) R.string.setup_pair_done else R.string.setup_pair))
         setupStart.text = stepLabel(
             3, st.server,
             getString(when { st.server -> R.string.setup_start_running; running -> R.string.setup_start_waiting; else -> R.string.setup_start }),
         )
-        val note = SetupSteps.note(st)
+        val note = SetupSteps.note(st, blocker = if (running && !st.server) StreamService.linkSummary else null)
         setupNote.visibility = if (note == null) android.view.View.GONE else android.view.View.VISIBLE
         if (note != null) setupNote.text = note
         setupWidget.text = stepLabel(4, st.widget, getString(if (st.widget) R.string.setup_widget_done else R.string.setup_widget))

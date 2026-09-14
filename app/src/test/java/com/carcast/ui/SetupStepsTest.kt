@@ -11,8 +11,14 @@ class SetupStepsTest {
 
     private fun state(
         wireless: Boolean = false, paired: Boolean = false, server: Boolean = false, widget: Boolean = false,
-        granted: Boolean = false, usb: Boolean = false, tcp: Boolean = false,
-    ) = SetupSteps.State(wireless, paired, server, widget, granted, usb, tcp)
+        granted: Boolean = false, usb: Boolean = false, tcp: Boolean = false, byApp: Boolean = false,
+    ) = SetupSteps.State(wireless, byApp, paired, server, widget, granted, usb, tcp)
+
+    /** After a reboot the session is waiting on Wi-Fi; that line beats the three lights. */
+    @Test
+    fun aBlockerReplacesTheLights() {
+        assertEquals("⏳ Wi-Fi에 연결하세요", SetupSteps.note(state(granted = true, usb = true), blocker = "Wi-Fi에 연결하세요"))
+    }
 
     @Test
     fun nothingToNoteBeforeTheFirstSessionHasDoneAnything() {

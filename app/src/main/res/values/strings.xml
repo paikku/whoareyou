@@ -50,6 +50,7 @@
     <string name="hotspot_settings">핫스팟 설정 열기</string>
     <string name="setup_wireless">무선 디버깅 켜기</string>
     <string name="setup_wireless_done">무선 디버깅 (켜짐 또는 불필요)</string>
+    <string name="setup_wireless_by_app">무선 디버깅 (시작할 때 앱이 켬)</string>
     <string name="setup_pair">페어링 (최초 1회)</string>
     <string name="setup_pair_done">페어링됨</string>
     <string name="setup_start">시작</string>

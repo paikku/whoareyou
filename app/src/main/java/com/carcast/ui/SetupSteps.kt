@@ -20,8 +20,15 @@ import com.carcast.widget.CarCastWidget
 object SetupSteps {
 
     data class State(
-        /** Wireless debugging is on — or no longer needed, because the TCP-mode port or the server answers. */
+        /**
+         * Wireless debugging is on, or nothing is left for the user to do about it: the TCP-mode port or the
+         * server answers, or the app holds the grant and will switch it on itself when step 3 runs. After a
+         * reboot the toggle is off (Android does that) but this is what a phone that was set up once looks
+         * like — the light must not send the user back to Developer options.
+         */
         val wireless: Boolean,
+        /** True when [wireless] is green only because the app will do it, so the label can say so. */
+        val wirelessByApp: Boolean,
         val paired: Boolean,
         /** The shell server answers on loopback. */
         val server: Boolean,
@@ -38,12 +45,15 @@ object SetupSteps {
         val prefs = AdbPrefs(context)
         val server = StreamService.shellStatus != null
         val tcp = ShellServerLink.tcpModeReachable(context)
+        val granted = UsbDebugging.canWrite(context)
+        val wirelessOn = server || tcp || UsbDebugging.wirelessEnabled(context)
         return State(
-            wireless = server || tcp || UsbDebugging.wirelessEnabled(context),
+            wireless = wirelessOn || granted,
+            wirelessByApp = !wirelessOn && granted,
             paired = prefs.paired,
             server = server,
             widget = widgetPlaced(context),
-            granted = UsbDebugging.canWrite(context),
+            granted = granted,
             usbDebugging = UsbDebugging.enabled(context),
             tcpMode = tcp,
         )
@@ -59,7 +69,10 @@ object SetupSteps {
      * the first session there is nothing to report); afterwards each is a light, and a missing one names the
      * only case the user has to act on.
      */
-    fun note(s: State): String? {
+    fun note(s: State, blocker: String? = null): String? {
+        // A session that has no server yet: what it is waiting on beats the three lights — that is the line
+        // that says "connect to Wi-Fi" after a reboot.
+        if (blocker != null) return "⏳ $blocker"
         if (!s.granted && !s.usbDebugging && !s.tcpMode) return null
         val parts = listOf("권한" to s.granted, "USB 디버깅" to s.usbDebugging, "TCP 모드" to s.tcpMode)
         return parts.joinToString("  ") { (name, on) -> "${if (on) "●" else "○"} $name" }

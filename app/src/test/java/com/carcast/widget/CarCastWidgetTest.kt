@@ -63,6 +63,6 @@ class CarCastWidgetTest {
         assertEquals(line, CarCastWidget.detailFor(idle, "", false, false, line, null, null, UsbDebugging.Outcome.TURNED_ON))
         assertEquals(line, CarCastWidget.detailFor(idle, "", false, false, line, null, null, UsbDebugging.Outcome.ALREADY_ON))
         assertEquals("$line · USB 디버깅을 켜 주세요", CarCastWidget.detailFor(idle, "", false, false, line, null, null, UsbDebugging.Outcome.NO_PERMISSION))
-        assertEquals("서버 없음 — Wi-Fi 없음 (TCP 모드도 없음) · USB 디버깅을 켜 주세요", CarCastWidget.detailFor(idle, "", true, false, line, "Wi-Fi 없음 (TCP 모드도 없음)", null, UsbDebugging.Outcome.REFUSED))
+        assertEquals("서버 없음 — Wi-Fi에 연결하세요 · USB 디버깅을 켜 주세요", CarCastWidget.detailFor(idle, "", true, false, line, "Wi-Fi에 연결하세요", null, UsbDebugging.Outcome.REFUSED))
     }
 }

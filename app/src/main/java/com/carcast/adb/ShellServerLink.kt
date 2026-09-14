@@ -72,7 +72,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         State.CONNECTING -> "adb 접속 중"
         State.TCP_MODE -> "TCP 모드 전환 중"
         State.NEEDS_PAIRING -> "페어링 필요 — 앱을 여세요"
-        State.NO_WIFI -> "Wi-Fi 없음 (TCP 모드도 없음)"
+        State.NO_WIFI -> "Wi-Fi에 연결하세요 (TCP 모드 포트가 없어 무선 디버깅이 필요)"
         State.ADB_WIFI_OFF -> "무선 디버깅 꺼짐"
         State.STARTING -> "서버 시작 중"
         State.RETRYING -> "재시도 대기: ${detail.take(40)}"
