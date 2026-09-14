@@ -1,7 +1,10 @@
 name: android
 
-# Heavy (APK build): runs only when Android/Gradle sources change, on tags, or on manual request.
-# Web-only changes are covered by web.yml; use "Run workflow" here when you need an APK for the phone.
+# Heavy (APK build): runs when anything that ends up inside the APK changes, on tags, or on request.
+#
+# 웹도 여기 들어간다. 차가 여는 페이지는 assets/web 로 APK 안에 실려 폰이 서빙하므로, 웹만 고쳐도
+# 새 APK 가 없으면 그 변경은 차에 닿지 않는다(web.yml 은 타입검사와 e2e 를 볼 뿐 APK 를 만들지 않는다).
+# 루트의 package-lock.json 도 넣는다 — 웹 번들의 의존성이 거기서 정해진다.
 on:
   workflow_dispatch:
   push:
@@ -13,11 +16,14 @@ on:
       - 'shell-server/**'
       - 'core/**'
       - 'mux/**'
+      - 'web/**'
       - 'tools/clips/assets/**'
       - 'gradle/**'
       - '*.gradle.kts'
       - 'gradle.properties'
       - 'gradlew'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/android.yml'
   pull_request:
     paths:
@@ -26,11 +32,14 @@ on:
       - 'shell-server/**'
       - 'core/**'
       - 'mux/**'
+      - 'web/**'
       - 'tools/clips/assets/**'
       - 'gradle/**'
       - '*.gradle.kts'
       - 'gradle.properties'
       - 'gradlew'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/android.yml'
 
 concurrency:
