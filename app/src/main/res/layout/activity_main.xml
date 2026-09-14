@@ -19,6 +19,64 @@
         android:textStyle="bold"
         android:layout_marginBottom="16dp" />
 
+    <!-- The front of the app: the four things a new phone needs, each with a light. Everything else is
+         behind "자세히" (see SetupSteps). Button texts are set in code, where the light is. -->
+    <LinearLayout
+        android:id="@+id/setup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+        <Button
+            android:id="@+id/setup_wireless"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAlignment="viewStart" />
+        <Button
+            android:id="@+id/setup_pair"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textAlignment="viewStart" />
+        <Button
+            android:id="@+id/setup_start"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textAlignment="viewStart" />
+        <TextView
+            android:id="@+id/setup_note"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:textSize="12sp"
+            android:visibility="gone" />
+        <Button
+            android:id="@+id/setup_widget"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textAlignment="viewStart" />
+        <Button
+            android:id="@+id/advanced_toggle"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:layout_marginTop="8dp"
+            android:text="@string/advanced_show" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/advanced"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+
     <TextView
         android:id="@+id/status"
         android:layout_width="match_parent"
@@ -195,5 +253,6 @@
             android:textSize="12sp"
             android:textIsSelectable="true" />
     </ScrollView>
+    </LinearLayout>
 </LinearLayout>
 </ScrollView>
