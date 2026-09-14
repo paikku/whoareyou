@@ -59,3 +59,32 @@ test('h264 renderer decodes to canvas with no gesture (?renderer=h264)', async (
   // 오버레이는 아직 떠 있어야 한다: 우리는 누른 적이 없고, 그런데도 그림은 나오고 있다.
   await expect(page.locator('#overlay')).toBeVisible();
 });
+
+// 드라이브 모드를 자리 A 로 끌어온다.
+//
+// 테슬라가 하는 일은 결국 "<video> 가 프레임을 못 내놓게 하는 것"이다(pause() 를 부르지는 않는다 —
+// 그래서 pause 이벤트도 오지 않는다). 여기서는 play 를 다시 잡아 눌러 같은 상태를 만든다: 패킷은
+// 계속 오는데 프레임이 늘지 않고, 소켓을 새로 열어도 낫지 않는다. 클라이언트는 그 두 번째 스톨을
+// 보고 드라이브로 판단해 h264 로 갈아타야 한다.
+test('스스로 h264 로 갈아탄다 — 재접속으로 낫지 않는 스톨은 드라이브 모드다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 10, null, { timeout: 20_000 });
+  expect((await stats(page)).renderer).toBe('mse');
+
+  // 재접속이 다시 play() 를 부르므로, 계속 눌러 두어야 "재접속으로 안 낫는" 상태가 된다.
+  await page.evaluate(() => {
+    const v = document.querySelector('video') as HTMLVideoElement;
+    v.addEventListener('play', () => v.pause());
+    v.pause();
+  });
+
+  await page.waitForFunction(() => (window as any).__carcast.stats().renderer === 'h264', null, { timeout: 30_000 });
+
+  // 갈아탄 뒤에는 다시 그림이 나와야 한다 — 전환 자체가 목적이 아니다.
+  const a = await stats(page);
+  await sleep(4000);
+  const b = await stats(page);
+  expect(b.framesDecoded).toBeGreaterThan(a.framesDecoded);
+  expect(b.lastError).toBe('');
+});

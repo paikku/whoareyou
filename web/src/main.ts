@@ -78,13 +78,39 @@ const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ?
 });
 videoWs.start();
 
-// Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the MSE
-// pipeline is wedged (seen on the laptop: frames stop, lag grows). A fresh socket makes the phone
-// resend the init segment and a keyframe, which rebuilds the pipeline — the same path as a reconnect.
+/**
+ * 기어가 P 를 벗어나면 테슬라가 <video> 에 프레임 공급을 끊는다(실측 2026-09-14, docs/drive-check).
+ * 그때 캔버스는 멀쩡하므로 <video> 를 쓰지 않는 렌더러로 갈아탄다 — 실차에서 30fps·6ms 로 돈다.
+ *
+ * 기어를 물어볼 방법은 없고, `paused` 도 소용없다(테슬라는 pause() 를 부르지 않고 공급만 끊는다 —
+ * 그래서 pause 이벤트가 오지 않는다). 남는 신호는 "패킷은 오는데 프레임이 안 는다" 하나인데, 그건
+ * MSE 파이프라인이 꼬였을 때도 똑같이 보인다. 둘을 가르는 것은 **재접속이 듣느냐**다: 꼬임은
+ * 새 소켓으로 낫고, 드라이브 차단은 낫지 않는다. 그래서 한 번은 여태처럼 재접속해 보고, 그러고도
+ * 곧바로 또 멈추면 드라이브로 보고 갈아탄다.
+ */
+const STALL_AGAIN_MS = 15_000;
+let swappedToH264 = false;
+
+function swapToH264(why: string): boolean {
+  // 손으로 렌더러를 고른 세션은 건드리지 않는다 — 그건 무언가를 재려고 고른 것이다.
+  if (swappedToH264 || forced) return false;
+  swappedToH264 = true;
+  note(`${why} → h264 렌더러로 전환 (드라이브 모드로 판단)`);
+  try { renderer.destroy(); } catch { /* 이미 못 쓰는 상태일 수 있다 */ }
+  video.hidden = true;
+  renderer = new H264Renderer(glCanvas);
+  renderer.attach(stage);
+  void renderer.resume();
+  // 새 디코더는 init 과 키프레임부터 다시 받아야 한다. 소켓을 새로 열면 폰이 둘 다 보낸다.
+  videoWs.restart();
+  return true;
+}
+
 // No packets at all is not a stall: the phone's encoder goes quiet on a static screen.
 let wdPackets = 0;
 let wdFrames = 0;
 let wdStalledTicks = 0;
+let lastStallAt = 0;
 setInterval(() => {
   if (!started || !videoWs.open) { wdStalledTicks = 0; return; }
   const s = renderer.stats();
@@ -95,8 +121,12 @@ setInterval(() => {
   if (wdStalledTicks >= 4) {
     wdStalledTicks = 0;
     recoveries++;
-    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → video ws 재접속`);
-    videoWs.restart();
+    const now = Date.now();
+    const againSoon = now - lastStallAt < STALL_AGAIN_MS;
+    lastStallAt = now;
+    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''})`);
+    // 전환이 거절되면(이미 h264, 또는 손으로 고른 렌더러) 여태처럼 재접속으로 버틴다.
+    if (!againSoon || !swapToH264('재접속 뒤에도 또 스톨')) videoWs.restart();
   }
 }, 500);
 
