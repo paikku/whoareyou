@@ -150,6 +150,16 @@ object BulkControl {
             val usb = UsbDebugging.ensureOn(context)
             usbOutcome = usb
             log("1/3 " + UsbDebugging.describe(usb))
+            // adbd takes a few seconds to come up after the toggle, and it reopens the TCP-mode port only once
+            // it has (service.adb.tcp.port survives until reboot). Ask the link to go before that and it reads
+            // "no TCP mode, no Wi-Fi" and says so — wrongly. Wait for the port here, visibly, instead.
+            if (usb == UsbDebugging.Outcome.TURNED_ON && AdbPrefs(context).tcpPort > 0) {
+                val came = awaitTcpPort(context, ADBD_WAIT_MS) { waited ->
+                    step = "1/3 adbd 기동 대기 ${waited / 1000}/${ADBD_WAIT_MS / 1000}초"
+                    changed()
+                }
+                log("1/3 adbd: " + if (came) "TCP 모드 포트 다시 열림" else "${ADBD_WAIT_MS / 1000}초 안에 TCP 모드 포트가 열리지 않음 — 무선 디버깅으로 진행")
+            }
             val survival = precondition(context)
             log(
                 "일괄 켜기: 세션 → 서버 순서로 켭니다 — " + when (survival) {
@@ -186,6 +196,25 @@ object BulkControl {
 
     /** How long "everything on" waits for the shell server before giving up on the hotspot step. */
     const val SERVER_WAIT_MS = 30_000L
+
+    /** How long to wait for adbd to reopen the TCP-mode port after USB debugging was just switched on (seen: ~5 s). */
+    const val ADBD_WAIT_MS = 15_000L
+
+    private fun awaitTcpPort(context: Context, timeoutMs: Long, tick: (Long) -> Unit): Boolean {
+        val start = System.currentTimeMillis()
+        var lastTick = 0L
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            if (ShellServerLink.tcpModeReachable(context)) return true
+            val waited = System.currentTimeMillis() - start
+            if (waited - lastTick >= 2_000) { lastTick = waited; tick(waited) }
+            try {
+                Thread.sleep(500)
+            } catch (_: InterruptedException) {
+                return ShellServerLink.tcpModeReachable(context)
+            }
+        }
+        return ShellServerLink.tcpModeReachable(context)
+    }
 
     /** [tick] gets the elapsed milliseconds every couple of seconds, so a long wait is visibly a wait. */
     private fun awaitServer(timeoutMs: Long, tick: (Long) -> Unit = {}): Boolean {
