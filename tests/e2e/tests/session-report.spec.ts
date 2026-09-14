@@ -22,7 +22,9 @@ test('main page saves a session report with stats and events', async ({ page }) 
   // 요약 줄은 차 쪽 수치로 시작하고, 폰 쪽 한 줄이 **붙어 있을 수 있다**(리포트 #26·#27 을 가리지
   // 못한 이유가 그 정보가 없어서였다 — verification-log §3.10). 붙는 시점은 차가 폰 상태를 한 번
   // 이상 받아 본 뒤이므로, 저장이 그보다 빠르면 없을 수도 있다. 붙었다면 모양이 맞아야 한다.
-  expect(mine.summary).toMatch(/^session mse \d+fps lag \d+ms frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+( \| 폰 .*)?$/);
+  // 첫 낱말은 그 세션이 쓴 렌더러다(기본은 h264, `?renderer=` 로 바꿀 수 있다) — 이름을 박아 두면
+  // 기본값이 바뀔 때마다 여기가 깨진다. 계약은 "무엇으로 그렸는지가 맨 앞에 적힌다" 쪽이다.
+  expect(mine.summary).toMatch(/^session (mse|mjpeg|h264) \d+fps lag \d+ms frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+( \| 폰 .*)?$/);
   if (mine.summary.includes('| 폰 ')) {
     expect(mine.summary).toMatch(/화면(ON|OFF)/);
   }
