@@ -3,6 +3,7 @@ import { KEYCODE, KeyAction, MediaType, encodeKey, encodeText, parseMediaPacket 
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { MseRenderer, mseSupported } from './renderer/mse';
 import { MjpegRenderer } from './renderer/mjpeg';
+import { H264Renderer } from './renderer/h264';
 import type { Renderer } from './renderer/types';
 import { TouchInput } from './input';
 
@@ -10,6 +11,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const stage = $('stage');
 const video = $<HTMLVideoElement>('video');
 const canvas = $<HTMLCanvasElement>('mjpeg');
+const glCanvas = $<HTMLCanvasElement>('gl');
 const overlay = $('overlay');
 const overlayMsg = $('overlay-msg');
 const statsEl = $('stats');
@@ -19,6 +21,9 @@ const params = new URLSearchParams(location.search);
 const forced = params.get('renderer');
 
 function pickRenderer(): Renderer {
+  // h264 는 아직 손으로 골라야 한다. 드라이브 모드에서 <video> 가 멈추는 것을 이걸로 피할 수 있는지
+  // 재는 중이고(docs/drive-check), 차에서 720p30 을 소프트로 풀 수 있는지가 아직 미지수다.
+  if (forced === 'h264') return new H264Renderer(glCanvas);
   if (forced === 'mjpeg' || (forced !== 'mse' && !mseSupported())) return new MjpegRenderer(canvas);
   return new MseRenderer(video);
 }

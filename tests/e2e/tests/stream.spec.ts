@@ -41,3 +41,21 @@ test('mjpeg renderer can be forced via ?renderer=mjpeg', async ({ page }) => {
   expect(s.renderer).toBe('mjpeg');
   expect(s.controlWs.open || s.controlWs.connects > 0 || s.controlWs.failures >= 0).toBe(true);
 });
+
+// 드라이브 모드용 경로. 테슬라는 기어가 P 를 벗어나면 <video> 에 프레임 공급을 끊지만 캔버스는
+// 그대로 돈다(실측 2026-09-14, docs/drive-check). 이 렌더러는 <video> 를 아예 쓰지 않는다 —
+// 그래서 **첫 제스처도 필요 없다.** 그 점까지 여기서 확인한다(startPlayback 을 부르지 않는다).
+test('h264 renderer decodes to canvas with no gesture (?renderer=h264)', async ({ page }) => {
+  await page.goto('/?renderer=h264');
+  await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 10, null, { timeout: 30_000 });
+
+  const a = await stats(page);
+  await sleep(5000);
+  const b = await stats(page);
+  expect(b.renderer).toBe('h264');
+  expect(b.lastError).toBe('');
+  // 5 초면 30fps 에서 150 장. 소프트 디코딩이라 여유를 두고 본다.
+  expect(b.framesDecoded - a.framesDecoded).toBeGreaterThan(100);
+  // 오버레이는 아직 떠 있어야 한다: 우리는 누른 적이 없고, 그런데도 그림은 나오고 있다.
+  await expect(page.locator('#overlay')).toBeVisible();
+});
