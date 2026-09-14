@@ -27,13 +27,16 @@ export async function statusOf(page: Page): Promise<any> {
 /**
  * First "touch" on the stage: unlocks autoplay the same way a driver's first tap does.
  *
- * 기본 렌더러(h264)는 캔버스라 자동재생 제한을 받지 않아 스스로 시작한다 — 그때는 누를 것이 없다.
- * <video> 를 쓰는 세션에서만 실제로 한 번 누른다.
+ * 기본 렌더러(h264)는 캔버스라 자동재생 제한을 받지 않아 **스스로 시작한다** — 그때는 누를 것이
+ * 없고, 이미 걷힌 오버레이를 누르려 들면 보이기를 기다리다 타임아웃 난다(실제로 그렇게 깨졌다).
+ *
+ * `__carcast` 가 붙는 것은 자동 시작보다 뒤이므로(main.ts), 그것이 보이는 시점에는 이미 결판이
+ * 나 있다 — 여기서 started 를 보는 데에 경합이 없다.
  */
 export async function startPlayback(page: Page): Promise<void> {
-  const overlay = page.locator('#overlay');
-  if (await overlay.isHidden()) return;
-  await overlay.click({ position: { x: 100, y: 100 } });
+  await page.waitForFunction(() => !!(window as any).__carcast, null, { timeout: 30_000 });
+  if (await page.evaluate(() => (window as any).__carcast.stats().started === true)) return;
+  await page.locator('#overlay').click({ position: { x: 100, y: 100 } });
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

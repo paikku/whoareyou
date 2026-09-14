@@ -6,6 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import type { Page } from '@playwright/test';
 import { sleep } from './probe';
+import { startPlayback } from '../helpers';
 
 const ADB = process.env.ADB ?? (process.env.ANDROID_HOME ? `${process.env.ANDROID_HOME}/platform-tools/adb` : 'adb');
 
@@ -328,10 +329,11 @@ export const CAR_ACTIONS: Action[] = [
     side: 'car',
     title: '차에서 페이지를 새로 연다 (탭이 죽었다 살아난다)',
     mayStopVideo: true,
-    // 새로고침 뒤 첫 터치까지가 차의 실제 동작이다 — 자동재생이 막혀 있으므로.
+    // 새로고침 뒤 차가 다시 그리기 시작하는 데까지가 실제 동작이다. 기본 렌더러(캔버스)는 스스로
+    // 시작하므로 누를 것이 없고, <video> 를 쓰는 세션에서만 한 번 누른다.
     async run({ page }) {
       await page.reload();
-      await page.locator('#overlay').click({ position: { x: 100, y: 100 } });
+      await startPlayback(page);
     },
   },
 ];
