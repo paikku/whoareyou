@@ -189,7 +189,7 @@ verification-log에 이미 있는 관측:
 |---|---|---|---|
 | 1 | ~~**adbd TCP 모드** 구현~~ **완료(§2.3)** → 폰 검증: Wi-Fi 끄고 핫스팟에서 "서버 종료" 후 **재기동**되는지, USB 디버깅 토글을 꺼도 유지되는지 | 폰 10분 | 차 안 복구 가능 여부, USB 디버깅 토글 요구 제거 (§2) |
 | 2 | ~~`persist.adb.tcp.port`~~ **❌ 확정: 삼성이 거부** (`Failed to set property … See dmesg`). 남은 후보는 `settings put global adb_wifi_enabled 1` 하나 | — | 콜드 부팅 Wi-Fi 제거 (§3) — 현재로선 불가 |
-| 3 | `settings put global adb_wifi_enabled 1` → 재부팅 → Wi-Fi 없이 토글 상태 확인 | 5분 | 위와 동일한 목표의 2번째 후보 |
+| 3 | ~~`settings put global adb_wifi_enabled 1` → 재부팅 → Wi-Fi 없이 토글 상태 확인~~ **부분 해결(2026-09-14):** 부팅 때 0 으로 돌아가는 건 맞지만, 앱이 `WRITE_SECURE_SETTINGS` 로 **부팅 뒤에 다시 1 로 쓰면 AdbService 가 받아 준다** (verification-log). Wi-Fi 는 여전히 필요하고 토글은 필요 없다 | — | 재부팅 뒤 손작업 = Wi-Fi 켜기 하나 |
 | 4 | 차에서 `http://192.0.0.2:3333` 열기 (안 되면 `192.0.0.4`, 대조군으로 핫스팟 `10.x`) | 실차 1분 | VpnService 제거 가능 여부 (§4) |
 | 5 | 미러 모드 프로토타입(MediaProjection → 기존 `H264Encoder` → 앱 프로세스에서 `core` 기동) | 1일 | 개발자 옵션 0 티어 (§5) |
 | 6 | (4가 실패했을 때만) tun 라우트-온리 + 유저스페이스 TCP 스파이크 | 반나절 | §1.2 플랜 B |

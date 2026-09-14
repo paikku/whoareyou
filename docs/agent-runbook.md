@@ -128,8 +128,9 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 **USB 디버깅은 앱이 켠다 (2026-09-14):** 일괄 켜기의 1/3 단계가 `UsbDebugging.ensureOn()` 이다. 그게 되는 이유는
 `ShellServerLink` 가 shell 을 쥘 때마다 `pm grant com.carcast android.permission.WRITE_SECURE_SETTINGS` 를 실행해
 두기 때문이고(재부팅을 넘어 유지), 그래서 재부팅 직후처럼 shell 이 없는 순간에도 앱이 `adb_enabled` 를 쓸 수 있다.
-무선 디버깅은 건드리지 않는다 — adbd 를 살려 두는 건 USB 토글이고, TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로
-되살아난다(재부팅 전까지). 결과는 `Outcome` 넷 중 하나로 로그와 위젯에 남는다; `NO_PERMISSION`/`REFUSED` 일 때만 위젯이
+TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살아난다(재부팅 전까지). 재부팅 뒤에는 그 포트가 없으므로
+`ShellServerLink` 루프가 Wi-Fi 연결 중 + 무선 디버깅 꺼짐을 보면 `adb_wifi_enabled` 도 같은 방식으로 켠다(실측 통과, 2026-09-14) —
+재부팅 뒤 손작업은 Wi-Fi 켜기 하나다. 결과는 `Outcome` 넷 중 하나로 로그와 위젯에 남는다; `NO_PERMISSION`/`REFUSED` 일 때만 위젯이
 "USB 디버깅을 켜 주세요" 를 붙인다.
 
 **위젯은 진행 중인 단계를 그대로 보여 준다:** `BulkControl.step`(예: `3/3 서버 응답 대기 12/30초`)과 `lastFailure`,
