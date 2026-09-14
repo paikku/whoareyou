@@ -63,6 +63,7 @@ export CHROME_PATH=$(find ~/경로/Tesla/tests/e2e/.cache -name chrome -type f |
 | **핫스팟 대역폭** | 불가 | 불가 | 5GHz 핫스팟에서 720p30이 끊김 없이 10분 | 동일 |
 | **ADB 페어링·shell 서버 (M3)** | 프로토콜 단위 테스트만 | 서버가 `uid=2000`으로 뜨는지까지. 페어링·TCP 모드는 불가 | **핵심.** 앱에서 페어링 → `uid=2000` 표시 | 해당 없음 |
 | **가상 디스플레이·앱 실행 (M4)** | 불가 | **핵심.** `npm run device`가 `source=display`·앱 실행·M4-b 앱 충돌까지 확인 | **핵심.** 삼성 One UI 동작은 여기서만 | 차에서 앱 조작 |
+| **일괄 켜기·끄기 / 바탕화면 위젯 / 핫스팟 표시** | 단위 테스트만: `BulkControlTest`(끄기가 서버를 세션보다 먼저 내리는지 — 가짜 loopback 서버로, 두 번 누르면 두 번째는 거절), `CarCastWidgetTest`(스위치가 언제 켜져 보이나), `HotspotTest`("모름"과 "꺼짐"을 가르는 것) | `08-hotspot.test.mjs`: `/api/hotspot` 이 늘 JSON 으로 답하는지, `/api/status.hotspot` 이 실리는지, 쓰기 요청을 이유와 함께 거절하는지, 그리고 **위젯 provider 가 `dumpsys appwidget` 에 등록됐는지**. 진짜 AP 는 없으므로 `known` 은 기기 나름 | **핫스팟은 사용자가 켠다**(앱은 못 켠다 — verification-log 열린 질문 0). 여기서 볼 것은 홈에 위젯을 실제로 얹어 보는 것, 위젯으로 끈 뒤 `VPN ○ 서버 ○` 로 떨어지는지, 그리고 **핫스팟을 켠 뒤 서버가 살아남는지**(TCP 모드 없으면 §3.5 대로 죽는다) | 차를 핫스팟에 붙인 채 위젯으로 끄고 다시 켜기 |
 | **오디오 (M6)** | 오디오 SourceBuffer 진행 여부 | 미구현 | 폰 스피커 무음/출력 선택 확인 | 차 스피커로 재생, 첫 터치 후 소리 |
 | **차가 읽기를 멈출 때** | **핵심.** `./gradlew :core:test` 의 `StalledClientTest`: 안 읽는 소켓 하나가 인코더 스레드를 붙잡지 못한다는 계약(리포트 #41·#42 의 원인) | `07-stall.test.mjs`: 안 읽는 손님이 붙어 있어도 읽는 손님의 그림이 앱 실행(=init 세그먼트) 너머로 이어지는지 | 동일 + `/api/status` 의 `accepts`·`acceptErrors`·`accepting` | 리포트의 같은 숫자들로 "폰이 멎었나 선이 끊겼나"를 가른다 |
 | **화면 OFF·발열·배터리 (M7)** | 불가 | **핵심.** `05-screen.test.mjs` 가 손잡이마다 "진짜 걸렸나"를 묻는다: VD 가 받은 플래그, `userActivity` 가 무시당하는지(logcat), 유휴 타이머와 그 복원, 가짜 충전으로 `stay_on` 발동, 잠든 폰의 되살림, 그리고 **화면을 끈 채 1분** 버티기. 발열·배터리는 불가 | **눈으로 봐야 아는 것**: 패널이 진짜 어두워졌나, One UI 에서도 같은가, 30분 연속 | 동일 |
@@ -113,7 +114,7 @@ tools/virtual-phone/vphone.sh up      # 부팅 → 설치 → 서버 기동 → 
 
 export BASE_URL=http://127.0.0.1:3333
 export CHROME_PATH=$(find tests/e2e/.cache -name chrome -type f | head -1)
-npm run device                        # 기기 검사: source=display, 앱 실행, M4-b 충돌, 입력 주입, 화면 OFF
+npm run device                        # 기기 검사: source=display, 앱 실행, M4-b 충돌, 입력 주입, 화면 OFF, 핫스팟·위젯
 npm run lifecycle                     # 폰↔웹 생애주기 시나리오 (앱 전환 / 전원 × 📵 / 도즈 / 새로고침)
 EXPLORE_STEPS=40 npm run explore      # 무작위 순서로 스스로 돌아다니며 어긋나는 자리를 찾는다
 cd tests/e2e && npx playwright test --project=model-y-2026.26
@@ -142,7 +143,8 @@ APK를 새로 올릴 필요가 있을 때만 온다. 서버는 **shell uid**로 
 
 > **제약: 무선 디버깅은 폰이 Wi-Fi에 (클라이언트로) 연결된 동안만 켜진다.** 핫스팟은 해당 없고, Wi-Fi가 끊기면 시스템이
 > 무선 디버깅을 자동으로 끈다. 그래서 페어링과 서버 기동은 **집 Wi-Fi에서** 하고, 분리 실행된 서버는 Wi-Fi를 끄고
-> 핫스팟을 켜도(차에서도) 재부팅 전까지 살아 있다. 끄는 방법은 앱의 **"서버 종료"**(loopback 전용 `POST /api/stop`).
+> 핫스팟을 켜도(차에서도) 재부팅 전까지 살아 있다. 끄는 방법은 앱의 **"서버 종료"**(loopback 전용 `POST /api/stop`)
+> 또는 **"일괄 끄기"**·홈 화면 스위치(서버를 먼저 끄고 세션을 내린다).
 > 앱의 "중지"는 세션(VPN)만 내리고 서버는 그대로 둔다.
 >
 > **2026-09-05부터: 앱이 첫 접속 직후 adbd를 TCP 모드로 돌린다.** 성공하면 화면에 `TCP 모드: 포트 N`이 뜨고, 그 뒤로는

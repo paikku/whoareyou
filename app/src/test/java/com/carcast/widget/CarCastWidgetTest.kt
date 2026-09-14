@@ -1,0 +1,40 @@
+package com.carcast.widget
+
+import com.carcast.service.BulkControl
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The two decisions the home screen switch makes on its own. Both look obvious and are wrong in one
+ * direction: refusing to switch *off* because VPN consent is missing would strand the hotspot, and
+ * showing the switch as on because a session exists would hide the failure this project spends most of
+ * its time on — a session whose server is not answering.
+ */
+class CarCastWidgetTest {
+
+    @Test
+    fun offNeverWaitsForConsentAndOnNeverStartsWithoutIt() {
+        assertEquals(CarCastWidget.Action.ALL_OFF, CarCastWidget.decide(checked = false, consentGiven = false))
+        assertEquals(CarCastWidget.Action.ALL_OFF, CarCastWidget.decide(checked = false, consentGiven = true))
+        assertEquals(CarCastWidget.Action.ALL_ON, CarCastWidget.decide(checked = true, consentGiven = true))
+        assertEquals(CarCastWidget.Action.ASK_CONSENT, CarCastWidget.decide(checked = true, consentGiven = false))
+    }
+
+    @Test
+    fun theSwitchIsOnOnlyWhenBothTheSessionAndTheServerAre() {
+        val idle = BulkControl.Phase.IDLE
+        assertTrue(CarCastWidget.checkedFor(idle, session = true, server = true))
+        assertFalse("a session whose server is not answering is not 'on'", CarCastWidget.checkedFor(idle, session = true, server = false))
+        assertFalse(CarCastWidget.checkedFor(idle, session = false, server = true))
+        assertFalse(CarCastWidget.checkedFor(idle, session = false, server = false))
+    }
+
+    /** Mid-sequence the switch shows where it is going, or it snaps back under the user's finger. */
+    @Test
+    fun whileASequenceRunsTheSwitchShowsItsDestination() {
+        assertTrue(CarCastWidget.checkedFor(BulkControl.Phase.TURNING_ON, session = false, server = false))
+        assertFalse(CarCastWidget.checkedFor(BulkControl.Phase.TURNING_OFF, session = true, server = true))
+    }
+}
