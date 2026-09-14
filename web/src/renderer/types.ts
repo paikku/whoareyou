@@ -6,6 +6,12 @@ export interface RendererStats {
   latencyMs: number;      // buffered-end minus currentTime, i.e. what we are lagging behind the live edge
   droppedFrames: number;
   lastError: string;
+  /**
+   * 아직 그림이 안 나온 접근 단위의 수 — 소프트 디코더가 따라오고 있는지를 보는 자리다.
+   * 0 근처면 여유가 있고, 계속 자라면 그 기기가 이 해상도·fps 를 감당하지 못한다는 뜻이다.
+   * <video> 에 맡기는 렌더러는 알 수 없으므로 내지 않는다.
+   */
+  backlog?: number;
 }
 
 export interface Renderer {

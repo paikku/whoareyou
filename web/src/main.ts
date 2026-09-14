@@ -545,6 +545,51 @@ $('btn-fullscreen').addEventListener('click', () => {
   else document.documentElement.requestFullscreen().catch(() => {});
 });
 
+/**
+ * 성능 추이. 순간 fps 하나로는 "이 기기가 이 해상도를 계속 감당하는가"에 답할 수 없다 — 더워져서
+ * 느려지는 것은 몇십 분에 걸쳐 일어나고, 💾 를 누른 그 순간의 숫자에는 나타나지 않는다.
+ *
+ * 그래서 10 초마다 한 칸씩, 최근 한 시간을 들고 있다가 리포트에 함께 싣는다. 칸마다: 그 구간의
+ * 평균 fps, 그때의 지연, 그 사이 늘어난 드롭, 그리고 디코더 적체(backlog). 적체가 자라면서 fps 가
+ * 떨어지면 소프트 디코딩이 못 따라오는 것이고, 그때가 해상도·fps 를 낮출(또는 WebCodecs 를 볼)
+ * 자리다. fps 만 떨어지고 적체가 0 이면 폰이 안 보내는 것이지 차가 못 푸는 것이 아니다 — 정지
+ * 화면에서는 그게 정상이다.
+ */
+const PERF_SAMPLE_MS = 10_000;
+const PERF_KEEP = 360; // 10초 × 360 = 한 시간
+interface PerfSample { t: number; fps: number; lagMs: number; dropped: number; backlog: number }
+const perf: PerfSample[] = [];
+let perfFrames = 0;
+let perfDropped = 0;
+let perfAt = Date.now();
+
+setInterval(() => {
+  if (!started) return;
+  const s = renderer.stats();
+  const now = Date.now();
+  const secs = (now - perfAt) / 1000;
+  perfAt = now;
+  perf.push({
+    t: Math.round((now - t0) / 1000),
+    fps: secs > 0 ? Math.round((s.framesDecoded - perfFrames) / secs) : 0,
+    lagMs: Math.round(s.latencyMs),
+    dropped: s.droppedFrames - perfDropped,
+    backlog: s.backlog ?? 0,
+  });
+  perfFrames = s.framesDecoded;
+  perfDropped = s.droppedFrames;
+  if (perf.length > PERF_KEEP) perf.shift();
+}, PERF_SAMPLE_MS);
+
+/** 초반과 최근을 견준다. 처음부터 느린 것과 **점점** 느려지는 것은 다른 문제다. */
+function perfTrend(): { early: number; recent: number; backlog: number } | null {
+  if (perf.length < 6) return null; // 1 분은 모여야 견줄 값이 된다
+  const avg = (xs: PerfSample[]) => Math.round(xs.reduce((a, b) => a + b.fps, 0) / xs.length);
+  const head = perf.slice(0, 3);
+  const tail = perf.slice(-3);
+  return { early: avg(head), recent: avg(tail), backlog: Math.max(...tail.map((x) => x.backlog)) };
+}
+
 // Stats line + a hook for the Playwright tests.
 const stats = () => ({
   renderer: renderer.name,
@@ -558,9 +603,10 @@ const stats = () => ({
   videoWs: { ...videoWs.stats, open: videoWs.open },
   controlWs: { ...control.stats, open: control.open },
   started,
+  perf: perfTrend(),
 });
 (window as any).__carcast = {
-  stats, start, events,
+  stats, start, events, perf,
   restartVideo: () => videoWs.restart(),
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
   restartControl: () => control.restart(),
@@ -576,6 +622,9 @@ setInterval(() => {
     s.appOnPhone ? '📱폰이 앱을 가져감' : '',
     s.idleMs > 1500 ? `폰 무응답 ${Math.round(s.idleMs / 1000)}s` : '',
     s.lastError ? `err ${s.lastError}` : '',
+    // 초반보다 눈에 띄게 느려졌으면 그 사실만 한 칸 붙인다 — 더워져서 느려지는 중인지 보는 자리다.
+    s.perf && s.perf.recent < s.perf.early * 0.7 ? `⤵ ${s.perf.early}→${s.perf.recent}fps` : '',
+    s.perf && s.perf.backlog > 10 ? `적체${s.perf.backlog}` : '',
   ].filter(Boolean).join(' ');
   // A notice (▶ result, 💾 saved, 폰이 가져감) owns the line until its own timeout clears or restores it.
   if (statsEl.textContent && !statsEl.textContent.startsWith(s.renderer)) return;
@@ -587,12 +636,23 @@ $('btn-save').addEventListener('click', async () => {
   const s = stats();
   const st = lastStatus;
   const phone = st ? ` | 폰 build=${st.build ?? '?'} ${st.interactive === false ? '잠듦' : '깨어있음'} 화면${st.screenOn === false ? 'OFF' : 'ON'}${st.sleepRecoveries ? ` 되살림${st.sleepRecoveries}` : ''}${st.keptActive ? ` 활성유지${st.keptActive}` : ''} idle${Math.round((s.idleMs ?? 0) / 100) / 10}s` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}${phone}`;
+  const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
+  // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는
+  // 질문에는 "이 차에 WebCodecs(하드웨어 디코더)가 있느냐"가 답이고, 그건 나중에 물어볼 수 없다 —
+  // 차를 다시 몰고 나가야 하기 때문이다. 참고: VideoDecoder 는 SecureContext 라 평문 http 에서는
+  // 있어도 안 보인다(실측). secure 가 false 면 X 는 "없다"가 아니라 "모른다"로 읽어야 한다.
+  const caps = {
+    webcodecs: typeof (window as any).VideoDecoder === 'function',
+    secure: window.isSecureContext,
+    cores: navigator.hardwareConcurrency ?? 0,
+    memGb: (navigator as any).deviceMemory ?? 0,
+  };
   let server: any = null;
   try { server = await (await fetch('/api/status')).json(); } catch { /* 폰이 없으면 그대로 비워 둔다 */ }
-  const body = { version: 1, page: location.href, kind: 'session', clientTime: new Date().toISOString(), env: { UA: navigator.userAgent, viewport: `${innerWidth}x${innerHeight}`, dpr: devicePixelRatio }, stats: s, server, events, summary };
+  const body = { version: 1, page: location.href, kind: 'session', clientTime: new Date().toISOString(), env: { UA: navigator.userAgent, viewport: `${innerWidth}x${innerHeight}`, dpr: devicePixelRatio }, stats: s, server, events, perf, caps, summary };
   const prev = statsEl.textContent;
   try {
     const r = await (await fetch('/api/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();

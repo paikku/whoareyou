@@ -84,6 +84,33 @@ GET /api/status   → "codec": "avc1.XXXXXX"
 하는데 벤더가 거부할 수 있다. **에뮬레이터가 아니라 실제 폰에서 봐야 한다** — 소프트 인코더와
 `c2.qti.avc.encoder` 의 기본 프로파일은 다르다.
 
+## 다음 질문 — 소프트 디코딩이 오래 버티는가
+
+결정은 끝났다(안 b, canvas + WASM 디코더). 실차에서 D 로 30fps·지연 6ms 가 나왔다. 남은 것은
+**한 시간짜리 질문**이다: 차 MCU 가 소프트 디코딩을 계속 감당하는가, 아니면 더워지면서 느려지는가.
+순간 fps 하나로는 답할 수 없고, 차에 devtools 가 없으니 나중에 물어볼 수도 없다. 그래서 메인 페이지가
+**10 초에 한 칸씩 최근 한 시간**을 들고 있다가 💾 에 함께 싣는다.
+
+- **화면**: 상태 줄에 평소에는 안 나온다. 초반보다 30% 넘게 느려지면 `⤵ 30→18fps`, 디코더가 밀리면
+  `적체N` 이 붙는다. 그 두 가지가 보이면 그때가 현상이 일어나는 순간이다.
+- **저장**: 💾 → 앱의 "차 진단 결과" 에서 리포트를 꺼내면 `perf` 배열이 들어 있다.
+  칸마다 `{t: 시작 후 초, fps, lagMs, dropped, backlog}`.
+
+읽는 법은 **backlog 가 가른다**:
+
+| perf 에서 보이는 것 | 뜻 | 할 일 |
+|---|---|---|
+| fps 유지, backlog 0 | 잘 버틴다 | 없음 |
+| fps 하락, backlog 0 | 폰이 안 보낸 것 — 정지 화면에서는 정상 | 없음 |
+| **fps 하락 + backlog 증가** | 차가 못 푼다 — 이것이 발열·CPU 한계 | 해상도·fps 를 낮춘다 |
+| backlog 가 60 근처에서 `dropped` 증가 | 이미 프레임을 버리고 있다 | 위와 같되 시급 |
+
+같은 리포트의 `caps` 가 **차선책의 가능 여부**를 함께 남긴다 — `webcodecs`(하드웨어 디코더),
+`secure`, `cores`, `memGb`. 평문 http 에서는 `secure:false` 이므로 그때의 `webcodecs:false` 는
+"없다"가 아니라 "가려져서 모른다"로 읽는다(위 "왜 https 가 필요한가"). 즉 소프트 디코딩이 한계로
+드러나면 순서는 ① 해상도·fps 낮추기(폰 쪽 한 줄), ② `caps.webcodecs` 가 살아 있으면 폰에 wss 를
+세우고 WebCodecs 로 옮기기다.
+
 ## 출처
 
 - [madpowah/tesla-video-drive](https://github.com/madpowah/tesla-video-drive) — `<video>` OS 레벨 정지, MPEG1-TS + canvas 우회

@@ -161,7 +161,7 @@ export class H264Renderer implements Renderer {
     this.queued = [];
   }
 
-  stats(): RendererStats { return { ...this.st }; }
+  stats(): RendererStats { return { ...this.st, backlog: this.inFlight.length }; }
 
   destroy(): void {
     this.worker?.postMessage({ type: 'release', renderStateId: 1 });
