@@ -58,6 +58,19 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Pairs with the phone's own wireless debugging to start the streaming server" />
         </service>
+        <!-- The home screen switch: one flick for hotspot + server + tun address. Not exported to other
+             apps; the platform's own widget host is what sends APPWIDGET_UPDATE and our toggle broadcast. -->
+        <receiver
+            android:name=".widget.CarCastWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.carcast.widget.TOGGLE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_switch_info" />
+        </receiver>
 
         <!--
           차가 보낸 리포트를 **파일로** 공유하기 위한 것. 예전에는 JSON 을 통째로 Intent 의 EXTRA_TEXT

@@ -33,6 +33,11 @@
 | — | `persist.adb.tcp.port`를 shell이 설정할 수 있어 재부팅 후에도 adbd가 포트를 연다 | ❌ **막힘 (2026-09-05 실측)**: `Failed to set property 'persist.adb.tcp.port' to '36788'. See dmesg for error reason.` — 2회 모두 동일. **콜드 부팅 후 Wi-Fi 1회는 남는다**(Tesor·Castla와 동일) | B | [hotspot-only.md](hotspot-only.md) §3 |
 | — | 테소르(Tesor)가 Wi-Fi 없이 동작한다 | ❌ 테소르는 Shizuku 위에서 돈다(설치 안내 2단계). 비루팅 Shizuku는 재부팅 시 종료되고 무선 디버깅 = Wi-Fi로만 다시 시작된다 — 같은 제약 | 문헌 | [hotspot-only.md](hotspot-only.md) §1.4 |
 
+| — | ~~앱에서 핫스팟을 켜고 끌 수 있다~~ (`TetheringManager.startTethering`, shell uid) | ❌ **못 한다 (2026-09-13)**. 가상 폰(API 36)과 S26U/One UI 8 둘 다, 면제를 단 요청도 면제 없는 재시도도 `NO_CHANGE_TETHERING_PERMISSION(14)`. AOSP `TetheringService` 는 `exemptFromEntitlementCheck` 를 그대로 `onlyAllowPrivileged` 로 넘기므로 **면제를 달라는 요청 자체가 `TETHER_PRIVILEGED` 를 요구하고**, 그것이 없으면 WRITE_SETTINGS 경로에 닿지도 못한다. 면제를 빼고 다시 물어도 같은 답이었다. **→ 바꾸는 코드는 제거했다.** 핫스팟은 사용자가 설정에서 켜고, 앱은 상태만 읽는다 | A+ / B | §1 아래 주 |
+| — | (위 항목의 근거) | Shell 패키지가 `TETHER_PRIVILEGED`·`WRITE_SETTINGS` 를 **선언**하지만(AOSP 매니페스트) 부여받지는 못한다 — 선언과 부여는 다르다는 것이 이 실측이 보여 준 것이다. Castla 는 같은 uid(Shizuku)에서 된다고 적어 두었으나 우리 두 기기에서는 재현되지 않았다(prior-art §4). `cmd wifi start-softap` 은 root 전용이라(WifiShellCommand) uid 2000 으로는 애초에 불가 | A+ / B | §1 아래 주 |
+| — | ~~통신사 잠금 기기에서 entitlement 를 우회할 수 있다~~ | — **묻지 않게 됐다.** 우회는 `TETHER_PRIVILEGED` 가 있을 때만 쓸 수 있는데 그것이 없다(위). 켤 때마다 `tether_dun_required` 를 0 으로 바꾸던 것도 함께 제거했다 — 되지도 않는 기능 때문에 사용자 폰의 설정을 영구히 바꾸고 있었다 | — | — |
+| — | 핫스팟 켜짐/꺼짐을 **읽을** 수 있다 (`getWifiApState` → `getTetheredIfaces` → 인터페이스 이름) | ✅ **가상 폰**: 첫 경로가 답했다(`via=getWifiApState=11`). 셋 다 실패하면 `known=false` 이고 그때는 "꺼짐"이라 하지 않는다. 서버가 없을 때는 앱이 직접 인터페이스를 본다(`HotspotState`). One UI 에서 어느 경로가 답하는지는 ⏳ | A+ / B | — |
+
 **설계에 반영된 결론:** 가정 1의 조건 때문에 HTTP/WS 서버는 앱이 아니라 shell 프로세스에서 돈다
 ([dev-plan.md 아키텍처 3항](dev-plan.md)). 앱은 tun 주소 유지·페어링·기동·UI만 맡는다.
 
@@ -57,6 +62,10 @@
 | `core` | `ServerMainTest` | 인자 파싱(`port=`, `apk=`), APK zip에서 assets 읽기, `..` 차단, `/`·`/api/status`·404 응답, extraStatus 병합, `POST /api/report` 저장·비JSON 거부·256KB 초과 413·`GET /api/reports`·status의 `lastReport` |
 | `core` | `ControlMessageTest` | 웹 터치/키/텍스트 패킷 파싱(정규화 좌표, UTF-8), 잘린·미지 패킷 거부 |
 | `core` | `EncodedH264SinkTest` | 인코더 출력(config 버퍼 + Annex-B AU, 원본 .h264에서 추출) → init 세그먼트 1개 + 프레임당 moof/mdat 1개, 첫 패킷 TYPE_KEY, pts 유지, SPS/PPS 인라인 키프레임만으로도 부트스트랩 |
+| `shell-server` | `HotspotTest` | **아무도 답하지 않을 때 `known=false`** — "꺼짐"으로 단정하지 않는 것, `via` 로 무엇이 답했는지 남기는 것, 그리고 옛 빌드의 쓰기 요청을 이유와 함께 거절하는 것 |
+| `app` | `BulkControlTest` | 일괄 끄기의 **순서**(서버 → 세션)를 가짜 loopback 서버로 확인 — 킬 스위치가 그 서버로 가는 요청이라 세션을 먼저 내리면 끌 방법이 사라진다. 핫스팟은 건드리지 않는다. 두 번 누르면 두 번째는 거절 |
+| `app` | `CarCastWidgetTest` | 위젯 스위치: 끄기는 VPN 동의를 기다리지 않고, 켜기는 동의 없이 시작하지 않는다. 세션만 살고 서버가 죽은 상태를 "켜짐"으로 보이지 않는다 (상태를 가진 쪽이 바뀔 때마다 다시 그려 주는 것은 `StreamService`·`CarVpnService` 의 몫) |
+| `core` | `ExtraApiTest` | 호스트가 더한 `/api` 경로가 요청을 받고 그 답이 서빙된다. null 을 주면 코어 경로로 넘어간다 — 호스트 경로가 `/api/status` 를 가려 버리면 차가 멈춘다 |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
@@ -409,6 +418,16 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 ---
 
 ## 5. 열린 질문 (다음 검증 대상)
+0. ~~**핫스팟을 앱에서 켤 수 있는가:**~~ **답 나옴 — 못 켠다. 바꾸는 코드는 제거했고(2026-09-13) 읽기만 남겼다.** 가상 폰(run #41·#42)과 S26U/One UI 8
+   (2026-09-13, `d00a495`) 둘 다 면제 요청과 면제 없는 재시도 모두 `NO_CHANGE_TETHERING_PERMISSION(14)`.
+   shell 에게는 `TETHER_PRIVILEGED` 가 없고 WRITE_SETTINGS 경로도 닫혀 있다(삼성 빌드는 프로비저닝 앱이
+   설정돼 있어 `isTetherProvisioningRequired()` 가 참일 것으로 보인다 — 미확인). `cmd wifi start-softap` 은
+   root 전용이라 남는 길이 없다. **→ 핫스팟은 사용자가 설정에서 직접 켠다.** 앱은 한 번 거부당하면 다시
+   시도하지 않고 그렇게 안내하며, 일괄 동작은 서버·VPN 만 다룬다(누를 곳이 셋에서 둘로 준다).
+   다시 열어야 할 경우: 다른 제조사·다른 안드로이드에서 `3/3 핫스팟: 켰습니다` 가 나오면 그때 기록한다.
+0b. **핫스팟을 켠 뒤 서버가 살아남는가 (B):** 설정에서 직접 켜더라도 남는 질문이다. TCP 모드가 켜진 폰에서는
+   살아야 하고(§3.8), 아니면 §3.5 대로 adbd 와 함께 죽는다. 2026-09-13 실행에서 TCP 모드 포트 31432 는
+   열려 있었고 그 경로로 서버를 다시 띄웠다 — 핫스팟을 켠 뒤에도 그런지가 남은 확인이다.
 1. 차 브라우저에서 `100.64/10` 대역이 실제로 열리는지, MSE H.264 디코드 fps (가정 2).
 2. ~~M0: One UI 8에서 shell의 VD 생성·`--start-app`·`display_ime_policy=local`·오디오 소스 선택 (가정 3·4).~~ 완료 → car-tests/s26u-one-ui-8.md
 3. ~~M3: Kadb 2.1.1 `pair`/`connect`, NsdManager `_adb-tls-pairing`/`_adb-tls-connect`, 데몬화한 서버의 수명(Shizuku #1125류).~~ 완료 → §3.4, §3.5. 남은 것: 재부팅 후 포트 재발견, "서버 종료" 킬 스위치.

@@ -17,6 +17,8 @@ import java.util.Map;
  * </pre>
  * Extra endpoints: {@code POST /api/screen?on=0|1[&via=power-mode|cmd-display|brightness]} turns only the
  * phone's main display off/on (the virtual display keeps running); {@code GET /api/screen} reports it.
+ * {@code GET /api/hotspot} reports whether the phone's hotspot is up — read only; see {@link Hotspot} for
+ * why switching it is not ours to do.
  * {@code GET /api/apps[?refresh=1]} lists the apps the car can start (the car's own home),
  * {@code GET /api/icon?pkg=…} returns one app's icon, and {@code GET /api/tasks} lists what is running
  * and on which display (the car's own recents).
@@ -174,6 +176,8 @@ public final class Server {
             extra.putAll(screen.info());
             // 차 홈이 비어 보일 때 "앱이 없다"인지 "못 읽었다"인지를 리포트만 보고 가를 수 있게.
             extra.putAll(AppList.info());
+            // One line in /api/status so the app (and the widget) can show hotspot state without a second request.
+            extra.put("hotspot", Hotspot.info());
             if (injector != null) {
                 extra.put("injected", injector.injected());
                 extra.put("injectFailed", injector.failed());
@@ -206,6 +210,12 @@ public final class Server {
             // The car's own recents: what is running, and on which display.
             if ("/api/tasks".equals(path) && "GET".equals(method)) {
                 return RunningTasks.json(source == null ? -1 : source.displayId());
+            }
+            // The phone's own hotspot, so "everything off" is one press instead of a trip to Settings.
+            // Loopback only, exactly like /api/stop: the car reaches us *over* that hotspot and must not
+            // be able to switch it off underneath itself, and neither may anything else sharing it.
+            if ("/api/hotspot".equals(path)) {
+                return Hotspot.route(method);
             }
             if (!"/api/screen".equals(path)) {
                 return null;

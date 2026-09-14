@@ -20,6 +20,8 @@ import com.carcast.adb.AdbIdentity
 import com.carcast.adb.AdbLink
 import com.carcast.adb.AdbPairingService
 import com.carcast.adb.AdbPrefs
+import com.carcast.service.BulkControl
+import com.carcast.service.HotspotState
 import com.carcast.service.NetDiag
 import com.carcast.service.SelfTest
 import com.carcast.service.StreamService
@@ -47,8 +49,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serverInApp: android.widget.CheckBox
     private val handler = Handler(Looper.getMainLooper())
 
+    /** What to do once consent comes back: the plain session, or the whole bulk sequence. */
+    private var afterConsent: () -> Unit = { startSession() }
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-        if (r.resultCode == RESULT_OK) startSession() else StreamService.log("VPN 권한 거부됨")
+        if (r.resultCode == RESULT_OK) afterConsent() else StreamService.log("VPN 권한 거부됨")
     }
     private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -82,6 +86,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton(android.R.string.cancel, null).show()
         }
+        findViewById<Button>(R.id.bulk_on).setOnClickListener { bulkOn() }
+        findViewById<Button>(R.id.bulk_off).setOnClickListener { confirmBulkOff() }
         logScroll = findViewById(R.id.log_scroll)
         findViewById<Button>(R.id.copy_log).setOnClickListener {
             val lines = StreamService.logLines.toList()
@@ -101,6 +107,14 @@ class MainActivity : AppCompatActivity() {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // The home screen switch cannot ask for VPN consent (that needs an Activity), so it sends us here
+        // instead of pretending the session started. Handle it once the views exist.
+        if (intent?.getBooleanExtra(EXTRA_NEEDS_VPN_CONSENT, false) == true) {
+            intent.removeExtra(EXTRA_NEEDS_VPN_CONSENT)
+            StreamService.log("위젯에서 켜기 — VPN 권한이 아직 없어 앱에서 물어봅니다")
+            bulkOn()
+        }
+
         toggle.setOnClickListener {
             if (StreamService.running) {
                 startService(Intent(this, StreamService::class.java).setAction(StreamService.ACTION_STOP))
@@ -110,7 +124,12 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     // VpnService.prepare returns an intent the first time; null means consent already given.
                     val consent = VpnService.prepare(this)
-                    if (consent != null) vpnConsent.launch(consent) else startSession()
+                    if (consent != null) {
+                        afterConsent = { startSession() }
+                        vpnConsent.launch(consent)
+                    } else {
+                        startSession()
+                    }
                 }
             }
         }
@@ -221,6 +240,21 @@ class MainActivity : AppCompatActivity() {
         return File(dir, "carcast-reports-${BuildConfig.GIT_SHA}.json").apply { writeText(body) }
     }
 
+    /**
+     * The hotspot, which the user switches and we only report. "?" whenever nothing would say — not the
+     * same as off, and the difference matters when the car cannot reach the phone.
+     */
+    private fun hotspotLine(statusJson: String?): String {
+        val state = when (HotspotState.on()) {
+            true -> "켜짐"
+            false -> "꺼짐 — 차가 붙으려면 설정에서 켜세요"
+            null -> "알 수 없음"
+        }
+        val via = runCatching { JSONObject(statusJson ?: return state).optJSONObject("hotspot")?.optString("via") }
+            .getOrNull().orEmpty()
+        return if (via.isEmpty()) state else "$state ($via)"
+    }
+
     /** One line about the newest report the car sent, from the /api/status JSON the service polls. */
     private fun lastReportLine(statusJson: String?): String {
         val st = runCatching { JSONObject(statusJson ?: return "-") }.getOrNull() ?: return "-"
@@ -260,6 +294,60 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(android.R.string.cancel, null).show()
     }
 
+    /**
+     * VPN → server → hotspot in one press. The order and the hazard are [BulkControl]'s; this only makes
+     * sure consent exists first (a widget cannot ask for it) and that the one case where the hotspot can
+     * take the server down with it is said out loud before it happens, not afterwards in the log.
+     */
+    private fun bulkOn() {
+        val go: () -> Unit = {
+            if (BulkControl.precondition(this) == BulkControl.Survival.NONE) {
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setMessage(R.string.bulk_on_warn_none)
+                    .setPositiveButton(R.string.bulk_on) { _, _ -> sendBulk(StreamService.ACTION_ALL_ON) }
+                    .setNegativeButton(android.R.string.cancel, null).show()
+            } else {
+                sendBulk(StreamService.ACTION_ALL_ON)
+            }
+        }
+        val consent = if (useVpn.isChecked) VpnService.prepare(this) else null
+        if (consent == null) {
+            go()
+            return
+        }
+        afterConsent = go
+        vpnConsent.launch(consent)
+    }
+
+    private fun confirmBulkOff() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setMessage(R.string.bulk_off_confirm)
+            .setPositiveButton(R.string.bulk_off) { _, _ -> sendBulk(StreamService.ACTION_ALL_OFF) }
+            .setNeutralButton(R.string.hotspot_settings) { _, _ -> openTetherSettings() }
+            .setNegativeButton(android.R.string.cancel, null).show()
+    }
+
+    /** The way out when no server is left to switch the hotspot: the phone's own tethering screen. */
+    private fun openTetherSettings() {
+        val tries = listOf(
+            Intent("android.settings.TETHER_SETTINGS"),
+            Intent().setClassName("com.android.settings", "com.android.settings.TetherSettings"),
+            Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS),
+        )
+        for (i in tries) {
+            if (runCatching { startActivity(i) }.isSuccess) return
+        }
+        StreamService.log("핫스팟 설정 화면을 열지 못했습니다 — 설정 > 연결 > 모바일 핫스팟에서 직접 꺼 주세요")
+    }
+
+    private fun sendBulk(action: String) {
+        startForegroundService(
+            Intent(this, StreamService::class.java).setAction(action)
+                .putExtra(StreamService.EXTRA_USE_VPN, useVpn.isChecked)
+                .putExtra(StreamService.EXTRA_SERVER_IN_APP, serverInApp.isChecked)
+        )
+    }
+
     private fun startSession() {
         startForegroundService(
             Intent(this, StreamService::class.java)
@@ -297,6 +385,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 ).append('\n')
                 if (!onWifi() && prefs.tcpPort == 0) append("※ ").append(getString(R.string.wifi_hint)).append('\n')
+                append("핫스팟: ").append(hotspotLine(st)).append('\n')
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
                 append("차에서 보낸 진단: ").append(lastReportLine(st)).append('\n')
@@ -326,4 +415,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() { super.onResume(); handler.post(refresh) }
     override fun onPause() { super.onPause(); handler.removeCallbacks(refresh) }
+
+    companion object {
+        /** Set by the widget when VPN consent is missing: the app asks, then runs the same bulk start. */
+        const val EXTRA_NEEDS_VPN_CONSENT = "needsVpnConsent"
+    }
 }

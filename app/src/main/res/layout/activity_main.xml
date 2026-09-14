@@ -71,6 +71,29 @@
             android:text="@string/stop_server" />
     </LinearLayout>
 
+    <!-- One press for the three things that have to go together, in the only order that works
+         (see BulkControl): the same actions the home screen switch sends. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+        <Button
+            android:id="@+id/bulk_on"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="@string/bulk_on" />
+        <Button
+            android:id="@+id/bulk_off"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:text="@string/bulk_off" />
+    </LinearLayout>
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

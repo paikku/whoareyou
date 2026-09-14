@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A small two-by-one tile: the switch plus one line saying which of VPN / server / hotspot answered.
+  updatePeriodMillis is 0 on purpose — StreamService pushes a redraw whenever the state changes
+  (CarCastWidget.refresh), and the platform's own period is capped at 30 minutes anyway, which would
+  be useless for a state the driver is looking at.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="40dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="1"
+    android:resizeMode="horizontal"
+    android:widgetCategory="home_screen"
+    android:initialLayout="@layout/widget_switch"
+    android:previewLayout="@layout/widget_switch"
+    android:description="@string/widget_description"
+    android:updatePeriodMillis="0" />

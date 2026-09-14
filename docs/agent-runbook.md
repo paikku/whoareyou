@@ -101,6 +101,30 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 활성유지N idleN`. 이 한 줄이 "기기가 잠든 것 / 패널만 꺼진 것 / 유휴 블랭킹"을 가른다. 이 줄이 없으면
 옛 빌드이므로 먼저 APK 부터 올린다(리포트 #26·#27 을 그것 때문에 가리지 못했다).
 
+### 일괄 켜기·끄기 와 바탕화면 위젯 (서버·VPN 을 한 번에, 핫스팟은 표시만)
+
+- 끄기 **서버 → 세션**, 켜기 **세션 → 서버**. 끄기 순서가 중요하다: 킬 스위치는 그 서버로 보내는 HTTP 요청이고
+  세션이 그 통로다 — 세션을 먼저 내리면 서버가 남은 채 끌 방법이 사라지는데, 밖에서 보면 성공한 것과 똑같다
+- **핫스팟은 우리 일이 아니다.** 폰이 uid 2000 에게 테더링 변경을 주지 않는다(에뮬레이터·S26U 모두
+  `NO_CHANGE_TETHERING_PERMISSION`, verification-log 열린 질문 0). 바꾸는 코드는 지웠고 — 그와 함께
+  `tether_dun_required` 를 건드리던 것도 없어졌다 — 남은 것은 읽기뿐이다
+- 상태: `GET /api/hotspot` 과 `/api/status.hotspot` 의 `on` `known` `via`. **`known=false` 는 "꺼짐"이 아니라
+  "아무도 답해 주지 않았다"** 이다. 이 둘을 섞으면 운전자는 이미 켜 둔 스위치를 다시 만지러 가고 차는 그대로 못 붙는다
+- **위젯에는 핫스팟을 싣지 않는다.** 스위치가 다루지 않는 것을 스위치 밑에 적으면, 그것도 이 스위치가
+  건드리는 것으로 읽힌다. 핫스팟은 앱 화면에만 한 줄로 있다
+- 서버가 없을 때는 앱이 직접 본다(`HotspotState`): AP 이름의 인터페이스에 IPv4 가 붙어 있나.
+  서버 답이 있으면 그쪽이 우선이다(`getWifiApState`)
+- 앱: `BulkControl.kt`(순서와 그 이유), `StreamService.ACTION_ALL_ON/ALL_OFF`, `CarCastWidget.kt`
+- **위젯은 스스로 폴링하지 못한다.** 상태를 가진 쪽이 바뀔 때마다 `CarCastWidget.refresh()` 를 불러 줘야 한다 —
+  `StreamService`(세션·서버)와 `CarVpnService`(tun)가 그렇게 한다. VPN 이 자기 전이를 알리지 않아 위젯이
+  끈 뒤에도 `VPN ●` 로 남아 있던 것이 그 교훈이다: 멈추라고 **보낸** 시점과 실제로 멈춘 시점은 다르다
+- 검사: `tests/device/tests/08-hotspot.test.mjs`(엔드포인트·상태·위젯 등록), 단위 `HotspotTest`("모름"과 "꺼짐"),
+  `BulkControlTest`(끄기 순서·재진입 거부), `CarCastWidgetTest`(스위치가 언제 켜져 보이나)
+
+**남은 위험:** TCP 모드도 USB 디버깅도 꺼져 있으면 Wi-Fi 가 끊길 때(핫스팟을 켜는 순간이 그렇다) 서버가 adbd 와
+함께 cgroup 째 SIGKILL 된다(§3.5). `BulkControl.precondition()` 이 셋 중 무엇인지 먼저 말하고, 앱은 경고하되
+막지는 않는다 — TCP 모드가 켜진 폰에서는 이게 매일 쓰는 정상 경로다.
+
 ## 4. 새 상황을 추가하는 법
 
 `tests/e2e/tests/lifecycle/actions.ts` 에 동작 하나를 더하면 시나리오와 무작위 탐색 양쪽에 자동으로 들어간다.
