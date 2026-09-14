@@ -3,7 +3,7 @@ import { KEYCODE, KeyAction, MediaType, encodeKey, encodeText, parseMediaPacket 
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { MseRenderer, mseSupported } from './renderer/mse';
 import { MjpegRenderer } from './renderer/mjpeg';
-import { H264Renderer } from './renderer/h264';
+import { H264Renderer, h264Supported } from './renderer/h264';
 import type { Renderer } from './renderer/types';
 import { TouchInput } from './input';
 
@@ -20,17 +20,30 @@ const kbd = $<HTMLInputElement>('kbd');
 const params = new URLSearchParams(location.search);
 const forced = params.get('renderer');
 
+/**
+ * 기본은 h264(캔버스)다.
+ *
+ * <video> 는 기어가 P 를 벗어나는 순간 프레임 공급이 끊긴다(실측 2026-09-14, docs/drive-check).
+ * 차는 대부분의 시간을 D 로 보내므로, 그때만 갈아타는 것은 두 경로를 유지하면서 정작 대부분의
+ * 시간에는 쓰지도 않는 쪽을 기본으로 두는 셈이다. 게다가 갈아타려면 MSE 로도 읽히게 Baseline 을
+ * 유지해야 해서 화질 이득도 없고, 전환을 감지하는 데 스톨 두 번(4~6 초)이 든다.
+ *
+ * 그래서 처음부터 D 에서 쓰는 그 경로로 간다. 실측으로 30fps·6ms 이고, MSE(80~140ms)보다 오히려
+ * 지연이 낮다 — 버퍼를 쌓지 않기 때문이다. MSE 는 `?renderer=mse` 로 남겨 둔다.
+ */
 function pickRenderer(): Renderer {
-  // h264 는 아직 손으로 골라야 한다. 드라이브 모드에서 <video> 가 멈추는 것을 이걸로 피할 수 있는지
-  // 재는 중이고(docs/drive-check), 차에서 720p30 을 소프트로 풀 수 있는지가 아직 미지수다.
-  if (forced === 'h264') return new H264Renderer(glCanvas);
-  if (forced === 'mjpeg' || (forced !== 'mse' && !mseSupported())) return new MjpegRenderer(canvas);
-  return new MseRenderer(video);
+  if (forced === 'mse') return new MseRenderer(video);
+  if (forced === 'mjpeg') return new MjpegRenderer(canvas);
+  if (forced === 'h264' || h264Supported()) return new H264Renderer(glCanvas);
+  // 워커나 WebGL2 가 없는 브라우저: 주차 중에라도 보이도록 <video> 로 물러난다.
+  return mseSupported() ? new MseRenderer(video) : new MjpegRenderer(canvas);
 }
 
 let renderer = pickRenderer();
 renderer.attach(stage);
-overlayMsg.textContent = `화면을 터치하면 시작합니다 (${renderer.name})`;
+overlayMsg.textContent = renderer.needsGesture
+  ? `화면을 터치하면 시작합니다 (${renderer.name})`
+  : `연결하는 중… (${renderer.name})`;
 
 let touchRef: TouchInput | null = null;
 const control = new ReconnectingWs(wsUrl('/ws/control'), {
@@ -78,39 +91,12 @@ const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ?
 });
 videoWs.start();
 
-/**
- * 기어가 P 를 벗어나면 테슬라가 <video> 에 프레임 공급을 끊는다(실측 2026-09-14, docs/drive-check).
- * 그때 캔버스는 멀쩡하므로 <video> 를 쓰지 않는 렌더러로 갈아탄다 — 실차에서 30fps·6ms 로 돈다.
- *
- * 기어를 물어볼 방법은 없고, `paused` 도 소용없다(테슬라는 pause() 를 부르지 않고 공급만 끊는다 —
- * 그래서 pause 이벤트가 오지 않는다). 남는 신호는 "패킷은 오는데 프레임이 안 는다" 하나인데, 그건
- * MSE 파이프라인이 꼬였을 때도 똑같이 보인다. 둘을 가르는 것은 **재접속이 듣느냐**다: 꼬임은
- * 새 소켓으로 낫고, 드라이브 차단은 낫지 않는다. 그래서 한 번은 여태처럼 재접속해 보고, 그러고도
- * 곧바로 또 멈추면 드라이브로 보고 갈아탄다.
- */
-const STALL_AGAIN_MS = 15_000;
-let swappedToH264 = false;
-
-function swapToH264(why: string): boolean {
-  // 손으로 렌더러를 고른 세션은 건드리지 않는다 — 그건 무언가를 재려고 고른 것이다.
-  if (swappedToH264 || forced) return false;
-  swappedToH264 = true;
-  note(`${why} → h264 렌더러로 전환 (드라이브 모드로 판단)`);
-  try { renderer.destroy(); } catch { /* 이미 못 쓰는 상태일 수 있다 */ }
-  video.hidden = true;
-  renderer = new H264Renderer(glCanvas);
-  renderer.attach(stage);
-  void renderer.resume();
-  // 새 디코더는 init 과 키프레임부터 다시 받아야 한다. 소켓을 새로 열면 폰이 둘 다 보낸다.
-  videoWs.restart();
-  return true;
-}
-
+// Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the pipeline is
+// wedged. A fresh socket makes the phone resend the init segment and a keyframe, which rebuilds it.
 // No packets at all is not a stall: the phone's encoder goes quiet on a static screen.
 let wdPackets = 0;
 let wdFrames = 0;
 let wdStalledTicks = 0;
-let lastStallAt = 0;
 setInterval(() => {
   if (!started || !videoWs.open) { wdStalledTicks = 0; return; }
   const s = renderer.stats();
@@ -121,12 +107,8 @@ setInterval(() => {
   if (wdStalledTicks >= 4) {
     wdStalledTicks = 0;
     recoveries++;
-    const now = Date.now();
-    const againSoon = now - lastStallAt < STALL_AGAIN_MS;
-    lastStallAt = now;
-    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''})`);
-    // 전환이 거절되면(이미 h264, 또는 손으로 고른 렌더러) 여태처럼 재접속으로 버틴다.
-    if (!againSoon || !swapToH264('재접속 뒤에도 또 스톨')) videoWs.restart();
+    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → video ws 재접속`);
+    videoWs.restart();
   }
 }, 500);
 
@@ -140,6 +122,10 @@ const start = async () => {
 };
 overlay.addEventListener('pointerdown', start, { once: true });
 stage.addEventListener('pointerdown', start, { once: true });
+
+// 캔버스 렌더러는 제스처를 기다릴 이유가 없다 — 차에 타면 화면이 이미 나와 있어야 한다.
+// (오디오가 붙는 날에는 그때 소리를 위한 제스처를 따로 받는다. M6)
+if (!renderer.needsGesture) void start();
 
 // 뒤로가기만 폰으로 보낸다. BACK 은 이벤트가 실린 디스플레이에서 처리되므로 차 화면의 앱에 제대로 간다.
 for (const btn of document.querySelectorAll<HTMLButtonElement>('#bar button[data-key]')) {

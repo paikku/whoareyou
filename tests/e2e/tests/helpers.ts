@@ -24,9 +24,16 @@ export async function statusOf(page: Page): Promise<any> {
   return page.evaluate(async () => (await fetch('/api/status')).json());
 }
 
-/** First "touch" on the stage: unlocks autoplay the same way a driver's first tap does. */
+/**
+ * First "touch" on the stage: unlocks autoplay the same way a driver's first tap does.
+ *
+ * 기본 렌더러(h264)는 캔버스라 자동재생 제한을 받지 않아 스스로 시작한다 — 그때는 누를 것이 없다.
+ * <video> 를 쓰는 세션에서만 실제로 한 번 누른다.
+ */
 export async function startPlayback(page: Page): Promise<void> {
-  await page.locator('#overlay').click({ position: { x: 100, y: 100 } });
+  const overlay = page.locator('#overlay');
+  if (await overlay.isHidden()) return;
+  await overlay.click({ position: { x: 100, y: 100 } });
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

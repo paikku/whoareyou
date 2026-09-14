@@ -14,6 +14,16 @@ import type { Renderer, RendererStats } from './types';
 import { mdatNals, parseAvcC, toAnnexB, type AvcConfig } from '../h264/fmp4';
 import { YuvGl } from '../h264/yuv-gl';
 
+/** 이 경로를 쓸 수 있는 브라우저인가. 못 쓰면 <video> 로 물러난다(주차 중에는 그래도 보인다). */
+export function h264Supported(): boolean {
+  if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') return false;
+  try {
+    return !!document.createElement('canvas').getContext('webgl2');
+  } catch {
+    return false;
+  }
+}
+
 /** 디코더가 이만큼 밀리면 키프레임이 아닌 것은 버린다. 지연이 무한정 자라는 것보다 낫다. */
 const MAX_BACKLOG = 60;
 /** 워커의 입력 버퍼가 1 MB 다(TinyH264Decoder). 그보다 큰 NAL 은 넣지 않는다. */
@@ -23,6 +33,7 @@ const MAX_QUEUED = 240;
 
 export class H264Renderer implements Renderer {
   readonly name = 'h264';
+  readonly needsGesture = false;
   private worker: Worker | null = null;
   private gl: YuvGl | null = null;
   private cfg: AvcConfig | null = null;

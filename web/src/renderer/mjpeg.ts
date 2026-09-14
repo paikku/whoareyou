@@ -4,6 +4,7 @@ import type { Renderer, RendererStats } from './types';
 
 export class MjpegRenderer implements Renderer {
   readonly name = 'mjpeg';
+  readonly needsGesture = false;
   private ctx: CanvasRenderingContext2D | null = null;
   private st: RendererStats = { framesDecoded: 0, fps: 0, latencyMs: 0, droppedFrames: 0, lastError: '' };
   private times: number[] = [];
