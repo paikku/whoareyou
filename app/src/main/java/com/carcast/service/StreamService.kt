@@ -79,6 +79,10 @@ class StreamService : Service() {
         useVpn = intent?.getBooleanExtra(EXTRA_USE_VPN, true) ?: true
         serverInApp = intent?.getBooleanExtra(EXTRA_SERVER_IN_APP, false) ?: false
         startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        // The app's own Start button takes the same first step as the widget: USB debugging on, so adbd
+        // outlives Wi-Fi. A plain settings write; when it has just been switched on the link loop's retries
+        // cover the seconds adbd takes to come up.
+        if (!serverInApp) log(com.carcast.adb.UsbDebugging.describe(com.carcast.adb.UsbDebugging.ensureOn(this)))
         startSession()
         return START_STICKY
     }

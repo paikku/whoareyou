@@ -318,8 +318,9 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     }
 
     /**
-     * TCP mode is only entered when the user asked for it ([AdbPrefs.tcpModeOptIn]): the switch restarts adbd,
-     * so if adbd does not come back serving wireless debugging, the only way in is gone until the user toggles it.
+     * TCP mode is entered unless the user turned it off ([AdbPrefs.tcpModeOptIn]) or it has failed too often: the
+     * switch restarts adbd, so if adbd does not come back serving wireless debugging, the only way in is gone
+     * until the user toggles it.
      */
     @Throws(IOException::class)
     private fun maybeSwitchToTcpMode(link: AdbLink, via: Candidate): AdbLink {
@@ -399,10 +400,15 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         if (UsbDebugging.canWrite(context)) return
         val out = runCatching { l.shell(UsbDebugging.grantCommand(context.packageName) + " 2>&1").trim() }
             .getOrElse { "명령 실패: ${it.message}" }
-        log(
-            if (UsbDebugging.canWrite(context)) "WRITE_SECURE_SETTINGS 부여됨 — 다음부터 USB 디버깅이 꺼져 있으면 앱이 스스로 켭니다"
-            else "WRITE_SECURE_SETTINGS 부여 실패 ($out) — USB 디버깅은 계속 손으로 켜야 합니다"
-        )
+        if (!UsbDebugging.canWrite(context)) {
+            log("WRITE_SECURE_SETTINGS 부여 실패 ($out) — USB 디버깅은 계속 손으로 켜야 합니다")
+            return
+        }
+        log("WRITE_SECURE_SETTINGS 부여됨 — 다음부터 USB 디버깅이 꺼져 있으면 앱이 스스로 켭니다")
+        // The first session is the one that runs before any widget press has had the chance to switch USB
+        // debugging on — and it is the one a first-time user walks out of Wi-Fi with. Switch it on now.
+        // adbd is already running (we are talking to it), so this does not restart it.
+        log(UsbDebugging.describe(UsbDebugging.ensureOn(context)))
     }
 
     /**
