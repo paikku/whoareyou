@@ -111,6 +111,43 @@ GET /api/status   → "codec": "avc1.XXXXXX"
 드러나면 순서는 ① 해상도·fps 낮추기(폰 쪽 한 줄), ② `caps.webcodecs` 가 살아 있으면 폰에 wss 를
 세우고 WebCodecs 로 옮기기다.
 
+## 개선 가능성 점검 (`/upgrade-check.html`)
+
+위의 성능 추이가 "지금 것이 버티는가"라면, 이 페이지는 **"다음에 무엇을 쓸 수 있는가"**를 묻는다.
+버티든 안 버티든 따로 남는 질문이고, 해상도를 낮추는 것 말고 어떤 길이 열려 있는지를 한 번에 잰다.
+주소: `http://100.99.9.9:3333/upgrade-check.html` (앱에 실려 있다. 진단 페이지에서도 넘어간다).
+
+항목마다 **무엇이 좋아지나 / 이 차에서 되나 / 막는 것이 무엇이냐**를 같이 적고, 네 가지로 가른다:
+
+| 판정 | 뜻 |
+|---|---|
+| **○ 된다** | 이 차에서 되는 것. 손대면 되는 자리 |
+| **△ 뚫으면 된다** | 차는 막고 있지 않은데 **우리 쪽** 조건(응답 헤더 등)이 막는다 |
+| **✕ 안 된다** | 이 차에 없다. 더 생각하지 않아도 되는 것 |
+| **? 가려짐** | 평문이라 못 쟀다. **"없다"로 읽으면 안 된다** |
+
+재는 것: WebCodecs(하드웨어 디코더), WASM SIMD, 멀티스레드 WASM, OffscreenCanvas, WebGPU,
+WebRTC + MediaStreamTrackProcessor, WebTransport, H.264 High·H.265·VP9·AV1, Wake Lock,
+Service Worker, IndexedDB.
+
+**WebCodecs 는 기능 검출로 끝내지 않는다.** 720p 키프레임(`web/src/probe/sample.ts`, 폰이 보내는 것과
+같은 모양)을 실제로 넣어 그림이 나오는지까지 본다 — `typeof VideoDecoder` 가 함수라는 것과 이 차가
+우리 스트림을 푼다는 것은 다른 말이다.
+
+### 평문에서는 절반만 답이 나온다
+
+`secure context` 전용 API(WebCodecs·SharedArrayBuffer·WebGPU·WebTransport·Wake Lock·Service Worker)는
+폰이 주는 평문 http 에서 **있어도 안 보인다**. 그래서 폰에서 열면 12 개 중 8 개가 "가려짐"으로 남는다.
+페이지 맨 위에 그 사실이 배너로 뜬다.
+
+나머지를 가리려면 **같은 파일 하나(`web/public/upgrade-check.html`)를 아무 https 정적 호스팅에 올려
+차에서 한 번 더 열면 된다.** 이 페이지는 폰과 통신하지 않고 혼자 돌기 때문에 그대로 동작한다(폰 저장만
+안 되므로 그때는 화면을 사진으로 남긴다). 올릴 곳은 위 "두 갈래" 절과 같다.
+
+> 근본적인 해결은 **폰이 https+wss 로 서빙하는 것**이다. 그러면 이 표도 다 채워지고, WebCodecs 를
+> 실제로 쓰는 길도 같이 열린다. 아직 안 했다 — 자체 서명 인증서를 차 브라우저가 받아 주는지부터
+> 확인해야 한다.
+
 ## 출처
 
 - [madpowah/tesla-video-drive](https://github.com/madpowah/tesla-video-drive) — `<video>` OS 레벨 정지, MPEG1-TS + canvas 우회

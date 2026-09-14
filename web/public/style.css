@@ -63,3 +63,21 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 #bar button.ic:active, #bar .link.ic:active { background: #2b2b2b; }
 #bar .ic svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 #bar button.nav svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+/* 개선 가능성 점검 (upgrade-check.html): 판정 한 칸과 설명 한 칸이 나란히 읽혀야 한다. */
+body.diag .lead { color: #aaa; max-width: 70ch; line-height: 1.5; margin: 4px 0 10px; }
+body.diag .banner { margin: 8px 0; padding: 10px 12px; border: 1px solid #663; border-radius: 8px;
+  background: #1a1608; color: #eca; line-height: 1.5; }
+body.diag table.probe { width: 100%; max-width: 100ch; table-layout: fixed; }
+body.diag table.probe td { vertical-align: top; padding: 8px 12px 8px 0; }
+body.diag td.pname { width: 15em; color: #ddd; font-weight: 600; }
+body.diag td.pv { width: 8em; white-space: nowrap; }
+body.diag .gain { color: #9ab; line-height: 1.5; }
+body.diag .detail { margin-top: 4px; color: #ccc; line-height: 1.5; }
+body.diag .todo { margin-top: 4px; color: #8c8; line-height: 1.5; }
+.warn { color: #dc6; }
+@media (max-width: 720px) {
+  body.diag table.probe, body.diag table.probe tr, body.diag table.probe td { display: block; width: auto; }
+  body.diag table.probe tr { border-bottom: 1px solid #222; padding: 8px 0; }
+  body.diag table.probe td { padding: 2px 0; border: 0; }
+}

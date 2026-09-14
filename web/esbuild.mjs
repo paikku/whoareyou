@@ -16,6 +16,7 @@ const options = {
   entryPoints: {
     main: resolve(here, 'src/main.ts'),
     diag: resolve(here, 'src/diag.ts'),
+    upgrade: resolve(here, 'src/upgrade.ts'),
     // 디코더는 워커에서 돈다 — 메인 스레드가 멈추면 터치도 상태줄도 같이 멈춘다.
     'h264-worker': resolve(here, 'src/h264/worker.ts'),
   },
