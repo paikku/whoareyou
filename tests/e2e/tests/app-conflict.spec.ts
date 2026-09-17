@@ -8,9 +8,13 @@ import { expect, test } from '@playwright/test';
 import { startPlayback, stats } from './helpers';
 
 test.skip(!!process.env.BASE_URL, 'needs the fake phone (test hook /api/fake/app-on-phone)');
+// 가짜 폰은 하나가 모든 스펙·프로필을 차례로 받는다. 앞 스펙이 남긴 앱 상태로 시작하지 않는다.
+// (페이지 안에서 부른다 — `request` 픽스처는 브라우저의 100.99.9.9 → 127.0.0.1 매핑을 타지 않는다.)
+const reset = (page: import('@playwright/test').Page) => page.evaluate(() => fetch('/api/reset'));
 
 test('▶ reports what the phone did with the app, and the car notices when the phone takes it back', async ({ page }) => {
   await page.goto('/');
+  await reset(page);
   await startPlayback(page);
   await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 5, null, { timeout: 30_000 });
 
@@ -67,6 +71,7 @@ test('▶ reports what the phone did with the app, and the car notices when the 
 // "새로 열기"로 읽히면 보던 것을 잃으므로, 경계(600ms)의 양쪽을 다 본다.
 test('홈에서 짧게 누르면 가져오고, 길게 누르면 새로 연다', async ({ page }) => {
   await page.goto('/');
+  await reset(page);
   await startPlayback(page);
   await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 5, null, { timeout: 30_000 });
   const events = () => page.evaluate(() => (window as any).__carcast.events as string[]);
@@ -107,6 +112,7 @@ test('홈에서 짧게 누르면 가져오고, 길게 누르면 새로 연다', 
 // 누적 프레임 수를 "아직 아무것도 안 나왔다"로 읽고 있어서 패널이 뜨지 못했다.
 test('쓰던 앱이 닫히면 차가 홈을 띄운다', async ({ page }) => {
   await page.goto('/');
+  await reset(page);
   await startPlayback(page);
   await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 5, null, { timeout: 30_000 });
   await expect(page.locator('#state')).toBeHidden();
@@ -123,4 +129,18 @@ test('쓰던 앱이 닫히면 차가 홈을 띄운다', async ({ page }) => {
   await page.locator('#launcher-grid .tile').first().click();
   await expect(page.locator('#launcher')).toBeHidden();
   await expect(page.locator('#stats')).toContainText('앱');
+});
+
+// 홈이 저절로 떠 있는 채로(차 화면이 비어서) ▶ 로 앱을 띄우면 홈은 닫혀야 한다. 칸에서 고를 때만 닫고
+// ▶ 와 패널 버튼은 안 닫던 것이 CI 에서 걸렸다: 새 앱 위에 홈이 남아 그 아래의 패널 버튼을 덮었다.
+test('홈이 떠 있는 채로 ▶ 로 앱을 띄우면 홈이 닫힌다', async ({ page }) => {
+  await page.goto('/');
+  await reset(page);
+  await startPlayback(page);
+  await page.evaluate(async () => (await fetch('/api/fake/no-app')).json());
+  await expect(page.locator('#launcher')).toBeVisible({ timeout: 10_000 });
+  page.once('dialog', (d) => d.accept('com.example.app'));
+  await page.locator('#btn-app').click();
+  await expect(page.locator('#stats')).toContainText('앱 실행');
+  await expect(page.locator('#launcher')).toBeHidden();
 });

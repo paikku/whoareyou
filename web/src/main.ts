@@ -448,6 +448,9 @@ async function launch(name: string, restart: Restart = 'never'): Promise<boolean
   try {
     const r = await (await fetch(`/api/app?name=${encodeURIComponent(name)}&restart=${restart}`, { method: 'POST' })).json();
     if (!r.ok) { window.alert(`앱 실행 실패: ${r.error}`); return false; }
+    // 앱이 차 화면에 왔으니 그것을 보여 준다. 홈이 저절로 떠 있던 채로 ▶ 나 패널 버튼을 눌렀을 때
+    // 시트가 그대로 남아 새 앱을 덮던 것 — 칸에서 고를 때는 pick 이 먼저 닫지만 다른 길은 아니었다.
+    closeSheet();
     localStorage.setItem('carcast.app', name);
     lastPackage = r.package ?? name;
     appOnPhone = false;

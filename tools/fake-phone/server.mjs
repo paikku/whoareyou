@@ -219,7 +219,10 @@ const server = createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/reset') {
+    // 입력 기록과 앱 상태를 처음으로. 하나의 가짜 폰이 모든 스펙과 프로필을 차례로 받으므로, 앞 테스트가
+    // 남긴 "차 화면 비어 있음"이 다음 테스트의 시작 화면(홈이 저절로 뜸)을 바꾸던 것을 여기서 끊는다.
     state.touches = []; state.keys = []; state.texts = [];
+    state.apps = []; state.appOnPhone = false; delete state.appDisplay; delete state.app;
     res.writeHead(200); res.end('ok');
     return;
   }
