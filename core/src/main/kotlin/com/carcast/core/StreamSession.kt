@@ -28,6 +28,8 @@ class StreamSession(
     reportDir: File? = null,
     /** Live video (the virtual display in the shell process); null falls back to the bundled test clip. */
     private val videoSource: VideoSource? = null,
+    /** Build sha of the bundled web files; lets the car cache them (HttpServer.serveStatic). Null: no caching. */
+    private val staticVersion: String? = null,
 ) {
     val reports = ReportStore(reportDir)
     private var http: HttpServer? = null
@@ -85,7 +87,7 @@ class StreamSession(
     @Throws(IOException::class)
     fun start() {
         if (running) return
-        val server = HttpServer(assets, port, ::onWebSocket, ::onApi)
+        val server = HttpServer(assets, port, ::onWebSocket, ::onApi, staticVersion)
         // The app polls /api/status over loopback every 2 s; only remote (car/laptop) connections are events.
         //
         // 그런데 차의 페이지도 2 초마다 /api/status 를 부르고, 응답은 Connection: close 다 — 즉 원격

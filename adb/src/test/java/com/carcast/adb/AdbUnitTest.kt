@@ -39,9 +39,10 @@ class ServerCommandTest {
         assertEquals(
             "mkdir -p /data/local/tmp/carcast; [ -f /data/local/tmp/carcast/server.pid ] && grep -q com.carcast.server.Server /proc/\$(cat /data/local/tmp/carcast/server.pid)/cmdline 2>/dev/null && kill \$(cat /data/local/tmp/carcast/server.pid) 2>/dev/null; " +
                 "pkill -f '^app_process / com\\.carcast\\.server\\.Server' 2>/dev/null; " +
-                "sleep 1; rm -f /data/local/tmp/carcast/server-*.log /data/local/tmp/carcast/server-42.log; " +
+                "i=0; while [ \$i -lt 30 ] && pgrep -f '^app_process / com\\.carcast\\.server\\.Server' >/dev/null 2>&1; do sleep 0.1; i=\$((i+1)); done; " +
+                "rm -f /data/local/tmp/carcast/server-*.log /data/local/tmp/carcast/server-42.log; " +
                 "CLASSPATH='/a/base.apk' setsid nohup app_process / com.carcast.server.Server abc1234 port=3333 daemon=true screen_off_timeout=600000 >/data/local/tmp/carcast/server-42.log 2>&1 </dev/null & " +
-                "echo \$! >/data/local/tmp/carcast/server.pid; sleep 2; echo launched pid=\$(cat /data/local/tmp/carcast/server.pid); head -c 4000 /data/local/tmp/carcast/server-42.log",
+                "echo \$! >/data/local/tmp/carcast/server.pid; echo launched pid=\$(cat /data/local/tmp/carcast/server.pid)",
             cmd,
         )
         // The kill pattern must match a running server's command line but never the `sh -c` shell that runs
@@ -51,6 +52,8 @@ class ServerCommandTest {
         assertTrue(!pattern.containsMatchIn("sh -c $cmd"))
         assertTrue(!pattern.containsMatchIn("/system/bin/sh -c $cmd"))
         assertTrue(runCatching { ServerCommand.detached("/a/base.apk", "abc1234", 3333, "/x/server-*.log") }.exceptionOrNull() is IllegalArgumentException)
+        // No flat sleeps: the old `sleep 1` + `sleep 2` cost three seconds on every launch (the server answers in ~0.5 s).
+        assertTrue(!Regex("sleep [1-9]").containsMatchIn(cmd))
     }
 
     @Test

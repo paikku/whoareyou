@@ -84,6 +84,62 @@ class ServerMainTest {
         }
     }
 
+    /**
+     * The car must not download the web client on every visit: with a build sha the HTML is revalidated
+     * (`no-cache` + ETag → 304), the sha is written into the page, and versioned assets are immutable.
+     */
+    @Test
+    fun staticFilesAreCacheableByBuildVersion() {
+        val port = ServerSocket(0).use { it.localPort }
+        val f = Files.createTempFile("fake", ".apk").toFile()
+        ZipOutputStream(f.outputStream()).use { z ->
+            z.putNextEntry(ZipEntry("assets/web/index.html")); z.write("<script src=\"main.js?v=__BUILD__\"></script>".toByteArray()); z.closeEntry()
+            z.putNextEntry(ZipEntry("assets/web/main.js")); z.write("//js".toByteArray()); z.closeEntry()
+        }
+        val session = StreamSession(ZipAssets(f.path), port, "test", staticVersion = "abc1234")
+        session.start()
+        try {
+            val html = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
+            html.useCaches = false
+            assertEquals(200, html.responseCode)
+            assertEquals("<script src=\"main.js?v=abc1234\"></script>", html.inputStream.use { String(it.readBytes()) })
+            assertEquals("\"abc1234\"", html.getHeaderField("ETag"))
+            assertEquals("no-cache", html.getHeaderField("Cache-Control"))
+
+            val again = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
+            again.useCaches = false
+            again.setRequestProperty("If-None-Match", "\"abc1234\"")
+            assertEquals(304, again.responseCode)
+
+            val versioned = URL("http://127.0.0.1:$port/main.js?v=abc1234").openConnection() as HttpURLConnection
+            assertEquals("max-age=31536000, immutable", versioned.getHeaderField("Cache-Control"))
+            assertEquals("//js", versioned.inputStream.use { String(it.readBytes()) })
+            // Another build's URL (an old page) still gets the file, but only with a revalidation.
+            val stale = URL("http://127.0.0.1:$port/main.js?v=old").openConnection() as HttpURLConnection
+            assertEquals("no-cache", stale.getHeaderField("Cache-Control"))
+            assertEquals("\"abc1234\"", stale.getHeaderField("ETag"))
+            // The API stays uncacheable.
+            val api = URL("http://127.0.0.1:$port/api/status").openConnection() as HttpURLConnection
+            assertEquals("no-store", api.getHeaderField("Cache-Control"))
+        } finally {
+            session.stop()
+        }
+    }
+
+    @Test
+    fun noVersionMeansNoCaching() {
+        val port = ServerSocket(0).use { it.localPort }
+        val session = StreamSession(ZipAssets(fakeApk().path), port, "test")
+        session.start()
+        try {
+            val c = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
+            assertEquals("no-store", c.getHeaderField("Cache-Control"))
+            assertNull(c.getHeaderField("ETag"))
+        } finally {
+            session.stop()
+        }
+    }
+
     @Test
     fun stopIsLoopbackOnlyAndLogIsServed() {
         val port = ServerSocket(0).use { it.localPort }

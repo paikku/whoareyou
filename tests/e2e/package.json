@@ -6,7 +6,7 @@
   "scripts": {
     "test": "playwright test",
     "install-chrome": "browsers install chrome@148 --path ./.cache",
-    "test:quick": "playwright test --project=tesla-dpr1 tests/diag.spec.ts tests/diag-stall.spec.ts tests/stream.spec.ts tests/input.spec.ts tests/session-report.spec.ts tests/sparse.spec.ts tests/app-conflict.spec.ts",
+    "test:quick": "playwright test --project=tesla-dpr1 tests/diag.spec.ts tests/diag-stall.spec.ts tests/stream.spec.ts tests/input.spec.ts tests/session-report.spec.ts tests/sparse.spec.ts tests/app-conflict.spec.ts tests/resume.spec.ts",
     "lifecycle": "playwright test tests/lifecycle.spec.ts --project=model-y-2026.26",
     "explore": "playwright test tests/lifecycle-explore.spec.ts --project=model-y-2026.26"
   },

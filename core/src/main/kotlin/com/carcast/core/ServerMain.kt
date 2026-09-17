@@ -64,7 +64,10 @@ object ServerMain {
         onStopped: () -> Unit = {},
         onReady: ((StreamSession) -> Unit)? = null,
     ) {
-        val session = StreamSession(opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource)
+        val session = StreamSession(
+            opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource,
+            staticVersion = opts.buildId,
+        )
         session.onStartApp = startApp
         session.controlHandler = control
         onControlGone?.let { session.onControlGone = it }

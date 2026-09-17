@@ -55,12 +55,22 @@ object ServerCommand {
         ).removePrefix("CLASSPATH='$apkPath' exec ")
         val serverPattern = "^app_process / " + MAIN_CLASS.replace(".", "\\.")
         // The pid file survives reboots while pids get reused, so only kill it if that pid still is our server.
+        // Waiting for the old server to be gone used to be a flat `sleep 1`, and reading the first log lines a
+        // flat `sleep 2` — three seconds on every launch, while the server itself answers in about half a
+        // second (docs/verification-log.md §3.8). Now the old process is polled away (usually there is none, so
+        // this costs nothing) and the log is not read here at all: the caller polls /api/status and reads the
+        // log only when that fails (ShellServerLink.launchOnce). `pgrep -f` and a fractional `sleep` are toybox
+        // (every Android this app runs on); the loop caps at OLD_SERVER_EXIT_TICKS × 100 ms.
         return "mkdir -p $dir; [ -f $pid ] && grep -q $MAIN_CLASS /proc/\$(cat $pid)/cmdline 2>/dev/null && kill \$(cat $pid) 2>/dev/null; " +
             "pkill -f '$serverPattern' 2>/dev/null; " +
-            "sleep 1; rm -f $dir/server-*.log $logFile; " +
+            "i=0; while [ \$i -lt $OLD_SERVER_EXIT_TICKS ] && pgrep -f '$serverPattern' >/dev/null 2>&1; do sleep 0.1; i=\$((i+1)); done; " +
+            "rm -f $dir/server-*.log $logFile; " +
             "CLASSPATH='$apkPath' setsid nohup $inner >$logFile 2>&1 </dev/null & " +
-            "echo \$! >$pid; sleep 2; echo launched pid=\$(cat $pid); head -c 4000 $logFile"
+            "echo \$! >$pid; echo launched pid=\$(cat $pid)"
     }
+
+    /** How long (in 100 ms ticks) to wait for a previous server to release the port before launching over it. */
+    const val OLD_SERVER_EXIT_TICKS = 30
 
     /** What the user types from a PC when the app cannot do it itself; shown on screen. */
     fun forPc(packageName: String, buildId: String, port: Int): String =

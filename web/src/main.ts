@@ -385,14 +385,43 @@ async function openRecents() {
  */
 /** true = 앱이 있었다, false = 비어 있었다, null = 아직 본 적 없다. */
 let hadAppOnCar: boolean | null = null;
-function maybeOpenHome(st: any) {
+/** `arrived`: 이 페이지 로드의 첫 상태 답이다 — 차에 막 탔을 때만 홈 대신 지난번 앱을 이어서 띄운다. */
+function maybeOpenHome(st: any, arrived = false) {
   if (st?.source !== 'display') return;
   const empty = st.appDisplay === null && st.appOnPhone !== true;
   // 비어 **있게 된** 순간만 잡는다. 계속 비어 있는 동안 매번 띄우면 닫아 둔 홈이 2초마다 되살아난다.
   const becameEmpty = empty && hadAppOnCar !== false;
   hadAppOnCar = !empty;
   // 재생이 시작되기 전에는 띄우지 않는다: 시작은 화면을 한 번 눌러야 하는데, 그 손짓을 홈이 가로챈다.
-  if (becameEmpty && started && sheet.hidden) void openHome();
+  if (becameEmpty && started && sheet.hidden) void (arrived ? resumeOrHome() : openHome());
+}
+
+/**
+ * 차에 막 탔는데 차 화면이 비어 있으면, 이 브라우저에서 **마지막으로 띄운 앱**을 그대로 다시 띄운다 —
+ * 어제 보던 유튜브를 오늘 또 홈에서 찾아 누르게 하지 않는다. 뒤로가기로 앱을 닫아서 빈 경우는 여기로
+ * 오지 않는다(홈이 뜬다): 방금 닫은 것을 도로 띄우면 안 되기 때문이다.
+ *
+ * 단 **폰이 그 앱을 쓰고 있으면 띄우지 않는다.** 차에서 띄우는 것은 옮기는 것이라(restart=never), 폰에서
+ * 보던 화면을 말없이 끌어오게 된다. 그때는 홈을 띄우고 최근앱의 "눌러서 가져오기"에 맡긴다. 아무것도
+ * 띄운 적이 없거나 `?resume=0` 이면 예전처럼 홈이다. 못 띄우면 역시 홈.
+ */
+async function resumeOrHome(): Promise<void> {
+  let last = '';
+  try { last = params.get('resume') === '0' ? '' : (localStorage.getItem('carcast.app') ?? ''); } catch { /* 저장소 없음 */ }
+  const pkg = last.split('/')[0] ?? '';
+  if (!pkg) { void openHome(); return; }
+  try {
+    const r = await (await fetch('/api/tasks')).json();
+    if (Array.isArray(r?.phone) && r.phone.some((t: TaskRow) => t.package === pkg)) {
+      note(`resume ${pkg} skipped: in use on the phone`);
+      void openHome();
+      return;
+    }
+    if (await launch(pkg, 'never', true)) return;
+  } catch (e) {
+    note(`resume ${pkg} failed: ${String(e)}`);
+  }
+  void openHome();
 }
 
 $('btn-home').addEventListener('click', openHome);
@@ -444,10 +473,15 @@ const ACTION_TEXT: Record<string, string> = {
 /** 폰이 마지막으로 들고 있던 앱(= /api/status.app 의 패키지). ▶ 의 기본값이자 "차로 가져오기"의 대상. */
 let lastPackage = '';
 
-async function launch(name: string, restart: Restart = 'never'): Promise<boolean> {
+/**
+ * `auto`: 사람이 누른 것이 아니라 차가 스스로 띄우는 것(지난번 앱 이어서). 실패해도 대화상자를 띄우지 않고
+ * 상태줄에만 적는다 — 운전 중에 누르라고 뜨는 alert 는 최악이다.
+ */
+async function launch(name: string, restart: Restart = 'never', auto = false): Promise<boolean> {
+  const fail = (msg: string) => { if (auto) notice(msg, 6000); else window.alert(msg); };
   try {
     const r = await (await fetch(`/api/app?name=${encodeURIComponent(name)}&restart=${restart}`, { method: 'POST' })).json();
-    if (!r.ok) { window.alert(`앱 실행 실패: ${r.error}`); return false; }
+    if (!r.ok) { fail(`앱 실행 실패: ${r.error}`); return false; }
     // 앱이 차 화면에 왔으니 그것을 보여 준다. 홈이 저절로 떠 있던 채로 ▶ 나 패널 버튼을 눌렀을 때
     // 시트가 그대로 남아 새 앱을 덮던 것 — 칸에서 고를 때는 pick 이 먼저 닫지만 다른 길은 아니었다.
     closeSheet();
@@ -455,11 +489,12 @@ async function launch(name: string, restart: Restart = 'never'): Promise<boolean
     lastPackage = r.package ?? name;
     appOnPhone = false;
     appEpoch++; // a status poll that was already in flight describes the world before this launch
-    note(`app ${r.package ?? name}: ${r.action ?? '?'} (from display ${r.fromDisplay ?? '-'}, restart=${restart})`);
-    notice(ACTION_TEXT[r.action] ?? '앱 실행');
+    note(`app ${r.package ?? name}: ${r.action ?? '?'} (from display ${r.fromDisplay ?? '-'}, restart=${restart})${auto ? ' [resume]' : ''}`);
+    const what = ACTION_TEXT[r.action] ?? '앱 실행';
+    notice(auto ? `지난번 앱 이어서 — ${what}` : what);
     return true;
   } catch (e) {
-    window.alert(`앱 실행 요청 실패: ${String(e)}`);
+    fail(`앱 실행 요청 실패: ${String(e)}`);
     return false;
   }
 }
@@ -477,10 +512,16 @@ let appOnPhone = false;
 let appEpoch = 0;
 let lastStatus: any = null;
 let statusFailedAt = 0;
-setInterval(async () => {
+/**
+ * 폰의 상태를 한 번 읽는다. 처음 한 번은 **바로** 부른다: setInterval 만으로는 첫 답이 2 초 뒤에 오고, 빈
+ * 가상 화면은 프레임을 한 장도 안 보내므로 차에 타서 페이지를 열면 그 2 초 동안 검은 화면만 보였다.
+ * 홈(또는 지난번 앱)이 그만큼 빨리 뜬다.
+ */
+async function pollStatus(): Promise<void> {
   if (document.hidden) return;
   try {
     const epoch = appEpoch;
+    const first = lastStatus === null; // 이 페이지 로드의 첫 답 = "차에 막 탔다"
     const st = await (await fetch('/api/status')).json();
     if (epoch !== appEpoch) return;
     lastStatus = st;
@@ -494,13 +535,15 @@ setInterval(async () => {
     }
     // 폰 화면 전원은 차의 📵 로도, 폰의 전원 버튼으로도 바뀐다. 버튼은 언제나 서버가 말하는 쪽을 따른다.
     $('btn-screen').classList.toggle('off', st.screenOn === false);
-    maybeOpenHome(st);
+    maybeOpenHome(st, first);
   } catch {
     // 폰이 잠깐 없는 것: 영상 소켓의 재접속이 알아서 덮는다. 다만 오래가면 상태 패널이 말한다.
     if (!statusFailedAt) statusFailedAt = Date.now();
   }
   updateStatePanel();
-}, 2000);
+}
+void pollStatus();
+setInterval(pollStatus, 2000);
 
 // 그림이 멈췄을 때 얼어붙은 프레임만 남기지 않는다: 왜 멈췄는지와 한 번에 누를 조치를 그 자리에 띄운다.
 // 가상 디스플레이는 앱이 하나도 없으면 합성할 내용이 없어 인코더가 한 장도 내지 않는다 — 그래서 "앱이 없다"와

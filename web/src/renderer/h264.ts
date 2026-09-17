@@ -24,6 +24,15 @@ export function h264Supported(): boolean {
   }
 }
 
+/**
+ * 페이지가 받은 빌드 sha 로 URL 을 버전 지정한다 — 폰 서버는 `?v=<sha>` 가 맞는 자산을 1 년 immutable 로
+ * 주므로, 175 KB 워커를 차에 탈 때마다 다시 받지 않는다. sha 가 안 채워진 곳(가짜 폰)에서는 그대로 둔다.
+ */
+function versioned(url: string): string {
+  const v = document.querySelector('meta[name="carcast-build"]')?.getAttribute('content') ?? '';
+  return v && v !== '__BUILD__' ? `${url}?v=${encodeURIComponent(v)}` : url;
+}
+
 /** 디코더가 이만큼 밀리면 키프레임이 아닌 것은 버린다. 지연이 무한정 자라는 것보다 낫다. */
 const MAX_BACKLOG = 60;
 /** 워커의 입력 버퍼가 1 MB 다(TinyH264Decoder). 그보다 큰 NAL 은 넣지 않는다. */
@@ -60,7 +69,7 @@ export class H264Renderer implements Renderer {
 
   private startWorker(): void {
     try {
-      const worker = new Worker('h264-worker.js');
+      const worker = new Worker(versioned('h264-worker.js'));
       worker.onmessage = (ev: MessageEvent) => this.onWorkerMessage(ev.data);
       worker.onerror = (ev) => { this.st.lastError = `워커 오류: ${ev.message || ev.type}`; };
       this.worker = worker;
