@@ -52,7 +52,13 @@ public final class DisplayVideoSource implements VideoSource {
     /** Current encoder parameters; {@link #reconfigure} changes them at runtime. */
     private volatile int bitRate;
     private volatile int maxFps;
-    private final boolean constrainedBaseline;
+    /**
+     * Baseline is a concession to the car's WASM decoder (h264bsd reads Baseline only). A car with WebCodecs
+     * does not need it — 2026-09-17 실차 report #67: High 4.0 also decodes, in hardware — and High is worth
+     * roughly a fifth of the bitrate at the same picture, so the car can ask for it (`/api/encoder?profile=`).
+     * Volatile because {@link #reconfigure} changes it while the encoder thread reads it.
+     */
+    private volatile boolean constrainedBaseline;
     private final String bitrateMode;
     private final int intraRefresh;
     private H264Encoder encoder;
@@ -139,14 +145,22 @@ public final class DisplayVideoSource implements VideoSource {
      * Null arguments keep the current value. Returns the same map as {@link #encoderInfo()}.
      */
     public synchronized Map<String, Object> reconfigure(Integer width, Integer height, Integer fps, Integer bitrate) throws Exception {
+        return reconfigure(width, height, fps, bitrate, null);
+    }
+
+    /** As above, plus the profile: "baseline" (the WASM decoder's limit) or "high" (a car with WebCodecs). */
+    public synchronized Map<String, Object> reconfigure(Integer width, Integer height, Integer fps, Integer bitrate,
+                                                        String profile) throws Exception {
         int w = width != null ? width : display.width;
         int h = height != null ? height : display.height;
         int f = fps != null ? fps : maxFps;
         int b = bitrate != null ? bitrate : bitRate;
+        boolean baseline = profile == null ? constrainedBaseline : !"high".equalsIgnoreCase(profile);
         EncoderSettings.validate(w, h, f, b);
-        if (w == display.width && h == display.height && f == maxFps && b == bitRate) {
+        if (w == display.width && h == display.height && f == maxFps && b == bitRate && baseline == constrainedBaseline) {
             return encoderInfo();
         }
+        constrainedBaseline = baseline;
         long now = System.currentTimeMillis();
         if (now - lastEncoderRestartAt < RECONFIGURE_MIN_GAP_MS) {
             throw new IllegalStateException("encoder was rebuilt " + (now - lastEncoderRestartAt) + " ms ago; wait");
@@ -196,6 +210,7 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("encoderRestarts", encoderRestarts);
         m.put("encoder", encoder != null ? encoder.name() : null);
         m.put("encoderProfile", encoder != null ? encoder.profileNote() : null);
+        m.put("profile", constrainedBaseline ? "baseline" : "high");
         m.put("codec", sink != null ? sink.getCodec() : null);
         m.put("encoderRestarts", encoderRestarts);
         return m;

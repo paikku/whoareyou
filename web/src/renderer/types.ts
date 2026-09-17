@@ -16,6 +16,11 @@ export interface RendererStats {
   skipped?: number;
   /** 워커가 OffscreenCanvas 에 직접 그리는가. h264 렌더러만 낸다. */
   offscreen?: boolean;
+  /**
+   * 하드웨어 디코더를 받았는가. WebCodecs 만 낼 수 있고, 브라우저가 알려 주지 않으면 undefined 다
+   * (요청은 `prefer-hardware` 이지만 준 것이 무엇인지는 명세가 보장하지 않는다).
+   */
+  hardware?: boolean;
 }
 
 export interface Renderer {

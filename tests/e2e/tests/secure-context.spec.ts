@@ -106,3 +106,48 @@ test('공개 CA 인증서를 쓰면 경고 자체가 없다', async ({ playwrigh
     await browser.close();
   }
 });
+
+// 하드웨어 디코더 경로가 **실제로 그림을 낸다**는 것까지.
+//
+// 실차 report #67 이 "차에 WebCodecs 가 있다(Baseline·High 둘 다 prefer-hardware)"를 확인해 줬으므로,
+// 이제 그 디코더로 실제 스트림을 푸는 렌더러가 기본이 된다 — 단, secure context 에서만. 이 검사는
+// 신뢰받는 인증서 오리진에서 본 화면을 열어 렌더러가 webcodecs 로 골라지고, 프레임이 나오고,
+// 폰 인코더가 High 로 올라가는지를 본다(Baseline 은 WASM 디코더 때문에 있던 제약이다).
+test('secure context 에서는 하드웨어 디코더로 그리고, 인코더를 High 로 올린다', async ({ playwright }) => {
+  const st = await (await fetch(`${BASE}/api/status`)).json();
+  test.skip(!st.tlsTrusted, '이 빌드에는 공개 CA 인증서가 없다 (tools/tls/README.md)');
+  const host = st.tlsHost as string;
+
+  const browser = await playwright.chromium.launch({
+    executablePath: process.env.CHROME_PATH || undefined,
+    args: [`--host-resolver-rules=MAP ${host} 127.0.0.1`, '--no-proxy-server'],
+  });
+  try {
+    const page = await browser.newContext({ ignoreHTTPSErrors: false }).then((c) => c.newPage());
+    await page.goto(`https://${host}:${st.httpsPort}/`);
+    await page.waitForFunction(() => !!(window as any).__carcast, null, { timeout: 30_000 });
+
+    const picked = await page.evaluate(() => (window as any).__carcast.stats().renderer);
+    expect(picked, 'secure context 인데 WASM 경로로 갔다').toBe('webcodecs');
+
+    await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 10, null, { timeout: 30_000 });
+    const s = await page.evaluate(() => (window as any).__carcast.stats());
+    expect(s.lastError, s.lastError).toBe('');
+    expect(s.fps).toBeGreaterThan(5);
+    console.log(`webcodecs: ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} backlog ${s.backlog}`);
+
+    // 폰 인코더는 Baseline 으로 시작해서, 하드웨어 디코더가 붙으면 High 로 올라간다. 그 손잡이는 진짜
+    // 디스플레이 소스가 있는 서버에만 있으므로(JVM 개발 서버는 클립을 튼다) 여기서는 있을 때만 본다 —
+    // 없는 자리의 검사는 tests/device 의 09-encoder 다.
+    const encoder = await fetch(`${BASE}/api/encoder`);
+    if (encoder.ok) {
+      await expect
+        .poll(async () => (await (await fetch(`${BASE}/api/encoder`)).json()).profile, { timeout: 15_000 })
+        .toBe('high');
+    } else {
+      console.log('/api/encoder 없음 (클립 소스) — profile 검사는 기기 층의 몫');
+    }
+  } finally {
+    await browser.close();
+  }
+});

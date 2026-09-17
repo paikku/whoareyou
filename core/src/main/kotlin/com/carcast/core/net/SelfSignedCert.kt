@@ -83,12 +83,17 @@ object SelfSignedCert {
          * Null for a self-signed certificate, which has no such domain.
          */
         fun hostFor(ip: String): String? {
-            val wildcards = certificate.subjectAlternativeNames.orEmpty()
+            val dnsNames = certificate.subjectAlternativeNames.orEmpty()
                 .filter { it[0] == 2 }.map { it[1].toString() }
-                .filter { it.startsWith("*.") }
-            val domain = wildcards.firstOrNull() ?: return null
+            // 우리 도메인으로 받은 인증서(`car.example.com`)는 그 이름 그대로가 답이다. 그 이름의 A 레코드가
+            // 이 주소를 가리키게 해 두는 것은 인증서 발급과 별개의 준비이고, tools/tls/README.md 에 있다.
+            dnsNames.firstOrNull { !it.startsWith("*.") && it != "localhost" }?.let { return it }
+            val domain = dnsNames.firstOrNull { it.startsWith("*.") } ?: return null
             return "${ip.replace('.', '-')}.${domain.removePrefix("*.")}"
         }
+
+        /** 언제 만료되나. 90일짜리를 쓰므로 차에서 "왜 갑자기 경고가 뜨지"가 되기 전에 보여 줄 값이다. */
+        val notAfter: String get() = certificate.notAfter.toInstant().toString()
     }
 
     /**

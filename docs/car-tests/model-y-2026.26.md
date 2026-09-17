@@ -143,3 +143,49 @@
 이 빌드에서 걸린 것: 측정이 끝나고 BACK 으로 나가면 감시자가 `com.carcast` 패키지의 다른 task(폰의 메인 화면)를 찾아
 "폰이 앱을 가져감"을 띄웠고, 차는 마지막 앱을 측정 액티비티로 기억했다. 다음 빌드에서 측정 액티비티를 "잠깐 얹히는 도구"로
 다뤄(서버는 lastApp·히스토리·감시자를 건드리지 않고 `transient:true`, 차는 기억하지 않음) 고쳤다.
+
+## 7. 2026-09-17 네 번째 세션 — 빌드 `2cdc767`: 이 차에 하드웨어 디코더가 있다 (report #62~#68)
+
+`/diag` 를 평문과 https 양쪽에서 열었다. 평문은 대조군이고, 답은 https 쪽에만 있다 — `VideoDecoder` 가
+명세상 `[SecureContext]` 라 평문 오리진에는 객체 자체가 없기 때문이다.
+
+**먼저 실패한 것:** 자체서명 인증서(`https://100.99.9.9:3443`)는 **넘길 수 없는 경고**에 막혔다.
+`NET::ERR_CERT_AUTHORITY_INVALID`, "고급" 버튼 없음, 본문은 *"…지금은 100.99.9.9에 방문할 수 없습니다"* —
+크로미엄이 우회를 금지했을 때의 문구다(`SSLErrorOverrideAllowed=false` 로 보인다). 다만 그 화면이
+증명해 준 것도 있다: **차가 생 IP 로 https 를 열고 TLS 핸드셰이크를 해서 우리 인증서를 파싱했다.**
+
+**그래서 공개 CA 로 갈아탔다** — `*.local-ip.sh`(Let's Encrypt 와일드카드, 키 공개, DNS 가 이름의 주소를
+돌려줌). 차는 `https://100-99-9-9.local-ip.sh:3443/diag.html` 을 **경고 없이** 열었다.
+
+| 항목 | 값 | 어디서 |
+|---|---|---|
+| secure context | **true** | #67 `secure.isSecureContext` |
+| `VideoDecoder` | **있음** | #67 |
+| Baseline(avc1.42C01F) / no-preference · **prefer-hardware** | supported · **supported** | #67 `secure.configs` |
+| High 4.0(avc1.640028) / no-preference · **prefer-hardware** | supported · **supported** | #67 |
+| 그 오리진의 WS·영상 | ws 20/20 35ms, 137f 30fps lag 80ms (wss) | #67 |
+| 평문 대조군 | `secure=false, videoDecoder=false` + 안내 링크 | #63·#65·#66 |
+| **차가 공개 도메인 이름을 해석했다** | `100-99-9-9.local-ip.sh` → 100.99.9.9 | #67 `page` |
+
+**읽는 법:** 지금까지의 `WebCodecs X` 는 "차에 없다"가 아니라 "물어볼 수 없었다"였다. 이 차에는
+하드웨어 H.264 디코더가 있고 **High 프로파일까지** 하드웨어로 푼다. 그러면 두 제약이 같이 풀린다 —
+폰 인코더를 Baseline 에 묶어 둘 이유(차의 WASM 디코더)가 없어지고, 차 CPU 가 해상도·fps 의 천장이던
+것도 아니게 된다. 대가는 **HTTPS 가 제품 요구사항이 된다**는 것(평문에서는 그 디코더에 닿지 못한다).
+두 번째 수확은 DNS 다: 이 통신사에서 Castla issue #51 의 DNS64/NAT64 사망은 일어나지 않는다.
+
+**같은 방문의 폰 쪽 계측 (report #68, 첫 실측):**
+
+| 값 | 결과 |
+|---|---|
+| `timing.encodeMs` | n=1041, **skipped 0**, p50 **14ms**, p90 14.9, max 17.2 |
+| `timing.touchToFrameMs` | n=1, skipped 3 — 터치가 4번뿐이라 아직 못 읽는다 |
+| `videoStaleDropped` / `videoDropped` / `keyframeRequests` | 0 / 0 / 0 (링크가 멀쩡해 새 정책이 발동할 일이 없었다) |
+| 인코더 | `c2.qti.avc.encoder`, `avc1.42C02A`, 720p30 6Mbps |
+
+`skipped 0` 이 중요하다: 퀄컴 인코더가 출력에 pts 를 다시 찍지 않는다는 뜻이고, 그래서 이 14ms 는
+믿을 수 있다. 끝에서 끝 43ms(§6) 의 내역이 처음으로 갈라졌다 — **인코더 14 + 차 디코드·그리기 11 +
+컨트롤 왕복 5 + 나머지(안드로이드 입력→앱→합성, 링크 편도) ≈ 13.**
+
+**다음에 볼 것:** ① 스크롤·플링을 충분히 하고 💾 를 눌러 `touchToFrameMs` 를 채운다. ② 새 빌드의
+webcodecs 렌더러에서 `stats.hardware` 와 lag 을 §5 의 h264(WASM, lag 10ms)와 비교한다.
+③ 인코더가 High 로 올라갔는지(`/api/encoder.profile`, SPS `avc1.64…`)와 같은 비트레이트에서의 화질.

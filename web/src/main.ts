@@ -4,6 +4,7 @@ import { ReconnectingWs, wsUrl } from './transport/ws';
 import { MseRenderer, mseSupported } from './renderer/mse';
 import { MjpegRenderer } from './renderer/mjpeg';
 import { H264Renderer, h264Supported } from './renderer/h264';
+import { WebCodecsRenderer, webcodecsSupported } from './renderer/webcodecs';
 import type { Renderer } from './renderer/types';
 import { TouchInput } from './input';
 
@@ -34,6 +35,10 @@ const forced = params.get('renderer');
 function pickRenderer(): Renderer {
   if (forced === 'mse') return new MseRenderer(video);
   if (forced === 'mjpeg') return new MjpegRenderer(canvas);
+  // 하드웨어 디코더가 있으면 그것이 1순위다. `VideoDecoder` 는 [SecureContext] 라 평문에서는 저절로
+  // 빠지고, 차에서 https 로 열었을 때만 이 길로 간다 (실차 report #67: Baseline·High 둘 다
+  // prefer-hardware 로 supported).
+  if (forced === 'webcodecs' || (!forced && webcodecsSupported())) return new WebCodecsRenderer(glCanvas);
   if (forced === 'h264' || h264Supported()) return new H264Renderer(glCanvas);
   // 워커나 WebGL2 가 없는 브라우저: 주차 중에라도 보이도록 <video> 로 물러난다.
   return mseSupported() ? new MseRenderer(video) : new MjpegRenderer(canvas);
@@ -117,7 +122,9 @@ function requestKeyframe(why: string): boolean {
   note(`keyframe request (${why})`);
   return control.send(encodeKeyframeRequest());
 }
-if (renderer instanceof H264Renderer) renderer.onNeedKeyframe = () => { requestKeyframe('dropped frames'); };
+if (renderer instanceof H264Renderer || renderer instanceof WebCodecsRenderer) {
+  renderer.onNeedKeyframe = () => { requestKeyframe('dropped frames'); };
+}
 
 // Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the pipeline is
 // wedged. First ask the phone for a keyframe — a decoder that lost its reference recovers on the next
@@ -568,6 +575,8 @@ async function pollStatus(): Promise<void> {
     // 화질을 바꾸면 그림의 크기가 바뀐다(/api/encoder). 터치 좌표는 그 크기 기준이므로 여기서도 맞춘다.
     if (st.width && st.height) touch.setVideoSize(st.width, st.height);
     renderQuality();
+    // 하드웨어 디코더로 붙었으면 Baseline 에 머물 이유가 없다 — 한 번만 올려 달라고 한다.
+    void askForProfile();
     const now = st.appOnPhone === true;
     if (now !== appOnPhone) {
       appOnPhone = now;
@@ -768,12 +777,35 @@ function currentPreset(): Preset | null {
   return PRESETS.find((p) => p.width === st.width && p.height === st.height && p.fps === st.maxFps) ?? null;
 }
 
+/**
+ * 이 차가 감당할 수 있는 프로파일. Baseline 은 WASM 디코더(h264bsd)가 그것밖에 못 읽어서 있는 제약이고,
+ * 하드웨어 디코더는 High 도 읽는다(실차 report #67) — 같은 화질에 비트레이트를 덜 쓴다.
+ */
+const wantedProfile = (): 'high' | 'baseline' => (renderer.name === 'webcodecs' ? 'high' : 'baseline');
+
+/**
+ * 프로파일만 바꾸는 요청. 하드웨어 디코더로 붙었는데 폰이 아직 Baseline 을 내보내고 있으면 한 번 올린다
+ * (인코더가 새로 서므로 차는 init + 키프레임을 다시 받는다 — 렌더러가 이미 처리하는 길이다).
+ */
+let profileAsked = false;
+async function askForProfile(): Promise<void> {
+  if (profileAsked || wantedProfile() !== 'high') return;
+  if (lastStatus?.profile === 'high') return;
+  profileAsked = true;
+  try {
+    const r = await (await fetch('/api/encoder?profile=high', { method: 'POST' })).json();
+    note(r.ok ? `encoder profile → ${r.profile} (${r.codec ?? '?'})` : `profile=high 거부: ${r.error ?? '?'}`);
+  } catch (e) {
+    note(`profile=high 실패: ${String(e)}`);
+  }
+}
+
 let applyingPreset = false;
 async function applyPreset(p: Preset, why: string): Promise<boolean> {
   if (applyingPreset) return false;
   applyingPreset = true;
   try {
-    const q = `width=${p.width}&height=${p.height}&fps=${p.fps}&bitrate=${p.bitrate}`;
+    const q = `width=${p.width}&height=${p.height}&fps=${p.fps}&bitrate=${p.bitrate}&profile=${wantedProfile()}`;
     const r = await (await fetch(`/api/encoder?${q}`, { method: 'POST' })).json();
     if (!r.ok) { notice(`화질 변경 실패: ${r.error ?? '?'}`, 6000); note(`encoder ${p.id} (${why}) failed: ${r.error}`); return false; }
     note(`encoder ${p.id} (${why}): ${r.width}x${r.height} ${r.fps}fps ${Math.round(r.bitrate / 1000)}k`);
@@ -857,7 +889,9 @@ let lastLuma = -1;
 let lastLumaAt = 0;
 /** 테스트가 밝기를 손으로 넣는 동안(feedLuma) 디코더의 밝기는 무시한다 — 가짜 폰의 클립이 덮어쓰면 측정이 어긋난다. */
 let lumaFed = false;
-if (renderer instanceof H264Renderer) renderer.onLuma = (l, at) => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
+if (renderer instanceof H264Renderer || renderer instanceof WebCodecsRenderer) {
+  renderer.onLuma = (l, at) => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PROBE_ACTIVITY = 'com.carcast/.ui.LatencyProbeActivity';
@@ -866,7 +900,10 @@ const PROBE_SLOT = 9; // 운전자의 손가락(0..)과 겹치지 않는 슬롯
 /** `onTouch` 는 테스트용 고리: 터치를 보낸 직후 불린다(가짜 폰은 화면을 못 뒤집으므로 테스트가 대신 밝기를 넣는다). */
 async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () => void } = {}): Promise<ProbeResult | null> {
   if (probeRunning) return null;
-  if (!(renderer instanceof H264Renderer)) { notice('지연 측정은 h264 렌더러에서만 됩니다', 5000); return null; }
+  if (!(renderer instanceof H264Renderer || renderer instanceof WebCodecsRenderer)) {
+    notice('지연 측정은 캔버스 렌더러(h264·webcodecs)에서만 됩니다', 5000);
+    return null;
+  }
   probeRunning = true;
   qualityProbe.disabled = true;
   qualityResult.textContent = '측정 중…';

@@ -91,3 +91,25 @@ test('지연 측정 액티비티가 차 화면에 뜨고, 앱 히스토리에는
     c.close();
   }
 });
+
+// 프로파일: Baseline 은 차의 WASM 디코더(h264bsd)가 그것밖에 못 읽어서 있는 제약이다. 하드웨어 디코더가
+// 있는 차(실차 report #67 에서 확인)는 High 도 읽고, High 는 같은 화질에 비트레이트를 덜 쓴다. 그래서
+// 차의 렌더러가 webcodecs 면 스스로 `?profile=high` 를 부른다 — 그 손잡이가 실제로 도는지를 여기서 본다.
+// SPS 가 최종 답이므로 요청이 아니라 `codec` 문자열(avc1.<profile>…)을 본다.
+test('인코더 프로파일을 High 로 올렸다가 Baseline 으로 되돌릴 수 있다', async () => {
+  const before = await api('/api/encoder');
+  try {
+    const high = await api('/api/encoder?profile=high', { method: 'POST' });
+    assert.equal(high.ok, true, `profile=high 실패: ${high.error}`);
+    assert.equal(high.profile, 'high');
+    // avc1.64.... = High(0x64). 벤더가 거부하면 42 로 남는데, 그것도 기록할 값이다.
+    if (!String(high.codec ?? '').startsWith('avc1.64')) {
+      console.log(`주의: High 를 요청했으나 SPS 는 ${high.codec} — 이 기기 인코더가 거부했다`);
+    }
+  } finally {
+    const back = await api('/api/encoder?profile=baseline', { method: 'POST' });
+    assert.equal(back.profile, 'baseline', '되돌리기 실패 — 다음 검사가 Baseline 을 기대한다');
+    assert.ok(String(back.codec ?? '').startsWith('avc1.42'), `되돌린 뒤 SPS 가 ${back.codec}`);
+    assert.ok((await api('/api/encoder')).width === before.width, '되돌리면서 크기가 바뀌었다');
+  }
+});

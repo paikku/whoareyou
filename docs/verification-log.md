@@ -90,6 +90,7 @@
 | `stream.spec` | MSE 렌더러 fps ≥ 25, pts 대비 렌더 지연 < 300ms, 10초 무정지, `?renderer=mjpeg` 강제 | ✅ | ✅ |
 | `input.spec` | 클릭 → 서버가 받은 정규화 좌표(레터박스 보정) 검증, 네비 바 → Android 키코드 | ✅ | skip(가짜 폰 전용 API) |
 | `reconnect.spec` | 핸드셰이크 거부 34% + 150ms 지연 + 5초마다 소켓 절단 하에서 15초 내 영상 복구 | ✅ | skip |
+| `secure-context.spec` (webcodecs) | secure context 에서 렌더러가 **webcodecs 로 골라지고**, 프레임이 나오고, 폰 인코더가 High 로 올라가는가. 하드웨어가 없는 자리(이 컨테이너)에서는 `stats.hardware=false` 로 소프트웨어 WebCodecs 로 내려간다 — 그래도 lag 5.7ms(WASM 은 10ms) | skip(TLS 없음) | ✅ |
 | `secure-context.spec` | **자체서명 인증서를 넘긴 https 오리진이 secure context 인가**, 거기서 `VideoDecoder` 가 보이고 `isConfigSupported` 표가 채워져 리포트에 실리는가. 평문에서는 "못 물었다"를 말하고 https 주소를 안내하는가 | skip(TLS 없음) | ✅ (2026-09-17, Chrome 148) |
 
 결과: 가짜 폰 대상 **14/14**, JVM으로 띄운 shell 서버(`./gradlew :core:run`, APK의 assets 그대로) 대상 **8/14 통과, 6 skip**.
@@ -472,8 +473,15 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
      A 층 확인(Chrome 148, **인증서 오류를 무시하지 않는 브라우저**): `https://100-99-9-9.local-ip.sh:3444/diag.html`
      이 **경고 없이 200 으로 열리고** secure context, `VideoDecoder` 보임. curl 의 시스템 CA 검증도 통과
      (`ssl_verify_result=0`).
-   - 차에서 볼 것(다음 방문): ② 그 주소가 **열리는가**(= 차가 그 이름을 해석하는가 — DNS64/NAT64 위험,
-     Castla #51), ③ `isSecureContext`, ④ `VideoDecoder`, ⑤ `prefer-hardware` 가 supported 인가.
+   - **② ③ ④ ⑤ 모두 답이 나왔다 — ✅ 전부 (2026-09-17, report #67).** 차가
+     `https://100-99-9-9.local-ip.sh:3443/diag.html` 을 **경고 없이** 열었고(= 그 이름을 해석했다;
+     이 통신사에서 DNS64/NAT64 사망은 없다), `isSecureContext true`, `VideoDecoder` 있음,
+     **Baseline·High 4.0 둘 다 `prefer-hardware` 로 supported**. 즉 **이 차에는 하드웨어 H.264
+     디코더가 있고 High 까지 읽는다.** 자세히: car-tests/model-y §7.
+   - **그래서 바뀌는 것:** ① 차의 WASM 디코더(Baseline 전용) 때문에 인코더를 Baseline 에 묶어 둘 이유가
+     없어졌다(`/api/encoder?profile=high`), ② 해상도·fps 의 천장이 차 CPU 가 아니게 된다,
+     ③ **HTTPS 가 진단 도구가 아니라 제품 요구사항이 된다** — 평문에서는 그 디코더에 닿지 못한다.
+     남은 일은 우리 도메인·우리 키(tools/tls/README.md 아래쪽, `tools/tls/issue.sh`).
    - 판정: `isSecureContext O` 인데 `VideoDecoder X` → **테슬라 빌드에 WebCodecs 가 없다. 진짜 인증서
      작업은 무의미하니 접고 WebRTC(평문에서도 되는 `RTCPeerConnection`, 실차 O)를 본다.** 둘 다 O 면
      그때 비로소 "경고 없이 열리게 하는 법"(공개 도메인 + 진짜 인증서)이 할 일이 된다.

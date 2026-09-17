@@ -56,6 +56,7 @@ class StreamSession(
     @Volatile private var tlsSubject: String? = null
     @Volatile private var tlsTrusted = false
     @Volatile private var tlsHost: String? = null
+    @Volatile private var tlsNotAfter: String? = null
     private val videoHub = MediaHub()
     private val audioHub = MediaHub()
     private var clip: ClipSource? = null
@@ -166,6 +167,7 @@ class StreamSession(
             tlsSubject = tls.subject
             tlsTrusted = !tls.selfSigned
             tlsHost = tls.hostFor(SelfSignedCert.CAR_ADDRESS)
+            tlsNotAfter = tls.notAfter
             event(
                 if (tlsTrusted) "HTTPS 서버 시작: 0.0.0.0:$httpsPort — ${tls.subject}, 차는 https://${tlsHost}:$httpsPort 를 경고 없이 연다"
                 else "HTTPS 서버 시작: 0.0.0.0:$httpsPort — 자체서명이라 차가 경고를 넘겨야 한다 (인증서 ${tls.fingerprint.take(17)}…)"
@@ -342,6 +344,8 @@ class StreamSession(
             // matters because this Model Y's interstitial has no way through.
             "tlsTrusted" to tlsTrusted,
             "tlsHost" to tlsHost,
+            // 90일짜리 인증서를 쓰면 이 날짜가 곧 "차에서 갑자기 경고가 뜨는 날"이다.
+            "tlsNotAfter" to tlsNotAfter,
             "videoClients" to videoHub.clientCount,
             "videoClientStats" to videoHub.clientStats(),
             "controlClients" to controlClients.size,

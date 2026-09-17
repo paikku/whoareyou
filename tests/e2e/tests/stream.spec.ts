@@ -48,7 +48,7 @@ test('mjpeg renderer can be forced via ?renderer=mjpeg', async ({ page }) => {
 //
 // 그래서 **첫 제스처가 필요 없다** — 여기서는 아무것도 누르지 않고, 오버레이가 스스로 걷히고
 // 그림이 나오는 데까지를 본다. 차에 타면 화면이 이미 나와 있어야 한다.
-test('기본은 h264 — 아무것도 누르지 않아도 캔버스에 그려진다', async ({ page }) => {
+test('기본은 캔버스 — 아무것도 누르지 않아도 그려진다', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#overlay')).toBeHidden();
   await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 10, null, { timeout: 30_000 });
@@ -56,7 +56,11 @@ test('기본은 h264 — 아무것도 누르지 않아도 캔버스에 그려진
   const a = await stats(page);
   await sleep(5000);
   const b = await stats(page);
-  expect(b.renderer).toBe('h264');
+  // secure context 면 하드웨어 디코더(webcodecs)가 1순위다 — `VideoDecoder` 가 거기서만 존재하기 때문이고,
+  // 차가 평문으로 여는 100.99.9.9 에서는 저절로 h264(WASM)로 떨어진다. loopback 은 평문이어도 secure 라
+  // 이 실행에서는 webcodecs 가 나온다. 어느 쪽이든 **캔버스**이고, 그것이 이 검사의 계약이다.
+  const secure = await page.evaluate(() => isSecureContext);
+  expect(b.renderer).toBe(secure ? 'webcodecs' : 'h264');
   expect(b.lastError).toBe('');
   // 5 초면 30fps 에서 150 장. 소프트 디코딩이라 여유를 두고 본다.
   expect(b.framesDecoded - a.framesDecoded).toBeGreaterThan(100);
