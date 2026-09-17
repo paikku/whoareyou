@@ -11,7 +11,7 @@ import java.util.Map;
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [profile=baseline|default] [decorations=false]
- *     [app=com.google.android.youtube] [source=clip]
+ *     [bitrate_mode=cbr|vbr|default] [intra_refresh=&lt;frames&gt;] [app=com.google.android.youtube] [source=clip]
  *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
  *     [screen_off_timeout=&lt;ms&gt;] [keep_active_fallback=false] [vd_wake=true]
  * </pre>
@@ -107,7 +107,15 @@ public final class Server {
                 // the car side can read the stream; profile=default leaves the vendor's choice (High on
                 // S26U) alone. A rejected request falls back on its own — see H264Encoder.open().
                 boolean constrainedBaseline = !"default".equals(raw.getOrDefault("profile", "baseline"));
-                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps, constrainedBaseline);
+                // bitrate_mode=cbr (default) asks for steady frame sizes; "default" leaves the vendor's choice.
+                // intra_refresh=N spreads intra macroblocks over N frames instead of periodic IDRs (vendor-dependent, off by default).
+                String mode = raw.getOrDefault("bitrate_mode", "cbr");
+                String bitrateMode = "default".equals(mode) ? "" : mode;
+                if (!bitrateMode.isEmpty() && !"cbr".equals(bitrateMode) && !"vbr".equals(bitrateMode)) {
+                    throw new IllegalArgumentException("bitrate_mode must be cbr, vbr or default");
+                }
+                int intraRefresh = Integer.parseInt(raw.getOrDefault("intra_refresh", "0"));
+                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps, constrainedBaseline, bitrateMode, intraRefresh);
             } catch (RuntimeException e) {
                 System.err.println("carcast-server: bad display options: " + e.getMessage());
                 System.exit(2);

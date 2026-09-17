@@ -1,14 +1,19 @@
 // Pointer events on the stage -> normalised touch packets. Coordinates are relative to the
 // rendered video area (object-fit: contain letterboxing is taken into account).
-import { TouchAction, encodeTouch } from './protocol';
+import { TouchAction, encodeTouch, encodeTouchBatch, type TouchSample } from './protocol';
 
 export interface InputSink {
   send(data: ArrayBuffer): boolean;
 }
 
+/** `performance.now()`-based event time as the u32 ms the packets carry. */
+const clock = (e: PointerEvent): number => Math.round(e.timeStamp) >>> 0;
+
 export class TouchInput {
   private readonly ids = new Map<number, number>(); // pointerId -> slot 0..9
   private videoAspect = 16 / 9;
+  /** MOVE runs that went out as one batch packet, and the samples they carried (the tests and 💾 read these). */
+  readonly stats = { batches: 0, samples: 0 };
 
   constructor(private readonly stage: HTMLElement, private readonly sink: InputSink) {
     stage.addEventListener('pointerdown', this.onDown);
@@ -42,8 +47,12 @@ export class TouchInput {
     if (w > 0 && h > 0) this.videoAspect = w / h;
   }
 
-  /** Maps a client point to normalised video coordinates, or null when outside the picture. */
-  normalise(clientX: number, clientY: number): { x: number; y: number } | null {
+  /**
+   * Maps a client point to normalised video coordinates. `inside` says whether the point was on the
+   * picture; the coordinates are clamped to it either way, so a finger that slides off the edge keeps
+   * dragging along the edge (what the phone's own screen does) instead of freezing until it comes back.
+   */
+  normalise(clientX: number, clientY: number): { x: number; y: number; inside: boolean } {
     const r = this.stage.getBoundingClientRect();
     const stageAspect = r.width / r.height;
     let vw = r.width, vh = r.height, ox = 0, oy = 0;
@@ -56,8 +65,8 @@ export class TouchInput {
     }
     const x = (clientX - r.left - ox) / vw;
     const y = (clientY - r.top - oy) / vh;
-    if (x < 0 || x > 1 || y < 0 || y > 1) return null;
-    return { x, y };
+    const inside = x >= 0 && x <= 1 && y >= 0 && y <= 1;
+    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)), inside };
   }
 
   private slot(pointerId: number, allocate: boolean): number {
@@ -76,39 +85,57 @@ export class TouchInput {
     // 아래의 setPointerCapture 가 클릭을 통째로 삼켜 그 버튼이 눌리지 않는다.
     if ((e.target as Element | null)?.closest?.('[data-ui]')) return;
     const p = this.normalise(e.clientX, e.clientY);
-    if (!p) return;
+    if (!p.inside) return; // a touch that starts on the letterbox is not a touch on the phone
     this.stage.setPointerCapture(e.pointerId);
     const s = this.slot(e.pointerId, true);
-    this.sink.send(encodeTouch(TouchAction.Down, s, p.x, p.y, e.pressure || 1));
+    this.sink.send(encodeTouch(TouchAction.Down, s, p.x, p.y, e.pressure || 1, clock(e)));
   };
 
+  /**
+   * The browser delivers one pointermove per frame and folds the touchscreen's samples in between into
+   * it (getCoalescedEvents). Those samples are the finger's real path and timing, which is what the
+   * phone's velocity tracker wants for a fling — so they all go, as one batch packet the phone turns into
+   * one MotionEvent with history. A browser without coalesced events sends the one sample it has.
+   */
   private onMove = (e: PointerEvent) => {
     const s = this.slot(e.pointerId, false);
     if (s < 0) return;
-    const p = this.normalise(e.clientX, e.clientY);
-    if (!p) return;
-    this.sink.send(encodeTouch(TouchAction.Move, s, p.x, p.y, e.pressure || 1));
+    const raw = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+    const events = raw.length ? raw : [e];
+    const samples: TouchSample[] = [];
+    for (const ev of events) {
+      const p = this.normalise(ev.clientX, ev.clientY);
+      samples.push({ x: p.x, y: p.y, pressure: ev.pressure || 1, tMs: clock(ev) });
+    }
+    if (samples.length === 1) {
+      const p = samples[0]!;
+      this.sink.send(encodeTouch(TouchAction.Move, s, p.x, p.y, p.pressure, p.tMs));
+      return;
+    }
+    this.stats.batches++;
+    this.stats.samples += samples.length;
+    this.sink.send(encodeTouchBatch(s, samples));
   };
 
   private onUp = (e: PointerEvent) => {
     const s = this.slot(e.pointerId, false);
     if (s < 0) return;
-    const p = this.normalise(e.clientX, e.clientY) ?? { x: 0, y: 0 };
-    this.sink.send(encodeTouch(TouchAction.Up, s, p.x, p.y, 0));
+    const p = this.normalise(e.clientX, e.clientY);
+    this.sink.send(encodeTouch(TouchAction.Up, s, p.x, p.y, 0, clock(e)));
     this.ids.delete(e.pointerId);
   };
 
   private onLostCapture = (e: PointerEvent) => {
     const s = this.slot(e.pointerId, false);
     if (s < 0) return;
-    this.sink.send(encodeTouch(TouchAction.Cancel, s, 0, 0, 0));
+    this.sink.send(encodeTouch(TouchAction.Cancel, s, 0, 0, 0, clock(e)));
     this.ids.delete(e.pointerId);
   };
 
   private onCancel = (e: PointerEvent) => {
     const s = this.slot(e.pointerId, false);
     if (s < 0) return;
-    this.sink.send(encodeTouch(TouchAction.Cancel, s, 0, 0, 0));
+    this.sink.send(encodeTouch(TouchAction.Cancel, s, 0, 0, 0, clock(e)));
     this.ids.delete(e.pointerId);
   };
 }

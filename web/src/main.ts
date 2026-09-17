@@ -1,5 +1,5 @@
 // Car-side client entry. Thin by design: decode, draw, forward input. All UI logic lives on the phone.
-import { KEYCODE, KeyAction, MediaType, encodeKey, encodeText, parseMediaPacket } from './protocol';
+import { KEYCODE, KeyAction, MediaType, encodeKey, encodeKeyframeRequest, encodePing, encodeText, parseMediaPacket, parsePingEcho, touchClock } from './protocol';
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { MseRenderer, mseSupported } from './renderer/mse';
 import { MjpegRenderer } from './renderer/mjpeg';
@@ -46,12 +46,22 @@ overlayMsg.textContent = renderer.needsGesture
   : `연결하는 중… (${renderer.name})`;
 
 let touchRef: TouchInput | null = null;
+/**
+ * 컨트롤 소켓 왕복 시간. 2 초마다 ping 을 보내고 폰이 그대로 되돌려 주면 그 안의 시각으로 잰다.
+ * "터치가 굼뜨다"가 링크(이 값) 때문인지 폰의 렌더·인코드 때문인지를 리포트만으로 가르는 자리다.
+ */
+let rttMs = -1;
+let pingSeq = 0;
 const control = new ReconnectingWs(wsUrl('/ws/control'), {
   // A socket that dies mid-gesture leaves a finger down on the phone; the phone cancels its side, we
   // drop ours so the next touch does not reuse a slot the phone has already let go of.
   onClose: () => touchRef?.cancelAll(false),
   onMessage: (data) => {
-    if (typeof data !== 'string') return;
+    if (typeof data !== 'string') {
+      const echo = parsePingEcho(data);
+      if (echo) rttMs = (touchClock() - echo.tMs) >>> 0;
+      return;
+    }
     try {
       const msg = JSON.parse(data);
       if (msg.type === 'status' && msg.width && msg.height) touch.setVideoSize(msg.width, msg.height);
@@ -59,6 +69,7 @@ const control = new ReconnectingWs(wsUrl('/ws/control'), {
   },
 });
 control.start();
+setInterval(() => { if (control.open) control.send(encodePing(++pingSeq)); }, 2000);
 
 const touch = new TouchInput(stage, control);
 touchRef = touch;
@@ -91,8 +102,27 @@ const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ?
 });
 videoWs.start();
 
+/**
+ * 폰에 키프레임을 부탁한다(컨트롤 kind 4). 프레임을 버렸을 때(렌더러)와 디코더가 막혔을 때(아래 감시자)
+ * 소켓을 다시 여는 것보다 싸고, GOP(10 초)를 기다리는 것보다 빠르다. 폰도 0.5 초에 하나로 줄이지만
+ * 여기서도 그만큼 참는다 — 적체 중에는 프레임마다 부탁하게 되기 때문이다.
+ */
+let keyframeRequests = 0;
+let lastKeyframeRequestAt = 0;
+function requestKeyframe(why: string): boolean {
+  const now = Date.now();
+  if (now - lastKeyframeRequestAt < 500 || !control.open) return false;
+  lastKeyframeRequestAt = now;
+  keyframeRequests++;
+  note(`keyframe request (${why})`);
+  return control.send(encodeKeyframeRequest());
+}
+if (renderer instanceof H264Renderer) renderer.onNeedKeyframe = () => { requestKeyframe('dropped frames'); };
+
 // Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the pipeline is
-// wedged. A fresh socket makes the phone resend the init segment and a keyframe, which rebuilds it.
+// wedged. First ask the phone for a keyframe — a decoder that lost its reference recovers on the next
+// IDR, and that costs nothing. If two more seconds pass with still nothing, a fresh socket makes the
+// phone resend the init segment and a keyframe, which rebuilds the pipeline.
 // No packets at all is not a stall: the phone's encoder goes quiet on a static screen.
 let wdPackets = 0;
 let wdFrames = 0;
@@ -104,10 +134,13 @@ setInterval(() => {
   const df = s.framesDecoded - wdFrames;
   wdPackets = packets; wdFrames = s.framesDecoded;
   wdStalledTicks = dp >= 5 && df === 0 ? wdStalledTicks + 1 : 0;
-  if (wdStalledTicks >= 4) {
+  if (wdStalledTicks === 4) {
+    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → 키프레임 요청`);
+    requestKeyframe('decode stall');
+  } else if (wdStalledTicks >= 8) {
     wdStalledTicks = 0;
     recoveries++;
-    note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → video ws 재접속`);
+    note(`decode stall persists after the keyframe request → video ws 재접속`);
     videoWs.restart();
   }
 }, 500);
@@ -663,7 +696,7 @@ $('btn-fullscreen').addEventListener('click', () => {
  */
 const PERF_SAMPLE_MS = 10_000;
 const PERF_KEEP = 360; // 10초 × 360 = 한 시간
-interface PerfSample { t: number; fps: number; lagMs: number; dropped: number; backlog: number }
+interface PerfSample { t: number; fps: number; lagMs: number; dropped: number; backlog: number; rttMs: number; skipped: number }
 const perf: PerfSample[] = [];
 let perfFrames = 0;
 let perfDropped = 0;
@@ -681,6 +714,8 @@ setInterval(() => {
     lagMs: Math.round(s.latencyMs),
     dropped: s.droppedFrames - perfDropped,
     backlog: s.backlog ?? 0,
+    rttMs,
+    skipped: s.skipped ?? 0,
   });
   perfFrames = s.framesDecoded;
   perfDropped = s.droppedFrames;
@@ -710,10 +745,14 @@ const stats = () => ({
   controlWs: { ...control.stats, open: control.open },
   started,
   perf: perfTrend(),
+  rttMs,
+  keyframeRequests,
+  touch: { ...touch.stats },
 });
 (window as any).__carcast = {
   stats, start, events, perf,
   restartVideo: () => videoWs.restart(),
+  requestKeyframe: () => requestKeyframe('test'),
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
   restartControl: () => control.restart(),
   activePointers: () => touch.activePointers,
@@ -734,7 +773,8 @@ setInterval(() => {
   ].filter(Boolean).join(' ');
   // A notice (▶ result, 💾 saved, 폰이 가져감) owns the line until its own timeout clears or restores it.
   if (statsEl.textContent && !statsEl.textContent.startsWith(s.renderer)) return;
-  statsEl.textContent = `${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms ${s.videoWs.open ? '●' : '○'}${extra ? ` ${extra}` : ''}`;
+  const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
+  statsEl.textContent = `${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} ${s.videoWs.open ? '●' : '○'}${extra ? ` ${extra}` : ''}`;
 }, 500);
 
 // 💾: push this session's numbers and event log to the phone (/api/reports, like the diag page).
@@ -743,7 +783,8 @@ $('btn-save').addEventListener('click', async () => {
   const st = lastStatus;
   const phone = st ? ` | 폰 build=${st.build ?? '?'} ${st.interactive === false ? '잠듦' : '깨어있음'} 화면${st.screenOn === false ? 'OFF' : 'ON'}${st.sleepRecoveries ? ` 되살림${st.sleepRecoveries}` : ''}${st.keptActive ? ` 활성유지${st.keptActive}` : ''} idle${Math.round((s.idleMs ?? 0) / 100) / 10}s` : '';
   const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
+  const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
   // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는

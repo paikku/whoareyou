@@ -3,6 +3,9 @@
 // 2D 캔버스에서 자바스크립트로 YUV→RGB 를 돌리면 1280x720 한 장에 수십 ms 가 든다 — 디코딩보다
 // 색변환이 더 비싸지는 일이 실제로 생긴다. 셰이더에 맡기면 사실상 공짜다. 차의 진단에서 WebGL2 는
 // O 로 측정됐다(2026-09-14).
+//
+// 메인 스레드의 <canvas> 에도, 워커로 넘긴 OffscreenCanvas 에도 붙는다(h264/worker.ts). 둘 다 같은
+// WebGL2 컨텍스트를 준다.
 
 const VERT = `#version 300 es
 in vec2 pos;
@@ -28,6 +31,8 @@ void main() {
   color = vec4(y + 1.596 * v, y - 0.391 * u - 0.813 * v, y + 2.018 * u, 1.0);
 }`;
 
+export type YuvCanvas = HTMLCanvasElement | OffscreenCanvas;
+
 export class YuvGl {
   private gl: WebGL2RenderingContext;
   private tex: [WebGLTexture, WebGLTexture, WebGLTexture];
@@ -35,8 +40,10 @@ export class YuvGl {
   private h = 0;
 
   /** @throws 컨텍스트나 셰이더를 만들 수 없을 때 — 호출자가 lastError 로 올린다. */
-  constructor(private readonly canvas: HTMLCanvasElement) {
-    const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: false });
+  constructor(private readonly canvas: YuvCanvas) {
+    // desynchronized: 컴포지터의 큐를 건너뛰고 바로 화면으로 — 지원하는 곳에서는 한 프레임쯤 지연이 준다.
+    // 안 되는 곳에서는 무시되는 힌트일 뿐이다.
+    const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: false, desynchronized: true }) as WebGL2RenderingContext | null;
     if (!gl) throw new Error('WebGL2 없음');
     this.gl = gl;
 

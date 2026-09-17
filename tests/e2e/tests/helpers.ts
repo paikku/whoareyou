@@ -16,6 +16,12 @@ export interface ClientStats {
   videoWs: { connects: number; failures: number; open: boolean };
   controlWs: { connects: number; failures: number; open: boolean };
   started: boolean;
+  /** 컨트롤 소켓 왕복(ms); 아직 한 번도 못 쟀으면 -1. */
+  rttMs: number;
+  keyframeRequests: number;
+  touch: { batches: number; samples: number };
+  skipped?: number;
+  offscreen?: boolean;
 }
 
 export const stats = (page: Page) => page.evaluate(() => (window as any).__carcast.stats() as ClientStats);

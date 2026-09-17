@@ -37,6 +37,13 @@ final class InputInjector {
     private final float[] lastY = new float[MAX_POINTERS];
     private final float[] lastPressure = new float[MAX_POINTERS];
     private long lastTouchDown;
+    /**
+     * The car's clock at the DOWN that started the current gesture (-1: none, or the car sent no clock), and the
+     * uptime we stamped the last touch event with. Together they turn the car's timestamps into ours: see
+     * {@link #eventTime(long, long)}.
+     */
+    private long carDownMs = -1;
+    private long lastEventTime;
     private final KeyCharacterMap charMap = loadCharMap();
 
     private static KeyCharacterMap loadCharMap() {
@@ -126,6 +133,8 @@ final class InputInjector {
         boolean ok;
         if (msg instanceof ControlMessage.Touch) {
             ok = touch((ControlMessage.Touch) msg);
+        } else if (msg instanceof ControlMessage.TouchBatch) {
+            ok = touchBatch((ControlMessage.TouchBatch) msg);
         } else if (msg instanceof ControlMessage.Key) {
             ControlMessage.Key k = (ControlMessage.Key) msg;
             ok = key(k.getAction() == ControlMessage.Key.DOWN ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, k.getKeycode());
@@ -139,6 +148,84 @@ final class InputInjector {
         } else {
             failed++;
         }
+    }
+
+    /**
+     * When this event happened, on our clock.
+     *
+     * Every event used to be stamped with the moment it arrived here, so the network's jitter became the
+     * finger's jitter: Android's VelocityTracker read the spacing of the arrivals, not of the driver's
+     * movement, and a fling came out a different strength every time. The car now sends its own clock
+     * ({@code tMs}); we anchor it to the DOWN — {@code downTime + (tMs - car's tMs at DOWN)} — so the gesture
+     * keeps the timing it had on the car's screen. Clamped to never run ahead of now (a late DOWN followed
+     * by a punctual MOVE would otherwise land in the future) and never behind the previous event (event
+     * times must not go backwards within a gesture). Without a car clock: now, as before.
+     */
+    private long eventTime(long tMs, long now) {
+        long t = now;
+        if (tMs >= 0 && carDownMs >= 0) {
+            long delta = (tMs - carDownMs) & 0xffffffffL; // the car's clock is u32 and wraps
+            if (delta < 0x80000000L) {
+                t = lastTouchDown + delta;
+            }
+        }
+        if (t > now) {
+            t = now;
+        }
+        if (t < lastEventTime) {
+            t = lastEventTime;
+        }
+        lastEventTime = t;
+        return t;
+    }
+
+    /**
+     * MOVE samples the car's browser coalesced into one frame, as one event with history: the first sample is
+     * the event, the rest go in through {@link MotionEvent#addBatch}, each with its own time — exactly what a
+     * real touchscreen delivers, and what scroll velocity is computed from.
+     */
+    private synchronized boolean touchBatch(ControlMessage.TouchBatch b) {
+        int slot = b.getPointerId();
+        if (slot < 0 || slot >= MAX_POINTERS || !down[slot] || b.getSamples().isEmpty()) {
+            // A batch for a finger we are not holding (its DOWN was on a socket that died): nothing to move.
+            return true;
+        }
+        long now = SystemClock.uptimeMillis();
+        MotionEvent event = null;
+        for (ControlMessage.Sample s : b.getSamples()) {
+            lastX[slot] = s.getX() * width;
+            lastY[slot] = s.getY() * height;
+            lastPressure[slot] = Math.max(s.getPressure(), 0.01f);
+            int count = fillPointers();
+            long time = eventTime(s.getTMs(), now);
+            if (event == null) {
+                event = MotionEvent.obtain(lastTouchDown, time, MotionEvent.ACTION_MOVE, count, props, coords,
+                        0, 0, 1f, 1f, DEFAULT_DEVICE_ID, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
+            } else {
+                event.addBatch(time, coords, 0);
+            }
+        }
+        return inject(event);
+    }
+
+    /** Builds {@link #props}/{@link #coords} from every finger that is down; returns how many. */
+    private int fillPointers() {
+        int count = 0;
+        for (int s = 0; s < MAX_POINTERS; s++) {
+            if (!down[s]) {
+                continue;
+            }
+            props[count].id = s;
+            props[count].toolType = MotionEvent.TOOL_TYPE_FINGER;
+            MotionEvent.PointerCoords c = coords[count];
+            c.clear();
+            c.x = lastX[s];
+            c.y = lastY[s];
+            c.pressure = lastPressure[s];
+            c.size = 1f;
+            count++;
+        }
+        return count;
     }
 
     private synchronized boolean touch(ControlMessage.Touch t) {
@@ -205,7 +292,10 @@ final class InputInjector {
         }
         if (count == 1) {
             if (action == MotionEvent.ACTION_DOWN) {
+                // A new gesture: our clock and the car's clock meet here.
                 lastTouchDown = now;
+                lastEventTime = now;
+                carDownMs = t.getTMs();
             }
         } else if (action == MotionEvent.ACTION_DOWN) {
             action = MotionEvent.ACTION_POINTER_DOWN | (indexOfSlot << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
@@ -215,7 +305,8 @@ final class InputInjector {
         if (t.getAction() == ControlMessage.Touch.UP || t.getAction() == ControlMessage.Touch.CANCEL) {
             down[slot] = false;
         }
-        MotionEvent event = MotionEvent.obtain(lastTouchDown, now, action, count, props, coords, 0, 0, 1f, 1f,
+        long time = action == MotionEvent.ACTION_DOWN ? now : eventTime(t.getTMs(), now);
+        MotionEvent event = MotionEvent.obtain(lastTouchDown, time, action, count, props, coords, 0, 0, 1f, 1f,
                 DEFAULT_DEVICE_ID, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
         return inject(event);
     }

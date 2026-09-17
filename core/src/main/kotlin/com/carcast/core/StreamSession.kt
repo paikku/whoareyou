@@ -155,7 +155,7 @@ class StreamSession(
             "/ws/control" -> {
                 controlClients += conn
                 conn.listener = object : WebSocketConnection.Listener {
-                    override fun onBinary(conn: WebSocketConnection, data: ByteArray) { onControl(data) }
+                    override fun onBinary(conn: WebSocketConnection, data: ByteArray) { onControl(conn, data) }
                     override fun onText(conn: WebSocketConnection, text: String) {}
                     override fun onClose(conn: WebSocketConnection) {
                         controlClients.remove(conn)
@@ -212,11 +212,32 @@ class StreamSession(
     @Volatile var controlErrors = 0L
         private set
 
-    private fun onControl(data: ByteArray) {
+    /** Keyframes asked for by the car and actually passed on to the source (the rest fell inside the rate limit). */
+    @Volatile var keyframeRequests = 0L
+        private set
+    @Volatile private var lastKeyframeRequestAt = 0L
+
+    private fun onControl(conn: WebSocketConnection, data: ByteArray) {
         if (data.isEmpty()) return
         controlPackets++
         if (controlPackets % 200 == 1L) event("control 패킷 ${controlPackets}개 (kind=${data[0]})")
         val msg = ControlMessage.parse(data) ?: run { controlErrors++; return }
+        when (msg) {
+            // The car's round-trip probe: back the way it came, untouched. Never reaches the injector.
+            is ControlMessage.Ping -> { conn.offer(data); return }
+            // The car dropped frames or its decoder stalled: an IDR now beats waiting out the GOP or reconnecting.
+            // Rate-limited so a car in trouble cannot turn the stream into all keyframes.
+            is ControlMessage.Keyframe -> {
+                val now = System.currentTimeMillis()
+                if (now - lastKeyframeRequestAt >= KEYFRAME_REQUEST_MIN_GAP_MS) {
+                    lastKeyframeRequestAt = now
+                    keyframeRequests++
+                    if (liveSourceRunning) videoSource?.requestKeyframe()
+                }
+                return
+            }
+            else -> {}
+        }
         val handler = controlHandler ?: return
         try { handler(msg) } catch (e: Exception) {
             controlErrors++
@@ -235,6 +256,7 @@ class StreamSession(
             "controlClients" to controlClients.size,
             "controlPackets" to controlPackets,
             "controlErrors" to controlErrors,
+            "keyframeRequests" to keyframeRequests,
             "input" to (controlHandler != null),
             "source" to if (clip != null) "clip" else if (liveSourceRunning) "display" else "none",
             "width" to 1280,
@@ -271,6 +293,8 @@ class StreamSession(
         /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
         private const val ACCEPT_LOG_EVERY = 100L
         const val TEST_CLIP = "test-720p30.cmp4"
+        /** Two keyframe requests closer than this collapse into one; an IDR is dozens of P-frames' worth of bytes. */
+        const val KEYFRAME_REQUEST_MIN_GAP_MS = 500L
         /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to [DEFAULT_RESTART]. */
         val RESTART_MODES = setOf("auto", "always", "never")
         /**

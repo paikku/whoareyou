@@ -12,6 +12,10 @@ export interface RendererStats {
    * <video> 에 맡기는 렌더러는 알 수 없으므로 내지 않는다.
    */
   backlog?: number;
+  /** rAF 에 맞춰 그리면서 건너뛴 그림의 수(한 vsync 에 두 장이 왔을 때). h264 렌더러만 낸다. */
+  skipped?: number;
+  /** 워커가 OffscreenCanvas 에 직접 그리는가. h264 렌더러만 낸다. */
+  offscreen?: boolean;
 }
 
 export interface Renderer {

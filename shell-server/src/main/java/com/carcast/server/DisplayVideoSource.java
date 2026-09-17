@@ -49,6 +49,8 @@ public final class DisplayVideoSource implements VideoSource {
     private final int bitRate;
     private final int maxFps;
     private final boolean constrainedBaseline;
+    private final String bitrateMode;
+    private final int intraRefresh;
     private H264Encoder encoder;
     private EncodedH264Sink sink;
     private volatile String lastApp = "";
@@ -59,11 +61,13 @@ public final class DisplayVideoSource implements VideoSource {
     private Thread appWatcher;
 
     public DisplayVideoSource(int width, int height, int dpi, boolean systemDecorations, int bitRate, int maxFps,
-                              boolean constrainedBaseline) {
+                              boolean constrainedBaseline, String bitrateMode, int intraRefresh) {
         this.display = new DisplayCapture(width, height, dpi, systemDecorations);
         this.bitRate = bitRate;
         this.maxFps = maxFps;
         this.constrainedBaseline = constrainedBaseline;
+        this.bitrateMode = bitrateMode;
+        this.intraRefresh = intraRefresh;
     }
 
     @Override
@@ -71,7 +75,7 @@ public final class DisplayVideoSource implements VideoSource {
         Workarounds.apply();
         sink = new EncodedH264Sink(hub, 33_333);
         EncodedH264Sink s = sink;
-        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, constrainedBaseline, new H264Encoder.Output() {
+        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, constrainedBaseline, bitrateMode, intraRefresh, new H264Encoder.Output() {
             @Override
             public void onCodecConfig(byte[] annexB) {
                 s.onCodecConfig(annexB);
@@ -188,7 +192,7 @@ public final class DisplayVideoSource implements VideoSource {
         AppHistory.used(pkg);
         fastWatchUntilMs = System.currentTimeMillis() + APP_WATCH_FAST_WINDOW_MS;
         startAppWatcher();
-        // The picture is about to change completely. Without this the car waits up to I_FRAME_INTERVAL (2 s)
+        // The picture is about to change completely. Without this the car waits up to I_FRAME_INTERVAL (10 s)
         // for the next IDR and shows the *previous* app's last frame meanwhile — the "app switch is slow"
         // feeling. Asking for a sync frame now cuts that to one frame time.
         requestKeyframe();
