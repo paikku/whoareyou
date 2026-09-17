@@ -124,11 +124,14 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/app' && req.method === 'POST') {
     // Same reply shape as the shell server: action says whether a task was started/restarted/moved/brought to front.
     const name = url.searchParams.get('name');
-    const restart = url.searchParams.get('restart') ?? 'auto';
+    // 진짜 서버의 기본값과 같다(core StreamSession.DEFAULT_RESTART = never): 옮기거나 앞으로.
+    const restart = url.searchParams.get('restart') ?? 'never';
     state.apps = state.apps ?? [];
     state.apps.push(name);
     const from = state.appOnPhone ? 0 : null;
-    const action = from === null ? 'started' : restart === 'never' ? 'moved' : 'restarted';
+    // 진짜 서버: always 는 어디 있든 강제 종료 후 새로(restarted), auto 는 다른 화면에 있을 때만, never 는 절대.
+    const forceStop = restart === 'always' || (restart === 'auto' && from !== null);
+    const action = forceStop ? 'restarted' : from === null ? 'started' : 'moved';
     state.appOnPhone = false;
     // 진짜 서버는 띄운 뒤 그 앱의 task 가 어느 화면에 있는지를 상태에 적는다. 여기서 빼먹으면
     // 차는 앱을 띄우고도 "화면에 앱이 없다"고 믿는다 — 가짜 폰이 진짜 폰과 갈리던 자리다.

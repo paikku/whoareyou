@@ -23,7 +23,11 @@
     <div class="overlay-card">
       <div id="state-title" class="overlay-title"></div>
       <div id="state-msg"></div>
-      <button id="state-action" class="state-action" hidden></button>
+      <div class="state-actions">
+        <button id="state-action" class="state-action" hidden></button>
+        <!-- 두 번째 선택지(덜 흔한 쪽): 옮기다 깨진 앱을 처음부터 새로 여는 길. 기본 버튼보다 낮게 그린다. -->
+        <button id="state-alt" class="state-action alt" hidden></button>
+      </div>
     </div>
   </div>
   <!--

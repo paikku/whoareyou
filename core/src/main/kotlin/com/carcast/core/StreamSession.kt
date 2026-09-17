@@ -56,9 +56,10 @@ class StreamSession(
 
     /**
      * `POST /api/app?name=<package or package/.Activity>[&restart=auto|always|never]`: start an app on the streamed
-     * display. `restart` says what to do when the app already has a task somewhere: `auto` (default) force-stops it
-     * only when that task is on another display (the phone's screen — otherwise Android would *move* it to the car
-     * and the phone loses it), `always` restarts it regardless, `never` keeps today's move-or-bring-to-front behaviour.
+     * display. `restart` says what to do when the app already has a task somewhere: `never` (default) lets Android
+     * *move* that task to the car as it is — the phone loses it, the car gets it mid-state — or bring it to front,
+     * `auto` force-stops it first only when that task is on another display (the phone's screen), `always` restarts
+     * it regardless.
      * Returns the fields merged into the JSON reply (`result`, `action`, `fromDisplay`, `display`, …).
      */
     var onStartApp: ((name: String, restart: String) -> Map<String, Any?>)? = null
@@ -179,7 +180,7 @@ class StreamSession(
         path == "/api/reports" && method == "GET" -> reports.listJson(query["limit"]?.toIntOrNull() ?: ReportStore.MAX)
         path == "/api/app" && method == "POST" -> {
             val name = query["name"].orEmpty()
-            val restart = query["restart"]?.takeIf { it in RESTART_MODES } ?: "auto"
+            val restart = query["restart"]?.takeIf { it in RESTART_MODES } ?: DEFAULT_RESTART
             val handler = onStartApp
             when {
                 handler == null -> Json.obj(mapOf("ok" to false, "error" to "no display source"))
@@ -268,8 +269,15 @@ class StreamSession(
         /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
         private const val ACCEPT_LOG_EVERY = 100L
         const val TEST_CLIP = "test-720p30.cmp4"
-        /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to `auto`. */
+        /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to [DEFAULT_RESTART]. */
         val RESTART_MODES = setOf("auto", "always", "never")
+        /**
+         * `never`: bring the app over as it is. The car is a second screen for the phone, and what the driver
+         * wants is the video they were watching, mid-play, not the app's front page (`auto` used to be the
+         * default and threw that state away by force-stopping the app; the ping-pong it was meant to hide is
+         * reported by the app watcher instead, see `appOnPhone`).
+         */
+        const val DEFAULT_RESTART = "never"
     }
 }
 

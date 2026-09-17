@@ -54,9 +54,11 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 안드로이드는 앱마다 task 를 하나만 둔다. `am start --display N` 은 **복사가 아니라 이동**이다. 그래서
 폰에서 쓰던 앱을 차에서 띄우면 폰에서 사라지고, 폰 런처에서 다시 누르면 차 화면이 빈다.
 
-- 서버: `DisplayVideoSource.startApp`(restart=auto 로 강제 종료 후 새로), `TaskList`(`am stack list` 파서),
+- 서버: `DisplayVideoSource.startApp`(기본 `restart=never` 로 **그대로 옮김**, `always` 는 강제 종료 후 새로;
+  기본값은 `core` 의 `StreamSession.DEFAULT_RESTART`), `TaskList`(`am stack list` 파서),
   앱 감시자(빈 화면이면 1초, 아니면 5초 간격)
-- 차: `/api/status.appOnPhone` → 상태 패널 `app-on-phone` → **"차로 가져오기"** 한 번
+- 차: `/api/status.appOnPhone` → 상태 패널 `app-on-phone` → **"차로 가져오기"**(그대로) / **"새로 열기"**(처음부터).
+  홈·최근앱의 칸은 짧게 누르면 가져오기, 길게(600ms) 누르면 새로 열기(`web/src/main.ts` 의 `onPress`)
 - 검사: `tests/device/tests/03-app.test.mjs`, `tests/e2e/tests/app-conflict.spec.ts`,
   `npm run lifecycle` 의 "앱 전환" 시나리오
 

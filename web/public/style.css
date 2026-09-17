@@ -27,9 +27,13 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 .state { background: rgba(0,0,0,.82); }
 .state .overlay-card { max-width: 80vw; }
 #state-msg { margin-top: 8px; color: #bbb; font-size: 16px; line-height: 1.5; }
-.state-action { margin-top: 16px; min-height: 52px; padding: 0 24px; border: 1px solid #4a7; border-radius: 8px; background: #1b3a2b; color: #dfe; font-size: 18px; }
+.state-actions { display: flex; justify-content: center; gap: 14px; margin-top: 16px; }
+.state-action { min-height: 52px; padding: 0 24px; border: 1px solid #4a7; border-radius: 8px; background: #1b3a2b; color: #dfe; font-size: 18px; }
 .state-action:active { background: #2c5a42; }
 .state-action[hidden] { display: none; }
+/* 두 번째 선택지: 같은 크기, 낮은 색 — 먼저 읽히는 것은 언제나 기본 쪽이다. */
+.state-action.alt { border-color: #555; background: #222; color: #ccc; }
+.state-action.alt:active { background: #383838; }
 /* 폰 화면이 꺼져 있는 동안 📵 버튼이 그 사실을 들고 있게 한다 (전원 버튼으로 바뀌어도 서버 상태를 따른다). */
 /* 📵 가 켜져 있는 동안: 상자가 없으니 글리프 자체가 색으로 말한다. */
 #bar #btn-screen.off { color: #e0a44a; background: #33240f; }
@@ -44,8 +48,11 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 .sheet-empty { padding: 24px; text-align: center; color: #aaa; font-size: 17px; }
 .sheet-empty[hidden] { display: none; }
 .grid { flex: 1 1 auto; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; align-content: start; }
-.tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; padding: 10px 6px; border: 1px solid #333; border-radius: 12px; background: #161616; color: #eee; font-size: 14px; text-align: center; }
+/* 길게 누르기(새로 열기)가 글자 선택·확대·컨텍스트 메뉴로 새지 않게 셋 다 막는다. */
+.tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; padding: 10px 6px; border: 1px solid #333; border-radius: 12px; background: #161616; color: #eee; font-size: 14px; text-align: center; touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .tile:active { background: #2a2a2a; }
+/* 길게 눌려 "떼면 새로 열기"가 된 칸. 누른 손가락이 보고 있는 것이라 색만으로 충분하다. */
+.tile.held { background: #3a2a14; border-color: #b07a2a; }
 .tile img { width: 56px; height: 56px; }
 .tile .fallback { width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: #2b3a4a; font-size: 24px; font-weight: 600; }
 .tile .name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -55,7 +62,9 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 /* 안드로이드 3버튼 글리프. 선만 그리고 채우지 않는다 — 폰의 것과 같은 인상이라야 손이 먼저 찾는다. */
 /* 폰의 탐색 막대: 테두리도 바탕도 없는 흰 선 세 개. 누르는 자리는 손가락만 하되(56x44) 보이는
    것은 글리프뿐이고, 누를 때만 둥근 자국이 잠깐 보인다. */
-.nav-group { display: flex; align-items: center; gap: 2px; }
+/* 세 글리프 사이는 36px: 글리프 끝에서 끝까지 67px 로, 예전(2px, 33px)의 두 배다. 붙어 있으면 운전 중
+   손가락이 옆 것을 누른다 — 누르는 자리(56px)끼리도 이제 떨어져 있다. */
+.nav-group { display: flex; align-items: center; gap: 36px; }
 #bar button.nav { display: flex; align-items: center; justify-content: center; min-width: 56px; height: 44px; padding: 0; border: 0; border-radius: 22px; background: transparent; color: #f2f2f2; }
 #bar button.nav:active { background: #2b2b2b; }
 /* 오른쪽 도구들: 같은 선, 같은 굵기, 한 단계 낮은 밝기 — 탐색 막대가 먼저 읽히게. */
