@@ -23,6 +23,11 @@ class HttpServer(
     private val port: Int,
     private val wsHandler: WsHandler,
     private val api: ApiHandler,
+    /**
+     * Version of the bundled web files (the build sha). With it, static files are cacheable: see [serveStatic].
+     * Null (tests, dev) keeps every response `no-store`.
+     */
+    private val staticVersion: String? = null,
 ) {
     fun interface WsHandler {
         /** Called on a fresh connection; return false to reject (404). */
@@ -122,7 +127,7 @@ class HttpServer(
                 req.path.startsWith("/api/") -> serveApi(req, input, output, "${socket.inetAddress.hostAddress}:${socket.port}")
                 req.method != "GET" && req.method != "HEAD" ->
                     HttpResponse.write(output, 405, "Method Not Allowed", "text/plain", "405".toByteArray())
-                else -> serveStatic(req.path, output)
+                else -> serveStatic(req, output)
             }
             socket.close()
         } catch (e: IOException) {
@@ -150,18 +155,48 @@ class HttpServer(
         HttpResponse.write(output, 200, "OK", "application/json; charset=utf-8", json.toByteArray())
     }
 
-    private fun serveStatic(rawPath: String, output: BufferedOutputStream) {
-        var path = rawPath.trimStart('/')
+    /**
+     * The web client, cacheable so the car does not download it again on every visit.
+     *
+     * Every response used to be `no-store`, so each trip to the car fetched index.html, the stylesheet,
+     * main.js and the 175 KB decoder worker anew — four TCP connections on a link where the car fails
+     * about half its WebSocket handshakes. The files only change with the APK, and the APK's build sha is
+     * [staticVersion], so:
+     *
+     *  - HTML is `no-cache` with the sha as its ETag: the browser asks every time and gets a 304 unless the
+     *    APK changed. It also has `__BUILD__` replaced by the sha, which the pages use to version the URLs
+     *    of what they load (`main.js?v=<sha>`, and the worker from main.js).
+     *  - Anything else asked for with `?v=<current sha>` is `immutable` for a year: a new build changes the
+     *    URL, so nothing stale can ever be served. Asked for without (or with another) `v`, it falls back
+     *    to `no-cache` + ETag, so an old page still gets the right file, just with a revalidation.
+     *
+     * Without a version (tests, the desktop dry run) nothing is cached, as before.
+     */
+    private fun serveStatic(req: HttpRequest, output: BufferedOutputStream) {
+        var path = req.path.trimStart('/')
         if (path.isEmpty()) path = "index.html"
         if (path == "diag") path = "diag.html"
         if (path.contains("..")) {
             HttpResponse.write(output, 400, "Bad Request", "text/plain", "400".toByteArray()); return
         }
-        val body = assets.open("web/$path")?.use { it.readBytes() }
+        var body = assets.open("web/$path")?.use { it.readBytes() }
         if (body == null) {
             HttpResponse.write(output, 404, "Not Found", "text/plain", "404 $path".toByteArray()); return
         }
-        HttpResponse.write(output, 200, "OK", HttpResponse.mimeFor(path), body)
+        val version = staticVersion
+        val mime = HttpResponse.mimeFor(path)
+        if (version == null) {
+            HttpResponse.write(output, 200, "OK", mime, body); return
+        }
+        val html = path.endsWith(".html")
+        if (html) body = String(body, Charsets.UTF_8).replace(BUILD_PLACEHOLDER, version).toByteArray(Charsets.UTF_8)
+        val etag = "\"$version\""
+        val cache = if (!html && req.query["v"] == version) "max-age=31536000, immutable" else "no-cache"
+        val headers = mapOf("ETag" to etag)
+        if (req.header("if-none-match")?.split(',')?.any { it.trim() == etag } == true) {
+            HttpResponse.write(output, 304, "Not Modified", mime, ByteArray(0), headers, cache); return
+        }
+        HttpResponse.write(output, 200, "OK", mime, body, headers, cache)
     }
 
     companion object {
@@ -170,5 +205,7 @@ class HttpServer(
         const val MAX_BODY = 256 * 1024
         /** Breathing room after a failed accept, so a permanent failure cannot become a hot loop. */
         private const val ACCEPT_RETRY_MS = 100L
+        /** What the HTML pages carry where the build sha goes (web/public/index.html, diag.html). */
+        const val BUILD_PLACEHOLDER = "__BUILD__"
     }
 }

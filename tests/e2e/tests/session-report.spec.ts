@@ -27,7 +27,7 @@ test('main page saves a session report with stats and events', async ({ page }) 
   // 첫 낱말은 그 세션이 쓴 렌더러다(기본은 h264, `?renderer=` 로 바꿀 수 있다) — 이름을 박아 두면
   // 기본값이 바뀔 때마다 여기가 깨진다. 계약은 "무엇으로 그렸는지가 맨 앞에 적힌다" 쪽이다.
   // 추이 한 칸은 표본이 1 분 모인 뒤에야 붙는다(perfTrend). 짧은 실행에서는 없는 것이 정상이다.
-  expect(mine.summary).toMatch(/^session (mse|mjpeg|h264) \d+fps lag \d+ms frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+( 추이 \d+→\d+fps 적체\d+ \([\d.]+분\))?( \| 폰 .*)?$/);
+  expect(mine.summary).toMatch(/^session (mse|mjpeg|h264) \d+fps lag \d+ms( rtt \d+ms)? frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+( 키프레임요청\d+)?( 끝까지\d+ms)?( 추이 \d+→\d+fps 적체\d+ \([\d.]+분\))?( \| 폰 .*)?$/);
   if (mine.summary.includes('| 폰 ')) {
     expect(mine.summary).toMatch(/화면(ON|OFF)/);
   }
@@ -36,7 +36,7 @@ test('main page saves a session report with stats and events', async ({ page }) 
   // 성능 추이와 대응책 가능 여부. 차에서 한 번 나갔다 오면 다시 물을 수 없는 것들이라(devtools 가
   // 없다) 저장에 반드시 실려야 한다 — 없으면 "더워져서 느려졌나"를 영영 못 가린다.
   expect(Array.isArray(mine.report.perf)).toBe(true);
-  expect(mine.report.perf[0]).toMatchObject({ t: expect.any(Number), fps: expect.any(Number), backlog: expect.any(Number) });
+  expect(mine.report.perf[0]).toMatchObject({ t: expect.any(Number), fps: expect.any(Number), backlog: expect.any(Number), rttMs: expect.any(Number) });
   expect(mine.report.caps).toMatchObject({ webcodecs: expect.any(Boolean), secure: expect.any(Boolean), cores: expect.any(Number) });
   // The stats line shows only what is abnormal: a clean run has no reconnects or recoveries on it.
   await expect(page.locator('#stats')).not.toContainText('복구');

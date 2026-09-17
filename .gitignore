@@ -21,3 +21,6 @@ tests/e2e/playwright-report/
 
 # 가상 폰 실행 산출물 (tools/virtual-phone)
 out/
+
+# playwright 를 저장소 루트에서 잘못 띄웠을 때 남는 것
+/test-results/

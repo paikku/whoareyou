@@ -50,3 +50,51 @@ test('제스처 도중 소켓이 끊기면 눌린 손가락이 남지 않는다'
   assert.equal(after.pointersDown, 0);
   assert.equal(after.injectFailed, before.injectFailed ?? 0, '취소를 주입하다 실패했다');
 });
+
+// 차의 시계를 실은 터치와 MOVE 묶음(kind 1 의 tMs, kind 5): 폰이 그 시각으로 MotionEvent 를 찍는다.
+// 여기서 볼 수 있는 것은 "주입되고 실패하지 않는다"까지다 — 플링 세기가 고르게 되는지는 실기기(B)의 몫.
+test('시계를 실은 터치와 MOVE 묶음이 주입된다', async () => {
+  const before = await status();
+  const c = await control();
+  try {
+    const t0 = 1000;
+    c.touchAt(0, 0.5, 0.8, t0);
+    c.batch([{ x: 0.5, y: 0.7, tMs: t0 + 8 }, { x: 0.5, y: 0.6, tMs: t0 + 16 }, { x: 0.5, y: 0.5, tMs: t0 + 24 }]);
+    c.touchAt(2, 0.5, 0.4, t0 + 32);
+    c.touchAt(1, 0.5, 0.3, t0 + 40, 0);
+    const after = await waitFor(async () => {
+      const s = await status();
+      return s.injected >= (before.injected ?? 0) + 4 ? s : null;
+    }, { timeoutMs: 10_000, what: 'DOWN + 묶음 + MOVE + UP 주입' }).catch(async (e) => {
+      throw new Error(`${e.message}\n서버 로그:\n${await serverLog()}`);
+    });
+    assert.equal(after.injectFailed, before.injectFailed ?? 0, 'injectFailed 가 늘었다');
+    assert.equal(after.controlErrors, 0, '제어 패킷 파싱에 실패한 것이 있다');
+    assert.equal(after.pointersDown ?? 0, 0, 'UP 뒤에 손가락이 남아 있다');
+  } finally {
+    c.close();
+  }
+});
+
+// ping 은 인젝터를 거치지 않고 세션이 그대로 되돌린다. 차는 이것으로 컨트롤 왕복을 잰다.
+// 키프레임 요청은 인코더에 IDR 을 부탁한다 — 세션이 받은 수는 상태에 남는다(인코더가 실제로 IDR 을 냈는지는
+// 화면이 움직여야 보이므로 07-stall 의 wiggle 쪽 몫).
+test('ping 은 되돌아오고, 키프레임 요청은 세션이 센다', async () => {
+  const before = await status();
+  const c = await control();
+  try {
+    const rtt = await c.ping(7);
+    assert.ok(rtt >= 0 && rtt < 3000, `왕복 ${rtt}ms`);
+    c.keyframe();
+    const after = await waitFor(async () => {
+      const s = await status();
+      return (s.keyframeRequests ?? 0) > (before.keyframeRequests ?? 0) ? s : null;
+    }, { timeoutMs: 5_000, what: 'keyframeRequests 증가' });
+    assert.equal(after.controlErrors, 0);
+    // ping 과 키프레임 요청은 주입이 아니다: injected 도 injectFailed 도 그대로여야 한다.
+    assert.equal(after.injected, before.injected, 'ping/키프레임 요청이 주입으로 세어졌다');
+    assert.equal(after.injectFailed, before.injectFailed ?? 0);
+  } finally {
+    c.close();
+  }
+});

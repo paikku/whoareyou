@@ -33,6 +33,17 @@
             </intent-filter>
         </activity>
 
+        <!-- The car's glass-to-glass latency target (see LatencyProbeActivity). Its own task, so starting it
+             on the virtual display never moves the main screen off the phone; exported so `am start` from the
+             shell server can start it; out of recents because it is a measuring tool, not an app. -->
+        <activity
+            android:name=".ui.LatencyProbeActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.carcast.probe"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+
         <!-- Holds the tun address 100.99.9.9 so hotspot clients (the car) can reach our HTTP server. -->
         <service
             android:name=".vpn.CarVpnService"

@@ -20,7 +20,9 @@ test.afterAll(() => { proc?.kill(); });
 test('타임라인이 131초에서 시작해도 재생된다', async ({ page }) => {
   await page.goto(`http://100.99.9.9:${PORT}/`);
   await startPlayback(page);
-  await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 20, null, { timeout: 20_000 });
+  // fps 는 지난 1 초 동안 화면에 올라간 장수다. 21 장째에 바로 읽으면 창이 아직 차지 않아(그리기는 디코드보다
+  // 한 vsync 뒤에 온다) 19 가 나온다 — 재생이 되느냐를 묻는 자리이니 창이 찬 뒤에 읽는다.
+  await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 50, null, { timeout: 20_000 });
   const s = await stats(page);
   expect(s.fps).toBeGreaterThan(20);
   expect(s.latencyMs).toBeLessThan(1000);

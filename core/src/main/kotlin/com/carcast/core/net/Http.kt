@@ -61,12 +61,18 @@ class HttpRequest(
 }
 
 object HttpResponse {
-    fun write(out: OutputStream, status: Int, reason: String, contentType: String, body: ByteArray, extra: Map<String, String> = emptyMap()) {
+    /** Everything is `no-store` unless the caller says otherwise; static files do (see HttpServer.serveStatic). */
+    const val NO_STORE = "no-store"
+
+    fun write(
+        out: OutputStream, status: Int, reason: String, contentType: String, body: ByteArray,
+        extra: Map<String, String> = emptyMap(), cacheControl: String = NO_STORE,
+    ) {
         val sb = StringBuilder()
         sb.append("HTTP/1.1 ").append(status).append(' ').append(reason).append("\r\n")
         sb.append("Content-Type: ").append(contentType).append("\r\n")
         sb.append("Content-Length: ").append(body.size).append("\r\n")
-        sb.append("Cache-Control: no-store\r\n")
+        sb.append("Cache-Control: ").append(cacheControl).append("\r\n")
         sb.append("Connection: close\r\n")
         for ((k, v) in extra) sb.append(k).append(": ").append(v).append("\r\n")
         sb.append("\r\n")

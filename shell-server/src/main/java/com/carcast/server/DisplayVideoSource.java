@@ -7,6 +7,7 @@ import com.carcast.core.media.MediaHub;
 import com.carcast.core.media.VideoSource;
 import com.genymobile.scrcpy.Workarounds;
 import com.genymobile.scrcpy.util.Command;
+import com.genymobile.scrcpy.util.Ln;
 
 import android.view.Surface;
 
@@ -44,13 +45,22 @@ public final class DisplayVideoSource implements VideoSource {
     /** How long after a launch the ping-pong is likely, so the fast poll is worth its cost. */
     private static final long APP_WATCH_FAST_WINDOW_MS = 20_000;
     private static final int APP_WATCH_MAX_FAILURES = 3;
+    /** Our own package: its activities on the car display are tools (the latency probe), never the app being watched. */
+    private static final String SELF_PACKAGE = "com.carcast";
 
     private final DisplayCapture display;
-    private final int bitRate;
-    private final int maxFps;
+    /** Current encoder parameters; {@link #reconfigure} changes them at runtime. */
+    private volatile int bitRate;
+    private volatile int maxFps;
     private final boolean constrainedBaseline;
+    private final String bitrateMode;
+    private final int intraRefresh;
     private H264Encoder encoder;
     private EncodedH264Sink sink;
+    /** The encoder's output, bound to the sink once; every encoder built here reports into it. */
+    private H264Encoder.Output output;
+    private volatile int encoderRestarts;
+    private volatile long lastEncoderRestartAt;
     private volatile String lastApp = "";
     private volatile String lastPackage = "";
     /** Display the launched app's task was last seen on; null when it has no task (or was never looked up). */
@@ -59,11 +69,23 @@ public final class DisplayVideoSource implements VideoSource {
     private Thread appWatcher;
 
     public DisplayVideoSource(int width, int height, int dpi, boolean systemDecorations, int bitRate, int maxFps,
-                              boolean constrainedBaseline) {
+                              boolean constrainedBaseline, String bitrateMode, int intraRefresh) {
+        // What the car chose last time (/api/encoder) outlives the server; the command line only supplies defaults.
+        EncoderSettings saved = EncoderSettings.load();
+        if (saved != null) {
+            Ln.i("encoder.conf: " + saved.width + "x" + saved.height + " " + saved.fps + "fps " + saved.bitRate / 1000 + " kbps (overrides the defaults)");
+            width = saved.width;
+            height = saved.height;
+            dpi = EncoderSettings.dpiFor(saved.height);
+            bitRate = saved.bitRate;
+            maxFps = saved.fps;
+        }
         this.display = new DisplayCapture(width, height, dpi, systemDecorations);
         this.bitRate = bitRate;
         this.maxFps = maxFps;
         this.constrainedBaseline = constrainedBaseline;
+        this.bitrateMode = bitrateMode;
+        this.intraRefresh = intraRefresh;
     }
 
     @Override
@@ -71,7 +93,7 @@ public final class DisplayVideoSource implements VideoSource {
         Workarounds.apply();
         sink = new EncodedH264Sink(hub, 33_333);
         EncodedH264Sink s = sink;
-        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, constrainedBaseline, new H264Encoder.Output() {
+        output = new H264Encoder.Output() {
             @Override
             public void onCodecConfig(byte[] annexB) {
                 s.onCodecConfig(annexB);
@@ -81,7 +103,8 @@ public final class DisplayVideoSource implements VideoSource {
             public void onFrame(byte[] annexB, long ptsUs, boolean keyframe) {
                 s.onFrame(annexB, ptsUs, keyframe);
             }
-        });
+        };
+        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, constrainedBaseline, bitrateMode, intraRefresh, output);
         try {
             Surface surface = encoder.open();
             display.start(surface);
@@ -90,6 +113,82 @@ public final class DisplayVideoSource implements VideoSource {
             stop();
             throw new RuntimeException("display/encoder start failed: " + e, e);
         }
+    }
+
+    /** Fewest milliseconds between two encoder rebuilds: each one costs the car a keyframe and a pipeline reset. */
+    private static final long RECONFIGURE_MIN_GAP_MS = 2_000;
+
+    /**
+     * Rebuild the encoder with a new size, fps and/or bitrate while the display and the app on it keep running
+     * (`POST /api/encoder`). The encoder surface is detached, the old codec released, the display resized when the
+     * size changed (the app gets a configuration change and lays itself out again — the density scales with the
+     * height so it looks the same, only sharper or coarser), and a fresh codec attached. Clients see a new init
+     * segment and an IDR, which is how every renderer already handles an encoder restart. The choice is saved
+     * ({@link EncoderSettings}) so it survives the next server start.
+     *
+     * Null arguments keep the current value. Returns the same map as {@link #encoderInfo()}.
+     */
+    public synchronized Map<String, Object> reconfigure(Integer width, Integer height, Integer fps, Integer bitrate) throws Exception {
+        int w = width != null ? width : display.width;
+        int h = height != null ? height : display.height;
+        int f = fps != null ? fps : maxFps;
+        int b = bitrate != null ? bitrate : bitRate;
+        EncoderSettings.validate(w, h, f, b);
+        if (w == display.width && h == display.height && f == maxFps && b == bitRate) {
+            return encoderInfo();
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastEncoderRestartAt < RECONFIGURE_MIN_GAP_MS) {
+            throw new IllegalStateException("encoder was rebuilt " + (now - lastEncoderRestartAt) + " ms ago; wait");
+        }
+        if (output == null || display.displayId() < 0) {
+            throw new IllegalStateException("source not running");
+        }
+        Log.INSTANCE.i(TAG, "encoder reconfigure: " + display.width + "x" + display.height + " " + maxFps + "fps " + bitRate / 1000 + "k → "
+                + w + "x" + h + " " + f + "fps " + b / 1000 + "k");
+        H264Encoder old = encoder;
+        encoder = null;
+        display.detachSurface();
+        if (old != null) {
+            old.stop();
+        }
+        if (w != display.width || h != display.height) {
+            display.resize(w, h, EncoderSettings.dpiFor(h));
+        }
+        maxFps = f;
+        bitRate = b;
+        H264Encoder fresh = new H264Encoder(w, h, b, f, constrainedBaseline, bitrateMode, intraRefresh, output);
+        try {
+            Surface surface = fresh.open();
+            display.start(surface);
+            fresh.start();
+        } catch (Throwable e) {
+            fresh.stop();
+            throw new RuntimeException("encoder rebuild failed: " + e, e);
+        }
+        encoder = fresh;
+        encoderRestarts++;
+        lastEncoderRestartAt = now;
+        new EncoderSettings(w, h, f, b).save();
+        return encoderInfo();
+    }
+
+    /** The encoder as it is now — what `GET /api/encoder` answers and what a reconfigure returns. */
+    public Map<String, Object> encoderInfo() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("width", display.width);
+        m.put("height", display.height);
+        m.put("dpi", display.dpi);
+        m.put("fps", maxFps);
+        m.put("bitrate", bitRate);
+        m.put("maxFps", maxFps);
+        m.put("bitRate", bitRate);
+        m.put("encoderRestarts", encoderRestarts);
+        m.put("encoder", encoder != null ? encoder.name() : null);
+        m.put("encoderProfile", encoder != null ? encoder.profileNote() : null);
+        m.put("codec", sink != null ? sink.getCodec() : null);
+        m.put("encoderRestarts", encoderRestarts);
+        return m;
     }
 
     @Override
@@ -181,6 +280,21 @@ public final class DisplayVideoSource implements VideoSource {
         String result = Command.execReadOutput(cmd.toArray(new String[0])).trim();
         // core Log, not Ln: these lines must reach /api/log (what the app and the laptop read), not only the file.
         Log.INSTANCE.i(TAG, "start app " + component + " on display " + id + " (" + action + ", was on display " + from + ", restart=" + restart + "): " + result);
+        if (SELF_PACKAGE.equals(pkg)) {
+            // Our own activity (the latency probe) is a tool that sits on top of the app for a few seconds. It is
+            // not "the app the car is using": the watcher keeps following that one, the history does not learn
+            // it, and /api/status.app does not change — otherwise the moment the probe finishes the watcher finds
+            // the package's other task (the app's main screen, on the phone) and the car says "the phone took it".
+            requestKeyframe();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("result", result);
+            m.put("action", "started");
+            m.put("package", pkg);
+            m.put("fromDisplay", null);
+            m.put("display", id);
+            m.put("transient", true);
+            return m;
+        }
         lastApp = component;
         lastPackage = pkg;
         appDisplay = id;
@@ -188,7 +302,7 @@ public final class DisplayVideoSource implements VideoSource {
         AppHistory.used(pkg);
         fastWatchUntilMs = System.currentTimeMillis() + APP_WATCH_FAST_WINDOW_MS;
         startAppWatcher();
-        // The picture is about to change completely. Without this the car waits up to I_FRAME_INTERVAL (2 s)
+        // The picture is about to change completely. Without this the car waits up to I_FRAME_INTERVAL (10 s)
         // for the next IDR and shows the *previous* app's last frame meanwhile — the "app switch is slow"
         // feeling. Asking for a sync frame now cuts that to one frame time.
         requestKeyframe();
@@ -302,6 +416,9 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("displayFlags", display.displayFlags());
         m.put("displayOwnGroup", display.has(DisplayCapture.FLAG_OWN_DISPLAY_GROUP));
         m.put("displayAlwaysUnlocked", display.has(DisplayCapture.FLAG_ALWAYS_UNLOCKED));
+        m.put("maxFps", maxFps);
+        m.put("bitRate", bitRate);
+        m.put("encoderRestarts", encoderRestarts);
         m.put("encoder", encoder != null ? encoder.name() : null);
         m.put("encoderProfile", encoder != null ? encoder.profileNote() : null);
         // The profile the SPS really carries. The web client declares Baseline 3.0 regardless, so this

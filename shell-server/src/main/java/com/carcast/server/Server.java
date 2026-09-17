@@ -11,7 +11,7 @@ import java.util.Map;
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [profile=baseline|default] [decorations=false]
- *     [app=com.google.android.youtube] [source=clip]
+ *     [bitrate_mode=cbr|vbr|default] [intra_refresh=&lt;frames&gt;] [app=com.google.android.youtube] [source=clip]
  *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
  *     [screen_off_timeout=&lt;ms&gt;] [keep_active_fallback=false] [vd_wake=true]
  * </pre>
@@ -107,7 +107,15 @@ public final class Server {
                 // the car side can read the stream; profile=default leaves the vendor's choice (High on
                 // S26U) alone. A rejected request falls back on its own — see H264Encoder.open().
                 boolean constrainedBaseline = !"default".equals(raw.getOrDefault("profile", "baseline"));
-                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps, constrainedBaseline);
+                // bitrate_mode=cbr (default) asks for steady frame sizes; "default" leaves the vendor's choice.
+                // intra_refresh=N spreads intra macroblocks over N frames instead of periodic IDRs (vendor-dependent, off by default).
+                String mode = raw.getOrDefault("bitrate_mode", "cbr");
+                String bitrateMode = "default".equals(mode) ? "" : mode;
+                if (!bitrateMode.isEmpty() && !"cbr".equals(bitrateMode) && !"vbr".equals(bitrateMode)) {
+                    throw new IllegalArgumentException("bitrate_mode must be cbr, vbr or default");
+                }
+                int intraRefresh = Integer.parseInt(raw.getOrDefault("intra_refresh", "0"));
+                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps, constrainedBaseline, bitrateMode, intraRefresh);
             } catch (RuntimeException e) {
                 System.err.println("carcast-server: bad display options: " + e.getMessage());
                 System.exit(2);
@@ -121,7 +129,7 @@ public final class Server {
         InputInjector injectorTmp = null;
         if (source != null) {
             try {
-                injectorTmp = new InputInjector(source.width(), source.height(), source::displayId);
+                injectorTmp = new InputInjector(source::width, source::height, source::displayId);
             } catch (Throwable t) {
                 System.out.println("carcast-server: input injector unavailable: " + t);
             }
@@ -217,6 +225,30 @@ public final class Server {
             if ("/api/hotspot".equals(path)) {
                 return Hotspot.route(method);
             }
+            // The encoder at runtime: GET says what it is, POST ?width=&height=&fps=&bitrate= rebuilds it (the display
+            // and the app stay). The car's quality picker and its automatic step-down both come through here.
+            if ("/api/encoder".equals(path)) {
+                if (source == null) {
+                    return "{\"ok\":false,\"error\":\"no display source\"}";
+                }
+                if (!"POST".equals(method)) {
+                    return com.carcast.core.Json.INSTANCE.obj(source.encoderInfo());
+                }
+                try {
+                    Map<String, Object> info = source.reconfigure(
+                            intOrNull(query.get("width")), intOrNull(query.get("height")),
+                            intOrNull(query.get("fps")), intOrNull(query.get("bitrate")));
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    out.put("ok", true);
+                    out.putAll(info);
+                    return com.carcast.core.Json.INSTANCE.obj(out);
+                } catch (Exception e) {
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    out.put("ok", false);
+                    out.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+                    return com.carcast.core.Json.INSTANCE.obj(out);
+                }
+            }
             if (!"/api/screen".equals(path)) {
                 return null;
             }
@@ -237,6 +269,13 @@ public final class Server {
             screen.setCarWatching(() -> session.getVideoClients() > 0);
             return kotlin.Unit.INSTANCE;
         });
+    }
+
+    private static Integer intOrNull(String s) {
+        if (s == null || s.isEmpty()) {
+            return null;
+        }
+        return Integer.parseInt(s);
     }
 
     /** "1280x720/160" → {width, height, dpi}; dpi defaults to 160. */

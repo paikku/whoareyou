@@ -4,7 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>CarCast</title>
-<link rel="stylesheet" href="style.css">
+<!-- __BUILD__ 는 폰 서버가 APK 의 빌드 sha 로 바꿔 준다(core HttpServer.serveStatic). 그 값으로 자산 URL 을
+     버전 지정해 차 브라우저가 한 번 받은 것을 다시 받지 않게 한다. 가짜 폰은 바꾸지 않으므로 그대로 남는다. -->
+<meta name="carcast-build" content="__BUILD__">
+<link rel="stylesheet" href="style.css?v=__BUILD__">
 </head>
 <body>
 <div id="stage">
@@ -34,6 +37,21 @@
     차의 홈과 최근앱. 폰의 HOME/APP_SWITCH 키를 보내지 않는 이유는 main.ts 의 주석에 있다 —
     그 키들은 폰의 기본 디스플레이 것이고, 누르면 차에서 보던 앱이 폰으로 끌려간다.
   -->
+  <!-- 화질: 폰 인코더의 크기·fps·비트레이트를 차에서 고른다(/api/encoder). 자동은 내리기만 한다. 아래에 끝에서
+       끝까지의 지연을 재는 버튼 — 폰의 측정 액티비티를 띄우고 화면이 뒤집히는 시간을 잰다. -->
+  <div id="quality" class="overlay sheet" data-ui hidden>
+    <div class="sheet-head">
+      <span class="sheet-title">화질</span>
+      <span id="quality-now" class="sheet-note"></span>
+      <button id="quality-close" class="sheet-close" title="닫기">✕</button>
+    </div>
+    <div id="quality-grid" class="grid"></div>
+    <label class="sheet-row"><input id="quality-auto" type="checkbox"> 차가 못 따라오면 자동으로 한 단계 내리기</label>
+    <div class="sheet-row">
+      <button id="quality-probe" class="state-action">끝에서 끝까지 지연 측정 (10회)</button>
+      <span id="quality-result" class="sheet-note"></span>
+    </div>
+  </div>
   <div id="launcher" class="overlay sheet" data-ui hidden>
     <div class="sheet-head">
       <span id="launcher-title" class="sheet-title">홈</span>
@@ -71,6 +89,9 @@
   <button id="btn-keyboard" class="ic" title="키보드" aria-label="키보드">
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6.5" width="19" height="11" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M8.5 14h7"/></svg>
   </button>
+  <button id="btn-quality" class="ic" title="화질 · 지연 측정" aria-label="화질">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15l3-4 2.5 3 2-2.5L17 15"/></svg>
+  </button>
   <button id="btn-fullscreen" class="ic" title="전체화면" aria-label="전체화면">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5V4h5.5M14.5 4H20v5.5M20 14.5V20h-5.5M9.5 20H4v-5.5"/></svg>
   </button>
@@ -82,6 +103,6 @@
   </a>
 </nav>
 <input id="kbd" class="kbd" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
-<script src="main.js"></script>
+<script src="main.js?v=__BUILD__"></script>
 </body>
 </html>

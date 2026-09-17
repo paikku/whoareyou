@@ -119,6 +119,7 @@ class StreamService : Service() {
                 AssetManagerAssets(assets), Config.HTTP_PORT, "app",
                 extraStatus = { mapOf("vpn" to CarVpnService.state.name, "address" to Config.TUN_ADDRESS) },
                 reportDir = java.io.File(filesDir, "reports"),
+                staticVersion = BuildConfig.GIT_SHA,
             )
             s.onEvent = ::log
             try {

@@ -99,8 +99,9 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/status') {
     res.writeHead(200, { 'content-type': 'application/json' });
     const last = reports[reports.length - 1];
+    const enc = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, encoderRestarts: 0 };
     res.end(JSON.stringify({
-      type: 'status', running: true, source: 'fake', width: 1280, height: 720, addresses: ADDRESSES,
+      type: 'status', running: true, source: 'fake', width: enc.width, height: enc.height, maxFps: enc.fps, bitRate: enc.bitrate, encoderRestarts: enc.encoderRestarts, addresses: ADDRESSES,
       reports: reports.length, lastReport: last ? { id: last.id, receivedAt: last.receivedAt, remote: last.remote, summary: last.summary } : null,
       ...state,
     }));
@@ -185,6 +186,24 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ display: 7, tasks, phone, elsewhere: phone.length + 1 /* 런처 */ }));
     return;
   }
+  // 폰 인코더의 런타임 설정. 진짜 서버는 인코더를 갈아끼운다; 여기서는 값만 들고 있다가 /api/status 에 싣는다.
+  if (url.pathname === '/api/encoder') {
+    state.encoder = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, encoderRestarts: 0 };
+    if (req.method === 'POST') {
+      const n = (k) => (url.searchParams.get(k) ? Number(url.searchParams.get(k)) : null);
+      const w = n('width') ?? state.encoder.width, h = n('height') ?? state.encoder.height, fps = n('fps') ?? state.encoder.fps, bitrate = n('bitrate') ?? state.encoder.bitrate;
+      if (w < 320 || h < 180 || fps < 1 || fps > 120 || bitrate < 200_000) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `bad encoder settings ${w}x${h} ${fps}fps ${bitrate}` }));
+        return;
+      }
+      state.encoder = { width: w, height: h, fps, bitrate, encoderRestarts: state.encoder.encoderRestarts + 1 };
+      state.encoderPosts = (state.encoderPosts ?? 0) + 1;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, ...state.encoder }));
+    return;
+  }
   if (url.pathname === '/api/screen') {
     if (req.method === 'POST') state.screenOn = url.searchParams.get('on') !== '0';
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -221,7 +240,8 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/reset') {
     // 입력 기록과 앱 상태를 처음으로. 하나의 가짜 폰이 모든 스펙과 프로필을 차례로 받으므로, 앞 테스트가
     // 남긴 "차 화면 비어 있음"이 다음 테스트의 시작 화면(홈이 저절로 뜸)을 바꾸던 것을 여기서 끊는다.
-    state.touches = []; state.keys = []; state.texts = [];
+    state.touches = []; state.keys = []; state.texts = []; state.batches = 0; state.keyframeRequests = 0; state.pings = 0;
+    delete state.encoder; state.encoderPosts = 0;
     state.apps = []; state.appOnPhone = false; delete state.appDisplay; delete state.app;
     res.writeHead(200); res.end('ok');
     return;
@@ -266,9 +286,23 @@ wss.on('connection', (ws, req) => {
       if (!isBinary) return;
       const b = Buffer.from(data);
       const kind = b.readUInt8(0);
-      if (kind === 1) state.touches.push({ action: b.readUInt8(1), id: b.readUInt8(2), x: b.readUInt16BE(3) / 65535, y: b.readUInt16BE(5) / 65535, pressure: b.readUInt16BE(7) / 65535, t: Date.now() });
+      // 진짜 서버(core ControlMessage.kt)와 같은 바이트. 터치의 13 번째 바이트부터는 차의 시계(tMs)다.
+      if (kind === 1) state.touches.push({ action: b.readUInt8(1), id: b.readUInt8(2), x: b.readUInt16BE(3) / 65535, y: b.readUInt16BE(5) / 65535, pressure: b.readUInt16BE(7) / 65535, tMs: b.length >= 13 ? b.readUInt32BE(9) : null, t: Date.now() });
       else if (kind === 2) state.keys.push({ action: b.readUInt8(1), keycode: b.readUInt16BE(2) });
       else if (kind === 3) state.texts.push(b.subarray(1).toString('utf8'));
+      // 키프레임 요청: 진짜 서버는 인코더에 IDR 을 부탁한다. 클립 재생기는 그럴 수 없으니 세기만 한다.
+      else if (kind === 4) state.keyframeRequests = (state.keyframeRequests ?? 0) + 1;
+      // 배치: 한 손가락의 MOVE 표본 n 개. 각각을 터치 한 줄로 적어 두면 테스트가 표본 수를 셀 수 있다.
+      else if (kind === 5) {
+        const id = b.readUInt8(1), n = b.readUInt8(2);
+        for (let i = 0; i < n; i++) {
+          const o = 3 + 10 * i;
+          state.touches.push({ action: 2, id, x: b.readUInt16BE(o) / 65535, y: b.readUInt16BE(o + 2) / 65535, pressure: b.readUInt16BE(o + 4) / 65535, tMs: b.readUInt32BE(o + 6), batch: true, t: Date.now() });
+        }
+        state.batches = (state.batches ?? 0) + 1;
+      }
+      // ping: 그대로 되돌린다 — 차가 그 안의 자기 시계로 왕복을 잰다.
+      else if (kind === 6) { state.pings = (state.pings ?? 0) + 1; ws.send(b, { binary: true }); }
     });
     ws.on('close', () => { state.controlClients--; });
   } else if (url.pathname === '/ws/audio') {

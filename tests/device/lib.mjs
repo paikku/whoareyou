@@ -134,6 +134,44 @@ export async function control() {
       ws.send(b);
     },
     async tap(nx, ny) { this.touch(0, nx, ny); await sleep(60); this.touch(1, nx, ny, 0); },
+    /** 차의 시계를 실은 터치(13 바이트). tMs 는 u32 ms. */
+    touchAt(action, nx, ny, tMs, pressure = 1) {
+      const b = Buffer.alloc(13);
+      b.writeUInt8(1, 0); b.writeUInt8(action, 1); b.writeUInt8(0, 2);
+      b.writeUInt16BE(u16(nx), 3); b.writeUInt16BE(u16(ny), 5); b.writeUInt16BE(u16(pressure), 7);
+      b.writeUInt32BE(tMs >>> 0, 9);
+      ws.send(b);
+    },
+    /** 한 손가락의 MOVE 표본 묶음(kind 5): [{x, y, tMs}] 오래된 것부터. */
+    batch(samples) {
+      const b = Buffer.alloc(3 + 10 * samples.length);
+      b.writeUInt8(5, 0); b.writeUInt8(0, 1); b.writeUInt8(samples.length, 2);
+      samples.forEach((s, i) => {
+        const o = 3 + 10 * i;
+        b.writeUInt16BE(u16(s.x), o); b.writeUInt16BE(u16(s.y), o + 2); b.writeUInt16BE(u16(1), o + 4); b.writeUInt32BE(s.tMs >>> 0, o + 6);
+      });
+      ws.send(b);
+    },
+    /** 키프레임 요청(kind 4). */
+    keyframe() { ws.send(Buffer.from([4])); },
+    /** ping(kind 6)을 보내고 폰이 그대로 되돌려 줄 때까지 기다린다. 왕복 ms 를 돌려준다. */
+    ping(seq = 1, timeoutMs = 3000) {
+      const b = Buffer.alloc(9);
+      b.writeUInt8(6, 0); b.writeUInt32BE(seq >>> 0, 1); b.writeUInt32BE(Date.now() >>> 0, 5);
+      const t0 = Date.now();
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { ws.off('message', on); reject(new Error(`ping ${seq}: ${timeoutMs}ms 안에 echo 없음`)); }, timeoutMs);
+        const on = (data, isBinary) => {
+          if (!isBinary) return;
+          const r = Buffer.from(data);
+          if (r.length === 9 && r.readUInt8(0) === 6 && r.readUInt32BE(1) === (seq >>> 0)) {
+            clearTimeout(timer); ws.off('message', on); resolve(Date.now() - t0);
+          }
+        };
+        ws.on('message', on);
+        ws.send(b);
+      });
+    },
     close() { try { ws.close(); } catch { /* 이미 닫힘 */ } },
   };
 }
