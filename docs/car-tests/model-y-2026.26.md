@@ -92,3 +92,24 @@
     2. 제 stall 복구가 소켓을 누적시킴: `stop()` 뒤 옛 소켓의 `onclose`가 재시도를 한 번 더 걸어 복구마다 스트림이 하나씩 늘어
        2초당 패킷이 13→108까지 증가(65초에 5780개). 수정: `ReconnectingWs.restart()`가 옛 소켓 핸들러를 떼고 닫는다.
   - DPR 1.96 — 지금까지 가정한 1 / 1.5와 다르다. e2e 프로젝트에 1.96 프로필 추가 검토.
+
+## 5. 2026-09-17 방문 — 빌드 `f0e43e2` (터치·영상 부드러움 작업 뒤)
+
+주차 상태, 유튜브 홈 화면. 세션 리포트 **#59**(09:26 UTC), 직전 `/diag` **#58**. UA 는 여전히 `X11; Linux x86_64` + `Chrome/148`, 뷰포트 804x638 @ DPR 1.96.
+
+| 항목 | 값 | 어디서 |
+|---|---|---|
+| 렌더러 | `h264`, **`offscreen: true`** (워커가 OffscreenCanvas 에 직접 그림), `lastError` 없음 | #59 `stats` |
+| fps / lag | **30fps / 9.5~13ms** (perf 샘플 12ms, 10ms) | #59 `stats`, `perf` |
+| 컨트롤 왕복(rtt) | **5~11ms** (상태줄 사진: `rtt 6ms`) | #59 `perf.rttMs`, 화면 |
+| 드롭 / 적체 / 복구 / 재접속 | 0 / 0 / 0 / 0 | #59 |
+| rAF 페이싱으로 건너뛴 그림 | 8 / 680 프레임 (한 vsync 에 두 장 온 경우) | #59 `stats.skipped` |
+| 인코더 | `c2.qti.avc.encoder`, `constrained-baseline+cbr 요청` (거부 아님), `avc1.42C020` | `/api/status` |
+| 키프레임 | 5303 프레임에 13 (GOP 10 초 + attach 요청) — 2 초마다의 IDR 버스트 없음 | `/api/status` |
+| 터치 | `injected 18, injectFailed 0, controlErrors 0` — 13 바이트 패킷이 One UI 8 에 주입됨. **드래그는 안 해서 `touch.batches 0`** | #59, `/api/status` |
+| 같은 자리의 MSE (대조) | `/diag` #58: `video 151f 30fps lag 142ms`, WS 20/20 26ms | #58 |
+| WebCodecs | `false` (http 라 secure context 아님 — "없다"가 아니라 "모른다") | #59 `caps` |
+
+읽는 법: 캔버스 경로의 지연(10ms)이 MSE(142ms)의 1/10 이고, 컨트롤 왕복이 한 자리 수 ms 이므로 "터치가 굼뜨다"가
+나오면 링크가 아니라 폰의 렌더·인코드 쪽이다. 이 세션은 23 초짜리 탭 위주였다 — **다음에 볼 것:** D 에서 유튜브 피드·지도를
+스크롤하고 튕겨 보고, 💾 를 눌러 `touch.batches` 가 0 보다 큰지, `드롭`·`키프레임요청` 이 붙는지, 플링 세기가 고른지를 적는다.
