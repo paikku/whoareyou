@@ -22,6 +22,19 @@ interface Report {
   video?: { packets: number; frames: number; fps: number; latencyMs: number; error: string; state: string; packetTimes: string };
   /** Control group: the car must fail to reach the phone's real (private) addresses. */
   addresses?: Record<string, 'reachable' | 'blocked' | 'skipped'>;
+  /**
+   * The one question plain http cannot ask: does this browser have a hardware decoder we could drive?
+   * `secure` is what the page found where it is now; on http `videoDecoder` is always false and means
+   * "could not ask", which is why `isSecureContext` travels with it.
+   */
+  secure?: {
+    isSecureContext: boolean;
+    videoDecoder: boolean;
+    /** codec + hardwareAcceleration → 'supported' | 'unsupported' | an error string. */
+    configs: Record<string, string>;
+    /** Where the same page can be reopened in a secure context (the phone's TLS listener), if there is one. */
+    httpsUrl: string;
+  };
   summary: string;
   log: string;
 }
@@ -84,6 +97,79 @@ row(api, 'requestVideoFrameCallback', 'requestVideoFrameCallback' in HTMLVideoEl
 row(api, 'Fullscreen API', typeof document.documentElement.requestFullscreen === 'function', report.api);
 row(api, 'Pointer Events', typeof (window as any).PointerEvent !== 'undefined', report.api);
 row(api, 'createImageBitmap', typeof createImageBitmap === 'function', report.api);
+
+/**
+ * WebCodecs, asked where it can actually answer.
+ *
+ * `VideoDecoder` is `[SecureContext]` in the WebCodecs IDL, so on `http://100.99.9.9:3333` it is absent no
+ * matter what the browser can do — the X in the API table above says "not asked", not "not there". The phone
+ * also serves the same pages over TLS with a self-signed certificate (`/api/status.httpsPort`); past the
+ * car's warning that origin is secure, and then this table means something. What we want to learn there:
+ * whether a decoder exists at all, and whether it will give us a **hardware** one — that is what would take
+ * the car's software decoder (and the Baseline-only limit it puts on the phone's encoder) out of the picture.
+ */
+async function codecProbe(): Promise<void> {
+  const table = $('codec');
+  const note = $('codec-note');
+  const VD = (window as any).VideoDecoder;
+  const present = typeof VD === 'function';
+  const secure: NonNullable<Report['secure']> = {
+    isSecureContext,
+    videoDecoder: present,
+    configs: {},
+    httpsUrl: '',
+  };
+
+  row(table, 'secure context', isSecureContext);
+  row(table, 'VideoDecoder', present);
+
+  if (present) {
+    // 42C01F: exactly what the phone's encoder sends today (Constrained Baseline 3.1). 640028: High 4.0 —
+    // if that one decodes in hardware, the encoder could stop being held down to Baseline for the sake of
+    // the car's WASM decoder, which is worth a chunk of bitrate at the same picture.
+    for (const [label, codec] of [['우리 스트림 (Baseline)', 'avc1.42C01F'], ['High 4.0', 'avc1.640028']] as const) {
+      for (const hw of ['no-preference', 'prefer-hardware'] as const) {
+        const key = `${label} / ${hw}`;
+        try {
+          const res = await VD.isConfigSupported({
+            codec, codedWidth: 1280, codedHeight: 720, optimizeForLatency: true, hardwareAcceleration: hw,
+          });
+          secure.configs[key] = res?.supported ? 'supported' : 'unsupported';
+          row(table, key, !!res?.supported);
+        } catch (e) {
+          secure.configs[key] = String(e);
+          row(table, key, String(e));
+        }
+      }
+    }
+  }
+
+  // Where to go to ask properly. The phone knows its own TLS port; if it has none, say so plainly rather
+  // than leaving a reader to wonder whether the X above was an answer.
+  if (!isSecureContext) {
+    let httpsPort = 0;
+    try {
+      const st = await (await fetch('/api/status')).json();
+      httpsPort = Number(st.httpsPort) || 0;
+    } catch { /* the note below still says what this X means */ }
+    if (httpsPort) {
+      secure.httpsUrl = `https://${location.hostname}:${httpsPort}/diag.html`;
+      note.innerHTML = `평문 http 라 <b>물어볼 수 없었습니다</b> — 위의 X 는 "없다"가 아니라 "못 물었다"입니다. ` +
+        `<a class="link" href="${secure.httpsUrl}">${secure.httpsUrl}</a> 를 열고 경고를 넘긴 뒤 다시 보세요 ` +
+        `(자체서명 인증서라 경고가 뜹니다 — 그것이 정상입니다).`;
+    } else {
+      note.textContent = '평문 http 라 물어볼 수 없었고, 폰에 TLS listener 도 없습니다 (https_port=0). 위의 X 는 답이 아닙니다.';
+    }
+  } else if (!present) {
+    note.textContent = 'secure context 인데도 VideoDecoder 가 없습니다 — 이 브라우저에는 WebCodecs 가 없다는 뜻입니다.';
+  } else {
+    note.textContent = 'secure context 에서 물었습니다. 이 표가 곧 답입니다.';
+  }
+
+  report.secure = secure;
+  (window as any).__diag.secure = secure;
+  log(`codec probe secure=${isSecureContext} videoDecoder=${present}`);
+}
 
 // WebSocket: 20 sequential handshakes, count successes. Tesla intermittently fails these.
 async function wsProbe(): Promise<void> {
@@ -235,7 +321,9 @@ function summarize(): string {
     w ? `ws ${w.ok}/20 ${w.avg}ms` : 'ws -',
     v ? `video ${v.frames}f ${v.fps}fps lag ${v.latencyMs}ms${v.error ? ` err=${v.error}` : ''}` : 'video -',
     `private-ip blocked=${blocked} reachable=${reachable}`,
-  ].join(', ');
+    // Reading a report later, "WebCodecs X" is worthless without knowing where it was asked.
+    report.secure ? `secure=${report.secure.isSecureContext ? 'O' : 'X'} webcodecs=${report.secure.videoDecoder ? 'O' : 'X'}` : '',
+  ].filter(Boolean).join(', ');
 }
 
 let submitted = false;
@@ -274,6 +362,7 @@ async function step(name: string, fn: () => Promise<void>): Promise<void> {
     log(`watchdog: ${WATCHDOG_MS / 1000}초 안에 안 끝남, 지금까지 결과 저장`);
     submit().then(() => { (window as any).__diag.done = true; });
   }, WATCHDOG_MS);
+  await step('codec probe', codecProbe);
   await step('ws probe', wsProbe);
   await step('video probe', videoProbe);
   await step('address probe', addressProbe);

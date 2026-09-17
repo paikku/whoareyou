@@ -75,6 +75,7 @@
 | `app` | `BulkControlTest` | 일괄 끄기의 **순서**(서버 → 세션)를 가짜 loopback 서버로 확인 — 킬 스위치가 그 서버로 가는 요청이라 세션을 먼저 내리면 끌 방법이 사라진다. 핫스팟은 건드리지 않는다. 두 번 누르면 두 번째는 거절 |
 | `app` | `CarCastWidgetTest` | 위젯 스위치: 끄기는 VPN 동의를 기다리지 않고, 켜기는 동의 없이 시작하지 않는다. 세션만 살고 서버가 죽은 상태를 "켜짐"으로 보이지 않는다 (상태를 가진 쪽이 바뀔 때마다 다시 그려 주는 것은 `StreamService`·`CarVpnService` 의 몫) |
 | `core` | `ExtraApiTest` | 호스트가 더한 `/api` 경로가 요청을 받고 그 답이 서빙된다. null 을 주면 코어 경로로 넘어간다 — 호스트 경로가 `/api/status` 를 가려 버리면 차가 멈춘다 |
+| `core` | `SelfSignedCertTest` | 손으로 쓴 X.509(DER)가 **진짜 파서에 통과하는가**: `CertificateFactory` 파싱, 자기 서명 검증, SAN 에 `100.99.9.9`·loopback·핫스팟 주소, extKeyUsage serverAuth, CA 아님. 그리고 재기동 후 같은 인증서(차가 매번 다시 경고를 넘지 않게), 깨진 키스토어는 교체(페이지를 잃지 않게), 마지막으로 **진짜 TLS 핸드셰이크로 `/api/status` 가 나오는가** |
 | `core` | `StaleFrameTest` | 영상 소켓 앞의 큐가 **지연 예산**이라는 계약: 4장을 넘으면 P프레임을 버리고(다음 키프레임까지) 소스에 IDR 을 부탁한다, 키프레임은 언제나 보낸다(그것이 복구를 끝내는 것), 따라오는 손님은 한 장도 안 잃는다. 예전 계약(64장 = 2초를 쌓아 두었다가 전부 늦게 배달)이 리포트 #27 의 모양이었다 |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
@@ -89,6 +90,7 @@
 | `stream.spec` | MSE 렌더러 fps ≥ 25, pts 대비 렌더 지연 < 300ms, 10초 무정지, `?renderer=mjpeg` 강제 | ✅ | ✅ |
 | `input.spec` | 클릭 → 서버가 받은 정규화 좌표(레터박스 보정) 검증, 네비 바 → Android 키코드 | ✅ | skip(가짜 폰 전용 API) |
 | `reconnect.spec` | 핸드셰이크 거부 34% + 150ms 지연 + 5초마다 소켓 절단 하에서 15초 내 영상 복구 | ✅ | skip |
+| `secure-context.spec` | **자체서명 인증서를 넘긴 https 오리진이 secure context 인가**, 거기서 `VideoDecoder` 가 보이고 `isConfigSupported` 표가 채워져 리포트에 실리는가. 평문에서는 "못 물었다"를 말하고 https 주소를 안내하는가 | skip(TLS 없음) | ✅ (2026-09-17, Chrome 148) |
 
 결과: 가짜 폰 대상 **14/14**, JVM으로 띄운 shell 서버(`./gradlew :core:run`, APK의 assets 그대로) 대상 **8/14 통과, 6 skip**.
 같은 서버 코드가 폰의 shell 프로세스에서 돌기 때문에, 폰에서 남는 미검증 요소는 프로세스 환경과 네트워크뿐이다(§3.3에서 확인).
@@ -445,6 +447,24 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 6. M7 📵: SurfaceControl 경로(`fdc2350`)가 S26U에서 되는지. M6: `output` 캡처를 서버에 넣고 차 스피커로.
 7. M4-b 같은 앱을 폰과 차에서: 기본(`restart=never`)이 폰의 유튜브를 **재생 위치째** 차로 옮기는지(2026-09-17에 `auto`에서 되돌림), "새로 열기"(`always`)가 종료 후 새로 띄우는지, 폰 런처가 앱을 가져갈 때 `appOnPhone`이 5초 안에 true가 되는지, 사용자 조작 없이 앱이 폰으로 돌아가는 경로가 있는지,
    그리고 One UI 8의 `am stack list` 출력이 `TaskList` 파서와 맞는지(안 맞으면 `appDisplay`가 항상 null). 절차: testing-guide §B "M4-b".
+10. **차 브라우저에 WebCodecs 가 있는가 (C) — HTTPS 착수 전의 유일한 질문:** 2026-09-17 에 재는 도구를
+   달았다. 폰이 자기 주소(`100.99.9.9`·핫스팟·loopback)로 **자체서명 인증서**를 만들어 `:3443` 에
+   같은 페이지를 TLS 로도 서빙하고(`/api/status.httpsPort`·`tlsFingerprint`), `/diag` 가 그 자리에서
+   `isSecureContext`·`VideoDecoder`·`isConfigSupported`(Baseline/High × no-preference/prefer-hardware)를
+   재서 리포트에 싣는다.
+   - **여태의 `WebCodecs X` 는 답이 아니었다.** `VideoDecoder` 는 명세상 `[SecureContext]` 라 평문
+     오리진에는 객체 자체가 없다 — "차에 없다"가 아니라 "물어볼 수 없었다"이다(prior-art §5.4 정정).
+   - A 층에서 확인된 것(Chrome 148, 차와 같은 엔진): 인증서 오류를 넘긴 https 오리진은 **secure
+     context 이고**, 거기서 `VideoDecoder` 가 보이며 Baseline·High 가 `no-preference` 로 `supported`,
+     `prefer-hardware` 는 이 컨테이너(GPU 없음)에서 `unsupported` — 즉 **프로브가 하드웨어와
+     소프트웨어를 실제로 가른다.**
+   - 차에서 볼 것: ① 경고 화면이 뜨고 "고급 → 계속"이 있는가(없으면 이 길은 끝), ② `isSecureContext`,
+     ③ `VideoDecoder`, ④ `prefer-hardware` 가 supported 인가.
+   - 판정: `isSecureContext O` 인데 `VideoDecoder X` → **테슬라 빌드에 WebCodecs 가 없다. 진짜 인증서
+     작업은 무의미하니 접고 WebRTC(평문에서도 되는 `RTCPeerConnection`, 실차 O)를 본다.** 둘 다 O 면
+     그때 비로소 "경고 없이 열리게 하는 법"(공개 도메인 + 진짜 인증서)이 할 일이 된다.
+   - 그 앞에 붙는 별도 확인: **공개 도메인 하나가 차에서 우리 주소로 해석되는가**(평문으로 먼저).
+     안 되면 인증서를 사도 못 쓴다 — Castla issue #51 의 DNS64/NAT64 사망(prior-art §4).
 8. **폰 안쪽 지연 예산이 실제로 어디로 가는가 (B → C):** 2026-09-17 에 계측을 달았다(`FrameTiming`,
    `/api/status.timing`). 지금까지 아는 것은 끝에서 끝 43ms(720p30, report #61), 컨트롤 왕복 5~11ms,
    차의 디코드→그리기 9.5~13ms 뿐이고, **그 사이 25ms 는 한 덩어리**였다. 새 두 수치가 그것을 가른다:

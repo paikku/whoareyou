@@ -15,6 +15,10 @@ import java.io.File
  *  - assets=<dir>       alternative to apk= for development (e.g. app/src/main/assets)
  *  - reports=<dir>      where /diag reports posted by the car are kept (one JSON file each). Defaults to
  *                       /data/local/tmp/carcast on Android (writable by shell), memory-only elsewhere.
+ *  - https_port=3443    second listener for the same pages over TLS with a self-signed certificate
+ *                       (0 turns it off). The car shows a warning once; past it the page is a secure
+ *                       context, which is the only place /diag can ask whether this browser has
+ *                       WebCodecs. A measuring instrument — see net/SelfSignedCert.kt.
  *  - daemon=true        do not watch stdin; run until killed (pkill -f com.carcast.server.Server).
  *                       For car tests without a PC in the car:
  *                       adb shell 'CLASSPATH=... setsid nohup app_process / com.carcast.server.Server <sha> daemon=true >/dev/null 2>&1 &'
@@ -23,10 +27,17 @@ import java.io.File
  * interactive `adb shell`) tears it down: closing the adb stream kills the server. That is the kill switch.
  */
 object ServerMain {
+    /** The TLS port. Plain 3333 stays the address everything else uses; this one is for /diag in the car. */
+    const val DEFAULT_HTTPS_PORT = 3443
+
     class Options(val port: Int, val assets: Assets, val buildId: String, val raw: Map<String, String>) {
         val daemon: Boolean get() = raw["daemon"] == "true"
         val reportDir: File? get() = raw["reports"]?.let { File(it) }
             ?: File("/data/local/tmp").takeIf { it.isDirectory && it.canWrite() }?.let { File(it, "carcast") }
+        /** Default on: the question it answers can only be asked from inside the car, one visit at a time. */
+        val httpsPort: Int get() = raw["https_port"]?.toIntOrNull() ?: DEFAULT_HTTPS_PORT
+        /** Next to the reports, which is the directory this process already owns. */
+        val tlsKeystore: File? get() = reportDir?.let { File(it, "tls.p12") }
     }
 
     fun parse(args: Array<String>): Options {
@@ -66,7 +77,7 @@ object ServerMain {
     ) {
         val session = StreamSession(
             opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource,
-            staticVersion = opts.buildId,
+            staticVersion = opts.buildId, httpsPort = opts.httpsPort, tlsKeystore = opts.tlsKeystore,
         )
         session.onStartApp = startApp
         session.controlHandler = control

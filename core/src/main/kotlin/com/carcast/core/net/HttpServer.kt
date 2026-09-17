@@ -28,6 +28,13 @@ class HttpServer(
      * Null (tests, dev) keeps every response `no-store`.
      */
     private val staticVersion: String? = null,
+    /**
+     * When set, this listener speaks TLS: the same pages and the same sockets, over https/wss. It exists
+     * so the car can be asked one question it cannot answer on plain http — whether it has WebCodecs,
+     * which is `[SecureContext]` (see [SelfSignedCert]). Everything below is unchanged: an SSLSocket is a
+     * Socket, the handshake happens inside the first read, and [Socket.setSoTimeout] already bounds it.
+     */
+    private val ssl: javax.net.ssl.SSLContext? = null,
 ) {
     fun interface WsHandler {
         /** Called on a fresh connection; return false to reject (404). */
@@ -63,13 +70,13 @@ class HttpServer(
 
     @Throws(IOException::class)
     fun start() {
-        val s = ServerSocket()
+        val s = ssl?.serverSocketFactory?.createServerSocket() ?: ServerSocket()
         s.reuseAddress = true
         s.bind(InetSocketAddress("0.0.0.0", port), 16)
         server = s
         running = true
-        Thread({ acceptLoop(s) }, "http-accept").apply { isDaemon = true }.start()
-        Log.i(TAG, "listening on 0.0.0.0:$port")
+        Thread({ acceptLoop(s) }, if (ssl != null) "https-accept" else "http-accept").apply { isDaemon = true }.start()
+        Log.i(TAG, "listening on 0.0.0.0:$port${if (ssl != null) " (TLS)" else ""}")
     }
 
     fun stop() {

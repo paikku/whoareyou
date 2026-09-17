@@ -5,6 +5,7 @@ import com.carcast.core.media.ControlMessage
 import com.carcast.core.media.MediaHub
 import com.carcast.core.media.VideoSource
 import com.carcast.core.net.HttpServer
+import com.carcast.core.net.SelfSignedCert
 import com.carcast.core.net.WebSocketConnection
 import java.io.File
 import java.io.IOException
@@ -30,9 +31,21 @@ class StreamSession(
     private val videoSource: VideoSource? = null,
     /** Build sha of the bundled web files; lets the car cache them (HttpServer.serveStatic). Null: no caching. */
     private val staticVersion: String? = null,
+    /**
+     * A second listener for the same pages over TLS (0: off). It is a measuring instrument, not a feature:
+     * the certificate is self-signed, so the car shows a warning that has to be clicked through, and the one
+     * thing that buys is a **secure context** — the only place `VideoDecoder` (WebCodecs) can be asked about
+     * at all. /diag reports what it finds there. See [com.carcast.core.net.SelfSignedCert].
+     */
+    private val httpsPort: Int = 0,
+    /** Where the self-signed certificate is kept so the car is not asked to trust a new one every start. */
+    private val tlsKeystore: File? = null,
 ) {
     val reports = ReportStore(reportDir)
     private var http: HttpServer? = null
+    private var https: HttpServer? = null
+    /** SHA-256 of the self-signed certificate the car is being asked to accept; null when TLS is off. */
+    @Volatile private var tlsFingerprint: String? = null
     private val videoHub = MediaHub()
     private val audioHub = MediaHub()
     private var clip: ClipSource? = null
@@ -107,6 +120,7 @@ class StreamSession(
         http = server
         running = true
         event("HTTP 서버 시작 ($process): 0.0.0.0:$port" + if (reports.size > 0) ", 저장된 진단 ${reports.size}건" else "")
+        startTls()
         videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개, 다음 키프레임까지 버림") }
         videoHub.onNeedKeyframe = { requestKeyframe() }
         videoHub.onClientDropped = { remote -> event("video 클라이언트 $remote 를 놓아줌: init 세그먼트를 받지 못함 — 재접속을 기다린다") }
@@ -127,6 +141,25 @@ class StreamSession(
         } else startClip()
     }
 
+    /**
+     * The TLS listener, if one was asked for. Never fatal: a phone whose security provider will not make an
+     * EC key, or a keystore that cannot be written, must cost the driver a diagnostic — not the picture.
+     */
+    private fun startTls() {
+        if (httpsPort <= 0) return
+        try {
+            val tls = SelfSignedCert.load(tlsKeystore, localAddresses())
+            val server = HttpServer(assets, httpsPort, ::onWebSocket, ::onApi, staticVersion, ssl = tls.sslContext)
+            server.start()
+            https = server
+            tlsFingerprint = tls.fingerprint
+            event("HTTPS 서버 시작: 0.0.0.0:$httpsPort — 차에서 경고를 한 번 넘기면 secure context 다 (인증서 ${tls.fingerprint.take(17)}…)")
+        } catch (e: Throwable) {
+            event("HTTPS 서버 실패 (${e.message ?: e}) — 평문은 그대로 돈다")
+            Log.w(TAG, "TLS listener failed", e)
+        }
+    }
+
     private fun startClip() {
         if (assets.exists("clips/$TEST_CLIP")) {
             clip = ClipSource(assets, "clips/$TEST_CLIP", videoHub).also { it.start() }
@@ -140,6 +173,7 @@ class StreamSession(
         if (!running) return
         if (liveSourceRunning) { runCatching { videoSource?.stop() }; liveSourceRunning = false }
         clip?.stop(); clip = null
+        https?.stop(); https = null
         videoHub.closeAll()
         audioHub.closeAll()
         for (c in controlClients) c.close()
@@ -262,6 +296,10 @@ class StreamSession(
             "running" to running,
             "process" to process,
             "port" to port,
+            // What the car has to open to be in a secure context, and the certificate it will be asked to
+            // accept. Absent means no TLS listener — and then a "WebCodecs X" in a report means nothing.
+            "httpsPort" to (httpsPort.takeIf { https != null } ?: 0),
+            "tlsFingerprint" to tlsFingerprint,
             "videoClients" to videoHub.clientCount,
             "videoClientStats" to videoHub.clientStats(),
             "controlClients" to controlClients.size,
