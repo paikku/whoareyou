@@ -22,7 +22,8 @@ import java.io.File
  *  - tls_cert=<pem>     a certificate a public CA signed (chain) and its key, used instead of the
  *    tls_key=<pem>      self-signed one. The car this was built for will not let anyone click through a
  *                       certificate warning, so only a trusted certificate reaches a secure context there.
- *                       A pair bundled in the APK under assets/tls/ is used when these are absent.
+ *                       A pair bundled in the APK under assets/tls/ is used when these are absent, and
+ *                       `POST /api/tls` (loopback only) replaces them without a rebuild.
  *  - daemon=true        do not watch stdin; run until killed (pkill -f com.carcast.server.Server).
  *                       For car tests without a PC in the car:
  *                       adb shell 'CLASSPATH=... setsid nohup app_process / com.carcast.server.Server <sha> daemon=true >/dev/null 2>&1 &'

@@ -332,6 +332,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** One line about the newest report the car sent, from the /api/status JSON the service polls. */
+    /**
+     * 차가 열어야 할 **빠른 주소**. 공개 CA 가 서명한 인증서를 서버가 쓰고 있을 때만 있다 —
+     * 자체서명은 이 차에서 경고를 넘을 수 없고(2026-09-17 실측), 경고를 넘지 못하면 secure context 도,
+     * 하드웨어 디코더도 없다. 없으면 null 이고 화면에는 평문 주소만 남는다.
+     */
+    private fun fastUrl(statusJson: String?): String? {
+        val st = runCatching { JSONObject(statusJson ?: return null) }.getOrNull() ?: return null
+        if (!st.optBoolean("tlsTrusted")) return null
+        val host = st.optString("tlsHost").ifBlank { return null }
+        val port = st.optInt("httpsPort").takeIf { it > 0 } ?: return null
+        return "https://$host:$port/"
+    }
+
+    /** 무슨 인증서로, 언제까지. 90일짜리를 쓰면 이 날짜가 곧 "차에서 갑자기 경고가 뜨는 날"이다. */
+    private fun tlsLine(statusJson: String?): String? {
+        val st = runCatching { JSONObject(statusJson ?: return null) }.getOrNull() ?: return null
+        if (st.optInt("httpsPort") <= 0) return null
+        val subject = st.optString("tlsSubject").ifBlank { "?" }
+        val until = st.optString("tlsNotAfter").take(10).ifBlank { "?" }
+        return if (st.optBoolean("tlsTrusted")) "$subject, $until 까지" else "자체서명 ($subject) — 이 차는 경고를 넘지 못한다"
+    }
+
     private fun lastReportLine(statusJson: String?): String {
         val st = runCatching { JSONObject(statusJson ?: return "-") }.getOrNull() ?: return "-"
         val n = st.optInt("reports", 0)
@@ -464,8 +486,12 @@ class MainActivity : AppCompatActivity() {
                 ).append('\n')
                 if (!onWifi() && prefs.tcpPort == 0) append("※ ").append(getString(R.string.wifi_hint)).append('\n')
                 append("핫스팟: ").append(hotspotLine(st)).append('\n')
+                // 차가 하드웨어 디코더에 닿으려면 https 여야 한다(VideoDecoder 는 secure context 전용). 그래서
+                // 신뢰받는 인증서가 있으면 **그 주소를 먼저** 보여 준다 — 차의 북마크는 한 번 정해지면 그대로다.
+                fastUrl(st)?.let { append("URL(빠름·하드웨어 디코더): ").append(it).append("\n") }
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
+                tlsLine(st)?.let { append("인증서: ").append(it).append('\n') }
                 append("차에서 보낸 진단: ").append(lastReportLine(st)).append('\n')
                 append("인터페이스:\n")
                 for (i in SelfTest.interfaces()) append("  ").append(i.name).append(' ').append(i.address).append('\n')

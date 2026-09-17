@@ -575,6 +575,7 @@ async function pollStatus(): Promise<void> {
     // 화질을 바꾸면 그림의 크기가 바뀐다(/api/encoder). 터치 좌표는 그 크기 기준이므로 여기서도 맞춘다.
     if (st.width && st.height) touch.setVideoSize(st.width, st.height);
     renderQuality();
+    renderFastAddress();
     // 하드웨어 디코더로 붙었으면 Baseline 에 머물 이유가 없다 — 한 번만 올려 달라고 한다.
     void askForProfile();
     const now = st.appOnPhone === true;
@@ -967,6 +968,27 @@ function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
   });
 }
 qualityProbe.addEventListener('click', () => { void runProbe(); });
+
+/**
+ * "하드웨어 디코더로 열기".
+ *
+ * 차가 평문(100.99.9.9)으로 열면 그림은 WASM 디코더가 푼다 — 그것 때문에 폰 인코더가 Baseline 에
+ * 묶이고 해상도·fps 의 천장도 거기서 생긴다. 폰이 **공개 CA 가 서명한** 인증서를 들고 있으면 같은
+ * 화면을 https 로 열 수 있고, 거기서는 `VideoDecoder` 가 존재해 하드웨어로 푼다(실차 report #67).
+ * 자체서명일 때는 내놓지 않는다 — 이 차의 인증서 경고는 넘을 수가 없어서 막다른 길이다.
+ */
+const fastRow = $<HTMLElement>('fast-row');
+const fastOpen = $<HTMLButtonElement>('fast-open');
+const fastNote = $('fast-note');
+function renderFastAddress(): void {
+  const st = lastStatus;
+  const already = renderer.name === 'webcodecs';
+  const url = st?.tlsTrusted && st?.tlsHost && st?.httpsPort ? `https://${st.tlsHost}:${st.httpsPort}/` : '';
+  fastRow.hidden = !url || already;
+  if (!url || already) return;
+  fastNote.textContent = st.tlsNotAfter ? `${st.tlsHost} · ${String(st.tlsNotAfter).slice(0, 10)} 까지` : String(st.tlsHost);
+  fastOpen.onclick = () => { location.href = url; };
+}
 
 /** 초반과 최근을 견준다. 처음부터 느린 것과 **점점** 느려지는 것은 다른 문제다. */
 function perfTrend(): { early: number; recent: number; backlog: number } | null {

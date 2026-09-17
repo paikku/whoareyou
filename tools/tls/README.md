@@ -63,5 +63,21 @@ supported), HTTPS 는 이제 진단 도구가 아니라 **제품 요구사항**�
    `app/src/main/assets/tls/` 에 두고 APK 를 다시 빌드. 서버는 파일 → 자산 → 자체서명 순으로 고른다.
    `/api/status.tlsNotAfter` 가 만료일을 싣는다 — 차에서 갑자기 경고가 뜨기 전에 보라고 있는 값이다.
 
-남은 숙제: **갱신한 인증서를 PC 없이 폰에 넣는 길**. 지금은 `adb push`(PC 필요) 아니면 APK 재빌드뿐이다.
-앱이 받아서 서버에 넘기는 경로(`POST /api/tls`, loopback 전용)를 두는 것이 다음 자리다.
+## 갱신한 인증서를 다시 심기 (`POST /api/tls`)
+
+APK 를 다시 빌드하지 않고 바꿀 수 있다. 몸통은 **PEM 한 덩어리**(체인 + 키)이고, 서버는 세워 본 뒤에만
+저장한 다음 TLS listener 를 새 인증서로 다시 세운다 — 서버는 죽지 않고 차의 연결도 끊기지 않는다.
+
+```bash
+cat out/tls/cert.pem out/tls/key.pem | adb shell 'cat > /data/local/tmp/carcast/new.pem'
+adb shell 'CLASSPATH=... ' # 또는 폰에서:
+curl -X POST --data-binary @- http://127.0.0.1:3333/api/tls < out/tls/cert-and-key.pem
+```
+
+**loopback 전용이다.** 이 서버의 인증서를 바꾸는 일은 곧 "차가 무엇을 믿고 열 것인가"를 바꾸는 일이라,
+핫스팟에 붙은 누구도(차 포함) 건드리지 못한다 — 킬 스위치(`/api/stop`)와 같은 규칙이다. 그래서 부를 수
+있는 것은 폰 위에서 도는 것뿐이고, 지금은 앱이나 adb 셸이다. **앱에 버튼을 다는 것이 다음 자리다** —
+그러면 PC 가 아주 없어도 된다.
+
+실패하면 아무것도 바꾸지 않는다. 망가진 PEM 을 파일로 남겨 두면 다음 기동에서 차가 열 페이지 자체가
+없어지기 때문이다(`SelfSignedCertTest.aRenewedCertificateCanBeInstalledOverLoopback` 이 그 계약을 잡아 둔다).

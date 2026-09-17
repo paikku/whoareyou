@@ -153,6 +153,37 @@ class StreamSession(
     }
 
     /**
+     * PEM 한 덩어리(체인 + 키)를 받아 확인하고, 파일로 남기고, listener 를 다시 세운다.
+     *
+     * 순서가 중요하다: **먼저 세워 보고** 되는 것만 저장한다. 망가진 PEM 을 파일로 남겨 두면 다음
+     * 기동에서 차가 열 페이지 자체가 없어진다.
+     */
+    private fun installTls(pem: String): String {
+        val cert = tlsCert
+        val key = tlsKey
+        if (cert == null || key == null) return Json.obj(mapOf("ok" to false, "error" to "no writable certificate path"))
+        val (chainPem, keyPem) = SelfSignedCert.splitPem(pem)
+        if (chainPem.isBlank() || keyPem.isBlank()) {
+            return Json.obj(mapOf("ok" to false, "error" to "need a certificate chain and a private key in one PEM body"))
+        }
+        return try {
+            // 먼저 세워 본다: 이게 던지면 아무것도 저장하지 않는다.
+            val tls = SelfSignedCert.fromPem(chainPem, keyPem)
+            cert.parentFile?.mkdirs()
+            cert.writeText(chainPem)
+            key.writeText(keyPem)
+            runCatching { key.setReadable(false, false); key.setReadable(true, true) }
+            https?.stop()
+            https = null
+            startTls()
+            event("인증서 교체: ${tls.subject} (${tls.notAfter} 까지)")
+            Json.obj(mapOf("ok" to true, "subject" to tls.subject, "notAfter" to tls.notAfter, "host" to tlsHost, "trusted" to tlsTrusted))
+        } catch (e: Exception) {
+            Json.obj(mapOf("ok" to false, "error" to (e.message ?: e.toString())))
+        }
+    }
+
+    /**
      * The TLS listener, if one was asked for. Never fatal: a phone whose security provider will not make an
      * EC key, or a keystore that cannot be written, must cost the driver a diagnostic — not the picture.
      */
@@ -271,6 +302,19 @@ class StreamSession(
         path == "/api/stop" && method == "POST" -> {
             if (!remote.startsWith("127.")) Json.obj(mapOf("ok" to false, "error" to "loopback only"))
             else { event("종료 요청 ($remote)"); Thread({ Thread.sleep(200); onStopRequest() }, "stop").apply { isDaemon = true }.start(); Json.obj(mapOf("ok" to true)) }
+        }
+        /**
+         * 갱신한 인증서를 심는다. 몸통은 PEM 을 이어 붙인 것(체인 + 키) 하나이고, 성공하면 파일로 남긴
+         * 뒤 TLS listener 를 새 인증서로 다시 세운다 — 서버를 죽이지 않는다.
+         *
+         * **loopback 전용.** 이 서버의 인증서를 바꾸는 일은 곧 "차가 무엇을 믿고 열 것인가"를 바꾸는
+         * 일이라, 핫스팟에 붙은 누구도(차 포함) 건드리지 못한다. 킬 스위치와 같은 규칙이다.
+         *
+         * 이게 있어야 90일마다 APK 를 다시 빌드하지 않는다(tools/tls/issue.sh).
+         */
+        path == "/api/tls" && method == "POST" -> {
+            if (!remote.startsWith("127.")) Json.obj(mapOf("ok" to false, "error" to "loopback only"))
+            else installTls(String(body, Charsets.UTF_8))
         }
         path == "/api/report" && method == "POST" -> {
             val r = reports.add(String(body, Charsets.UTF_8), remote)

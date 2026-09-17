@@ -3,6 +3,7 @@ package com.carcast.core
 import com.carcast.core.net.SelfSignedCert
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -146,6 +147,79 @@ class SelfSignedCertTest {
         "-----BEGIN $kind-----\n" +
             java.util.Base64.getMimeEncoder(64, "\n".toByteArray()).encodeToString(der) +
             "\n-----END $kind-----\n"
+
+    /**
+     * 갱신한 인증서를 PC 없이 심는 길: `POST /api/tls` 에 PEM 한 덩어리(체인 + 키). loopback 만 허용하고
+     * (차가 무엇을 믿고 열지를 바꾸는 일이다), 세워 본 뒤에만 저장하며, listener 가 새 인증서로 다시 선다.
+     */
+    @Test(timeout = 30_000)
+    fun aRenewedCertificateCanBeInstalledOverLoopback() {
+        val httpPort = freePort()
+        val httpsPort = freePort()
+        val certFile = tmp.newFile("tls-cert.pem").also { it.delete() }
+        val keyFile = tmp.newFile("tls-key.pem").also { it.delete() }
+        val session = StreamSession(
+            NoAssets, port = httpPort, process = "test",
+            httpsPort = httpsPort, tlsKeystore = tmp.newFile("tls.p12").also { it.delete() },
+            tlsCert = certFile, tlsKey = keyFile,
+        )
+        session.start()
+        try {
+            val before = fingerprintIn(session.statusJson())
+
+            // 심을 것: 다른 키로 만든 또 하나의 인증서. (진짜 갱신도 이 모양이다 — 같은 이름, 새 바이트.)
+            val fresh = SelfSignedCert.load(tmp.newFile("fresh.p12").also { it.delete() }, emptyList())
+            val store = java.security.KeyStore.getInstance("PKCS12").apply {
+                tmp.root.resolve("fresh.p12").inputStream().use { load(it, "carcast".toCharArray()) }
+            }
+            val key = store.getKey("carcast", "carcast".toCharArray()) as java.security.PrivateKey
+            val body = pem("CERTIFICATE", fresh.certificate.encoded) + pem("PRIVATE KEY", key.encoded)
+
+            // 핫스팟에 붙은 차가 인증서를 바꿀 수 있으면 안 된다. 서버는 0.0.0.0 에 붙어 있으므로 이 호스트의
+            // 비-loopback 주소로 들어가면 서버가 보는 remote 가 127. 이 아니게 된다 — 그 주소가 없는 환경에서는
+            // 확인할 방법이 없으니 건너뛴다(핵심 규칙은 /api/stop 과 같은 한 줄이다).
+            nonLoopbackAddress()?.let { addr ->
+                val refused = post(httpPort, "/api/tls", body, host = addr)
+                assertTrue("차에서 온 요청을 받아 주었다: $refused", refused.contains("loopback only"))
+            }
+            val ok = post(httpPort, "/api/tls", body)
+            assertTrue("설치 실패: $ok", ok.contains("\"ok\":true"))
+
+            assertEquals("인증서 파일에 개인키가 들어갔다", false, certFile.readText().contains("PRIVATE KEY"))
+            assertTrue("키가 저장되지 않았다", keyFile.readText().contains("PRIVATE KEY"))
+            val after = fingerprintIn(session.statusJson())
+            assertNotEquals("listener 가 새 인증서로 다시 서지 않았다", before, after)
+            assertEquals(fresh.fingerprint, after)
+
+            // 망가진 것을 주면 아무것도 바꾸지 않는다 — 저장해 두면 다음 기동에서 차가 열 페이지가 없어진다.
+            val bad = post(httpPort, "/api/tls", "-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----\n")
+            assertTrue("거부했어야 한다: $bad", bad.contains("\"ok\":false"))
+            assertEquals("실패한 설치가 인증서를 갈아치웠다", after, fingerprintIn(session.statusJson()))
+        } finally {
+            session.stop()
+        }
+    }
+
+    private fun fingerprintIn(status: String): String =
+        Regex("\"tlsFingerprint\":\"([^\"]*)\"").find(status)?.groupValues?.get(1).orEmpty()
+
+    /** 이 호스트의 비-loopback IPv4 하나, 없으면 null. */
+    private fun nonLoopbackAddress(): String? = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<java.net.Inet4Address>()
+            .firstOrNull()?.hostAddress
+    }.getOrNull()
+
+    private fun post(port: Int, path: String, body: String, host: String = "127.0.0.1"): String {
+        val conn = java.net.URI("http://$host:$port$path").toURL().openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.doOutput = true
+        conn.outputStream.use { it.write(body.toByteArray()) }
+        val stream = if (conn.responseCode >= 400) conn.errorStream else conn.inputStream
+        return stream.use { it.readBytes().toString(Charsets.UTF_8) }
+    }
 
     /** End to end: the same pages, over TLS, to a client that completes a real handshake. */
     @Test(timeout = 30_000)

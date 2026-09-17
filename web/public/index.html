@@ -51,6 +51,12 @@
       <button id="quality-probe" class="state-action">끝에서 끝까지 지연 측정 (10회)</button>
       <span id="quality-result" class="sheet-note"></span>
     </div>
+    <!-- 하드웨어 디코더는 https 에서만 열린다(VideoDecoder 는 secure context 전용). 폰이 신뢰받는
+         인증서를 들고 있을 때만 보인다. -->
+    <div class="sheet-row" id="fast-row" hidden>
+      <button id="fast-open" class="state-action">하드웨어 디코더로 열기 (권장)</button>
+      <span id="fast-note" class="sheet-note"></span>
+    </div>
   </div>
   <div id="launcher" class="overlay sheet" data-ui hidden>
     <div class="sheet-head">

@@ -287,6 +287,14 @@ async function videoProbe(): Promise<void> {
 // we want to know. Cross-origin, so use no-cors: an opaque response means "reachable", a network
 // error means "blocked" (DNS/route/policy). Same-origin address = the one we came in on, skip it.
 async function addressProbe(): Promise<void> {
+  // https 페이지에서 http 주소로 fetch 하면 혼합 콘텐츠로 **브라우저가** 막는다 — 그러면 모든 주소가
+  // "blocked" 로 나와서 "차가 사설 주소를 막는다"처럼 보이지만 아무것도 잰 것이 없다. 이 대조군은
+  // 평문 페이지에서만 뜻이 있다.
+  if (isSecureContext && location.protocol === 'https:') {
+    $('addr-result').textContent = 'https 페이지에서는 재지 않는다 (혼합 콘텐츠를 브라우저가 막는다) — 평문 /diag 의 값을 보라';
+    log('address probe skipped on https (mixed content)');
+    return;
+  }
   const out = $('addr-result');
   let addresses: string[] = [];
   try {

@@ -152,6 +152,19 @@ object SelfSignedCert {
         return fromKeyStore(ks).let { Tls(it.sslContext, it.certificate, selfSigned = false) }
     }
 
+    /**
+     * 한 덩어리로 온 PEM 을 (인증서 체인, 개인키) 로 가른다. `POST /api/tls` 가 몸통 하나를 받기 때문에
+     * 필요하고, **가르는 이유는 파일로 남길 때다** — 개인키가 인증서 파일에 같이 들어가면 그 파일에
+     * 걸어 둔 권한이 무의미해진다.
+     */
+    fun splitPem(pem: String): Pair<String, String> {
+        val certs = Regex("-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", RegexOption.DOT_MATCHES_ALL)
+            .findAll(pem).joinToString("\n") { it.value }
+        val key = Regex("-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", RegexOption.DOT_MATCHES_ALL)
+            .find(pem)?.value.orEmpty()
+        return certs to key
+    }
+
     private fun privateKey(pem: String): PrivateKey {
         val pkcs8 = pemBlocks(pem, "PRIVATE KEY").firstOrNull()
             ?: throw IllegalArgumentException("no PRIVATE KEY block in the key PEM")
