@@ -28,10 +28,12 @@ import org.jetbrains.annotations.NotNull;
  * <em>reparents it</em> to display N. So the app the user is using on the phone jumps to the car, mid-state,
  * re-laid-out for 1280x720 — and the phone's launcher pulls it back the same way the moment the user taps its
  * icon there, leaving the car with an empty display (black picture, idle encoder). That is the "conflict" seen
- * when the phone and the car use the same app. {@link #startApp} therefore looks up where the app's task is first
- * ({@code am stack list}) and, by default, force-stops it when it lives on another display so the car gets a fresh
- * copy and the phone keeps nothing half-moved; a watcher then reports in {@code /api/status} when the phone takes
- * the app away, so the car can say so instead of showing black.
+ * when the phone and the car use the same app. {@link #startApp} looks up where the app's task is first
+ * ({@code am stack list}) and reports it; the move itself is what the driver asks for ("bring what I was watching
+ * to the car"), so the default ({@code restart=never}, {@link com.carcast.core.StreamSession#DEFAULT_RESTART})
+ * keeps it. {@code auto}/{@code always} force-stop first so the car gets a fresh copy instead. Either way a watcher
+ * then reports in {@code /api/status} when the phone takes the app away, so the car can say so instead of showing
+ * black.
  */
 public final class DisplayVideoSource implements VideoSource {
     private static final String TAG = "DisplayVideoSource";
@@ -126,8 +128,9 @@ public final class DisplayVideoSource implements VideoSource {
 
     /**
      * Starts an app on the virtual display. {@code name} is a package (its launcher activity is resolved)
-     * or an explicit component {@code pkg/.Activity}. {@code restart} is {@code auto} (force-stop the app first
-     * only when its task is on another display), {@code always} or {@code never} (see the class comment).
+     * or an explicit component {@code pkg/.Activity}. {@code restart} is {@code never} (move or bring to front, the
+     * default), {@code auto} (force-stop the app first only when its task is on another display) or {@code always}
+     * (see the class comment).
      * Returns the fields for the JSON reply: {@code result} (the {@code am} output), {@code action} — one of
      * {@code started} (no task existed), {@code restarted} (force-stopped, then started), {@code moved} (Android
      * reparented a task from another display, {@code restart=never}) or {@code front} (already on this display,
@@ -277,7 +280,7 @@ public final class DisplayVideoSource implements VideoSource {
                 } else if (now == vd) {
                     Log.INSTANCE.i(TAG, "앱 " + pkg + " 이 차 화면(display " + vd + ")으로 돌아옴");
                 } else {
-                    Log.INSTANCE.i(TAG, "폰이 앱 " + pkg + " 을 가져감 (display " + now + ") — 차 화면은 비어 있음. 차에서 ▶를 누르면 폰 쪽을 종료하고 다시 띄움");
+                    Log.INSTANCE.i(TAG, "폰이 앱 " + pkg + " 을 가져감 (display " + now + ") — 차 화면은 비어 있음. 차에서 ▶(차로 가져오기)를 누르면 그 상태 그대로 돌아옴");
                 }
             }
         }, "app-watch");

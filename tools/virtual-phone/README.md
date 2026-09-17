@@ -24,7 +24,7 @@ CI(`.github/workflows/emulator.yml`)는 공개 러너의 중첩 가상화를 쓰
 | | 지금까지 | 이제 |
 |---|---|---|
 | 가상 디스플레이 생성 (M4) | 폰에서만 | `source=display`, `displayId>0` 를 기기 검사가 확인 |
-| 앱 실행·앱 충돌 (M4-b) | 폰에서만 | `am start --display 0` 으로 "폰이 가져감"을 만들고 `restart=auto` 를 확인 |
+| 앱 실행·앱 충돌 (M4-b) | 폰에서만 | `am start --display 0` 으로 "폰이 가져감"을 만들고 기본(`never` → `moved`)과 `always`(→ `restarted`) 를 확인 |
 | 터치·키 주입 (M5) | 폰에서만 | `injected` 증가 / `injectFailed` 0. 브라우저 클릭부터 끝까지도 (`tests/e2e/device-input.spec.ts`) |
 | 화면 OFF (M7) | 폰에서만 | `/api/screen` 요청·상태. 실제 소등은 기기 나름 |
 | 인코더 → fMP4 → 차 브라우저 | 클립으로 흉내 | 진짜 인코더 출력이 Chrome 148 에서 디코드된다 |

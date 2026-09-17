@@ -124,11 +124,14 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/app' && req.method === 'POST') {
     // Same reply shape as the shell server: action says whether a task was started/restarted/moved/brought to front.
     const name = url.searchParams.get('name');
-    const restart = url.searchParams.get('restart') ?? 'auto';
+    // 진짜 서버의 기본값과 같다(core StreamSession.DEFAULT_RESTART = never): 옮기거나 앞으로.
+    const restart = url.searchParams.get('restart') ?? 'never';
     state.apps = state.apps ?? [];
     state.apps.push(name);
     const from = state.appOnPhone ? 0 : null;
-    const action = from === null ? 'started' : restart === 'never' ? 'moved' : 'restarted';
+    // 진짜 서버: always 는 어디 있든 강제 종료 후 새로(restarted), auto 는 다른 화면에 있을 때만, never 는 절대.
+    const forceStop = restart === 'always' || (restart === 'auto' && from !== null);
+    const action = forceStop ? 'restarted' : from === null ? 'started' : 'moved';
     state.appOnPhone = false;
     // 진짜 서버는 띄운 뒤 그 앱의 task 가 어느 화면에 있는지를 상태에 적는다. 여기서 빼먹으면
     // 차는 앱을 띄우고도 "화면에 앱이 없다"고 믿는다 — 가짜 폰이 진짜 폰과 갈리던 자리다.
@@ -172,8 +175,14 @@ const server = createServer((req, res) => {
     const tasks = empty
       ? []
       : [{ taskId: 41, name: `${started}/.Main`, package: started, display: 7, label: started, lastUsed: Date.now() }];
+    // 폰 화면(0)에서 쓰는 앱: 폰이 가져간 것이 맨 앞(지금 보는 것), 그 뒤에 폰에만 있는 앱 하나.
+    // 진짜 서버는 `am stack list` 의 display 0 태스크 중 홈에서 띄울 수 있는 앱만 준다.
+    const phone = [
+      ...(state.appOnPhone ? [{ taskId: 41, name: `${started}/.Main`, package: started, display: 0, label: started, lastUsed: 0 }] : []),
+      { taskId: 12, name: 'com.spotify.music/.MainActivity', package: 'com.spotify.music', display: 0, label: 'Spotify', lastUsed: 0 },
+    ].filter((p) => !tasks.some((t) => t.package === p.package));
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ display: 7, tasks, elsewhere: state.appOnPhone ? 1 : 0 }));
+    res.end(JSON.stringify({ display: 7, tasks, phone, elsewhere: phone.length + 1 /* 런처 */ }));
     return;
   }
   if (url.pathname === '/api/screen') {
@@ -210,7 +219,10 @@ const server = createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/reset') {
+    // 입력 기록과 앱 상태를 처음으로. 하나의 가짜 폰이 모든 스펙과 프로필을 차례로 받으므로, 앞 테스트가
+    // 남긴 "차 화면 비어 있음"이 다음 테스트의 시작 화면(홈이 저절로 뜸)을 바꾸던 것을 여기서 끊는다.
     state.touches = []; state.keys = []; state.texts = [];
+    state.apps = []; state.appOnPhone = false; delete state.appDisplay; delete state.app;
     res.writeHead(200); res.end('ok');
     return;
   }

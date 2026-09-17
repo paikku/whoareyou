@@ -237,7 +237,7 @@ function swapIcon(tileEl: HTMLElement, src: string) {
 }
 
 /** 한 칸. 아이콘은 나중에 채워지고, 그때까지(또는 못 그리면) 이름 첫 글자로 둔다 — 빈 네모보다 낫다. */
-function tile(label: string, pkg: string, sub: string | null, onPick: () => void): HTMLElement {
+function tile(label: string, pkg: string, sub: string | null, onPick: (restart: Restart) => void): HTMLElement {
   const el = document.createElement('button');
   el.className = sub ? 'tile away' : 'tile';
   const art = document.createElement('div');
@@ -256,23 +256,60 @@ function tile(label: string, pkg: string, sub: string | null, onPick: () => void
     where.textContent = sub;
     el.append(where);
   }
-  el.addEventListener('click', onPick);
+  // 짧게 누르면 가져오기(폰에서 보던 그대로), 길게 누르면 새로 열기. 길게 누르기는 차 브라우저가
+  // 컨텍스트 메뉴나 글자 선택으로 가로챌 수 있어 두 이벤트를 막는다 — 그래도 안 되는 차를 위해
+  // 상태 패널에는 같은 일을 하는 버튼이 따로 있다.
+  el.title = '길게 누르면 새로 열기';
+  onPress(el, () => onPick('never'), () => onPick('always'));
   return el;
+}
+
+/** 길게 누른 것으로 치는 시간. 폰의 길게 누르기(400~500ms)와 비슷하게, 그러나 운전 중 떨림에 오인되지 않게. */
+const LONG_PRESS_MS = 600;
+/**
+ * 짧게/길게 누르기를 가른다. 손가락이 눌린 채로 시간이 차면 칸이 `held` 로 바뀌어 "이제 떼면 새로 열기"를
+ * 보여 주고, **떼는 순간** `long` 을 부른다(시간이 찼다고 바로 부르면 시트가 손가락 밑에서 사라지고, 떼는
+ * 손짓이 그 아래 영상에 터치로 들어간다). 그 뒤의 click 은 버린다. 시간 전에 떼면 click 이 그대로 `short`
+ * 가 된다. 눌린 채 움직여 나가면(스크롤) 둘 다 아니다.
+ */
+function onPress(el: HTMLElement, short: () => void, long: () => void): void {
+  let timer = 0;
+  let armed = false;
+  let firedLong = false;
+  const disarm = () => { window.clearTimeout(timer); timer = 0; armed = false; el.classList.remove('held'); };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    firedLong = false;
+    disarm();
+    timer = window.setTimeout(() => { timer = 0; armed = true; el.classList.add('held'); }, LONG_PRESS_MS);
+  });
+  el.addEventListener('pointerup', () => {
+    const fire = armed;
+    disarm();
+    if (fire) { firedLong = true; long(); }
+  });
+  el.addEventListener('pointercancel', disarm);
+  el.addEventListener('pointerleave', disarm);
+  el.addEventListener('click', (e) => {
+    if (firedLong) { firedLong = false; e.preventDefault(); return; }
+    short();
+  });
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 /**
  * 시트에서 앱 하나를 고른다. 띄우는 일은 ▶ 와 같은 길(`launch`)로 보낸다 — 실패했을 때 알리고,
  * 마지막에 고른 앱을 기억하고, "폰이 가져갔다" 상태를 푸는 것까지 거기 다 들어 있다.
  */
-function pick(pkg: string) {
+function pick(pkg: string, restart: Restart = 'never') {
   closeSheet();
-  void launch(pkg);
+  void launch(pkg, restart);
 }
 
 function renderHome(filter: string) {
   const q = filter.trim().toLowerCase();
   const rows = q ? apps.filter((a) => a.label.toLowerCase().includes(q) || a.package.includes(q)) : apps;
-  sheetGrid.replaceChildren(...rows.map((a) => tile(a.label, a.package, null, () => pick(a.package))));
+  sheetGrid.replaceChildren(...rows.map((a) => tile(a.label, a.package, null, (r) => pick(a.package, r))));
   sheetEmpty.hidden = rows.length > 0;
   sheetEmpty.textContent = q ? `"${filter}" 에 맞는 앱이 없습니다` : (homeError || '앱 목록을 읽지 못했습니다');
 }
@@ -312,26 +349,28 @@ async function openRecents() {
   sheetEmpty.hidden = false;
   sheetEmpty.textContent = '읽는 중…';
   let tasks: TaskRow[] = [];
+  let phone: TaskRow[] = [];
   let ourDisplay: number | null = null;
-  let elsewhere = 0;
   let error = '';
   try {
     const r = await (await fetch('/api/tasks')).json();
     tasks = Array.isArray(r?.tasks) ? r.tasks : [];
+    phone = Array.isArray(r?.phone) ? r.phone : [];
     ourDisplay = r?.display ?? null;
-    elsewhere = r?.elsewhere ?? 0;
     error = r?.error ?? '';
   } catch (e) { error = `폰에 물어보지 못했습니다: ${e}`; }
 
-  // **차 화면에서 도는 것만**, 최신순(서버가 그 순서로 준다). 폰에서 쓰는 앱은 차의 일이 아니다.
-  sheetGrid.replaceChildren(...tasks.map((t) => tile(t.label, t.package, null, () => pick(t.package))));
-  sheetEmpty.hidden = tasks.length > 0;
-  // 비었을 때도 "없습니다"로 끝내지 않는다: 폰 쪽에 몇 개가 도는지를 같이 적어 주면, 아무것도 안
-  // 띄운 것인지 우리 화면에서 못 찾은 것인지가 화면에서 갈린다.
+  // 차 화면에서 도는 것이 먼저(최신순, 서버가 그 순서로 준다). 그 뒤에 **폰에서 쓰는 것**: 차에서 고르면
+  // 보던 그대로 넘어오므로(restart=never) 이것도 한 번 누르면 되는 목록이다. 어디 있는지를 칸에 적어
+  // 둔다 — 누르면 폰에서 사라진다는 것을 알고 눌러야 한다.
+  sheetGrid.replaceChildren(
+    ...tasks.map((t) => tile(t.label, t.package, null, (r) => pick(t.package, r))),
+    ...phone.map((t) => tile(t.label, t.package, '📱 폰에서 쓰는 중 · 눌러서 가져오기', (r) => pick(t.package, r))),
+  );
+  sheetEmpty.hidden = tasks.length + phone.length > 0;
   sheetEmpty.textContent = error
     ? error
-    : `차 화면(${ourDisplay ?? '?'})에서 도는 앱이 없습니다`
-      + (elsewhere ? ` — 폰 쪽에 ${elsewhere}개. ● 홈에서 고르면 차로 가져옵니다.` : '. ● 홈에서 하나 고르세요.');
+    : `차 화면(${ourDisplay ?? '?'})에서도 폰에서도 도는 앱이 없습니다. ● 홈에서 하나 고르세요.`;
 }
 
 /**
@@ -389,27 +428,34 @@ const notice = (text: string, ms = 4000) => {
   noticeTimer = window.setTimeout(() => { if (statsEl.textContent === text) statsEl.textContent = ''; }, ms);
 };
 
-// Launch an app on the phone's virtual display (M4). A prompt is enough until the launcher page (M9).
-// Android keeps one task per app: if it is open on the phone, a plain start would *move* it to the car and the
-// phone's launcher would pull it back — so the phone (restart=auto) force-stops it first and says so.
+// Launch an app on the phone's virtual display (M4).
+// Android keeps one task per app: if it is open on the phone, a start on the car *moves* it — the phone loses it,
+// the car gets it exactly as it was (the video mid-play, the page half-read). That move is what the driver wants
+// ("bring what I was watching"), so it is the default (`never` = never force-stop). `always` is the other way,
+// a fresh copy from its front page, for the app that did not survive the move; it is one long press away.
+// The phone's launcher can pull the task back at any time; the status poll below reports that instead of black.
+type Restart = 'never' | 'always' | 'auto';
 const ACTION_TEXT: Record<string, string> = {
   started: '앱 실행',
-  restarted: '폰에서 쓰던 앱을 종료하고 차 화면에 새로 띄움',
-  moved: '폰에서 쓰던 앱을 차 화면으로 옮김',
+  restarted: '앱을 종료하고 차 화면에 새로 띄움',
+  moved: '폰에서 보던 그대로 차 화면으로 가져옴',
   front: '이미 차 화면에 있던 앱을 앞으로',
 };
 /** 폰이 마지막으로 들고 있던 앱(= /api/status.app 의 패키지). ▶ 의 기본값이자 "차로 가져오기"의 대상. */
 let lastPackage = '';
 
-async function launch(name: string): Promise<boolean> {
+async function launch(name: string, restart: Restart = 'never'): Promise<boolean> {
   try {
-    const r = await (await fetch(`/api/app?name=${encodeURIComponent(name)}`, { method: 'POST' })).json();
+    const r = await (await fetch(`/api/app?name=${encodeURIComponent(name)}&restart=${restart}`, { method: 'POST' })).json();
     if (!r.ok) { window.alert(`앱 실행 실패: ${r.error}`); return false; }
+    // 앱이 차 화면에 왔으니 그것을 보여 준다. 홈이 저절로 떠 있던 채로 ▶ 나 패널 버튼을 눌렀을 때
+    // 시트가 그대로 남아 새 앱을 덮던 것 — 칸에서 고를 때는 pick 이 먼저 닫지만 다른 길은 아니었다.
+    closeSheet();
     localStorage.setItem('carcast.app', name);
     lastPackage = r.package ?? name;
     appOnPhone = false;
     appEpoch++; // a status poll that was already in flight describes the world before this launch
-    note(`app ${r.package ?? name}: ${r.action ?? '?'} (from display ${r.fromDisplay ?? '-'})`);
+    note(`app ${r.package ?? name}: ${r.action ?? '?'} (from display ${r.fromDisplay ?? '-'}, restart=${restart})`);
     notice(ACTION_TEXT[r.action] ?? '앱 실행');
     return true;
   } catch (e) {
@@ -463,8 +509,11 @@ const statePanel = $('state');
 const stateTitle = $('state-title');
 const stateMsg = $('state-msg');
 const stateAction = $<HTMLButtonElement>('state-action');
+const stateAlt = $<HTMLButtonElement>('state-alt');
 let stateAct: (() => void) | null = null;
+let stateAltAct: (() => void) | null = null;
 stateAction.addEventListener('click', () => stateAct?.());
+stateAlt.addEventListener('click', () => stateAltAct?.());
 
 // 정지 화면에서 프레임이 드문 것은 **정상**이다(폰 화면이 안 움직이면 인코더도 쉰다 — sparse.spec).
 // 그래서 "프레임이 없다"만으로는 패널을 띄우지 않는다. 띄우는 것은 서버가 확실히 말해 주는 상태뿐이고,
@@ -473,7 +522,9 @@ const NO_PHONE_MS = 6000;
 // 폰이 잠든 것은 서버가 확실히 말해 주지만, 잠깐 조는 것까지 패널을 띄우면 시끄럽다.
 const ASLEEP_MS = 3000;
 
-function showState(title: string, msg: string, action?: { label: string; run: () => void }): void {
+type StateAction = { label: string; run: () => void };
+/** `alt` 는 같은 자리의 두 번째 선택지(덜 흔한 쪽). 없으면 버튼 하나만 나온다. */
+function showState(title: string, msg: string, action?: StateAction, alt?: StateAction): void {
   stateTitle.textContent = title;
   stateMsg.textContent = msg;
   if (action) {
@@ -483,6 +534,14 @@ function showState(title: string, msg: string, action?: { label: string; run: ()
   } else {
     stateAction.hidden = true;
     stateAct = null;
+  }
+  if (alt) {
+    stateAlt.textContent = alt.label;
+    stateAlt.hidden = false;
+    stateAltAct = alt.run;
+  } else {
+    stateAlt.hidden = true;
+    stateAltAct = null;
   }
   statePanel.hidden = false;
 }
@@ -501,9 +560,13 @@ function updateStatePanel(): void {
   if (appOnPhone) {
     stateName = 'app-on-phone';
     const pkg = lastPackage || '그 앱';
+    // 가져오기가 먼저다 — 폰에서 보던 그대로 온다. 새로 열기는 옮기다 깨진 앱을 위한 두 번째 길이다.
     showState('📱 폰에서 그 앱을 쓰는 중', `안드로이드는 앱마다 화면을 하나만 둡니다. ${pkg} 이(가) 폰으로 넘어가 차 화면은 비어 있습니다.`, {
       label: '차로 가져오기',
-      run: () => { if (lastPackage) void launch(lastPackage); },
+      run: () => { if (lastPackage) void launch(lastPackage, 'never'); },
+    }, {
+      label: '새로 열기',
+      run: () => { if (lastPackage) void launch(lastPackage, 'always'); },
     });
     return;
   }

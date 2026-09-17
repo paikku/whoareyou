@@ -100,22 +100,36 @@ test('차 홈에서 앱을 고르면 그 앱이 차 화면에 뜬다', async ({ 
   await expect.poll(async () => (await statusOf(page)).apps ?? []).toContain('com.google.android.youtube');
 });
 
-test('최근 앱은 이 화면에서 도는 것을 보여 준다', async ({ page }) => {
+test('최근 앱은 차 화면 것을 먼저, 폰에서 쓰는 것을 뒤에 보여 준다', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);
   await page.evaluate(() => fetch('/api/reset'));
 
+  // 차 화면에서 도는 것(유튜브)이 맨 앞, 폰에서 쓰는 것(Spotify)이 "폰에서 쓰는 중" 으로 뒤에.
   await page.locator('#btn-recents').click();
   await expect(page.locator('#launcher-title')).toHaveText('최근 앱');
-  await expect(page.locator('#launcher-grid .tile')).toHaveCount(1);
+  const tiles = page.locator('#launcher-grid .tile');
+  await expect(tiles).toHaveCount(2);
+  await expect(tiles.nth(0)).not.toHaveClass(/away/);
+  await expect(tiles.nth(1)).toHaveClass(/away/);
+  await expect(tiles.nth(1).locator('.name')).toHaveText('Spotify');
+  await expect(tiles.nth(1).locator('.where')).toContainText('폰에서 쓰는 중');
 
-  // 폰이 가져간 앱은 **차의 최근앱에 뜨지 않는다** — 차 화면에서 도는 것만 보여 준다는 계약이다.
-  // 대신 비었다는 말로 끝내지 않고 폰 쪽에 몇 개가 있는지를 적어 준다.
+  // 폰이 앱을 가져가면 그 앱은 차 칸에서 폰 칸으로 옮겨 가고, 폰에서 지금 보는 것이라 폰 칸의 맨 앞이다.
   await page.locator('#launcher-close').click();
   await page.evaluate(() => fetch('/api/fake/app-on-phone', { method: 'POST' }));
   await page.locator('#btn-recents').click();
-  await expect(page.locator('#launcher-grid .tile')).toHaveCount(0);
-  await expect(page.locator('#launcher-empty')).toContainText('폰 쪽에 1개');
+  await expect(tiles).toHaveCount(2);
+  await expect(tiles.nth(0)).toHaveClass(/away/);
+  await expect(tiles.nth(0)).toHaveAttribute('data-pkg', 'com.google.android.youtube');
+  await expect(tiles.nth(1)).toHaveAttribute('data-pkg', 'com.spotify.music');
+
+  // 그 칸을 누르면 ▶ 와 같은 길: 폰에서 보던 그대로 차로 온다.
+  await tiles.nth(0).click();
+  await expect(page.locator('#launcher')).toBeHidden();
+  await expect(page.locator('#stats')).toContainText('폰에서 보던 그대로 차 화면으로 가져옴');
+  const events = await page.evaluate(() => (window as any).__carcast.events as string[]);
+  expect(events.join('\n')).toContain('app com.google.android.youtube: moved (from display 0, restart=never)');
 });
 
 test('홈은 열 때마다 다시 읽어 최근 사용순을 보여 준다', async ({ page }) => {
