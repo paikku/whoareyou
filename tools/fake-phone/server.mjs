@@ -175,8 +175,14 @@ const server = createServer((req, res) => {
     const tasks = empty
       ? []
       : [{ taskId: 41, name: `${started}/.Main`, package: started, display: 7, label: started, lastUsed: Date.now() }];
+    // 폰 화면(0)에서 쓰는 앱: 폰이 가져간 것이 맨 앞(지금 보는 것), 그 뒤에 폰에만 있는 앱 하나.
+    // 진짜 서버는 `am stack list` 의 display 0 태스크 중 홈에서 띄울 수 있는 앱만 준다.
+    const phone = [
+      ...(state.appOnPhone ? [{ taskId: 41, name: `${started}/.Main`, package: started, display: 0, label: started, lastUsed: 0 }] : []),
+      { taskId: 12, name: 'com.spotify.music/.MainActivity', package: 'com.spotify.music', display: 0, label: 'Spotify', lastUsed: 0 },
+    ].filter((p) => !tasks.some((t) => t.package === p.package));
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ display: 7, tasks, elsewhere: state.appOnPhone ? 1 : 0 }));
+    res.end(JSON.stringify({ display: 7, tasks, phone, elsewhere: phone.length + 1 /* 런처 */ }));
     return;
   }
   if (url.pathname === '/api/screen') {

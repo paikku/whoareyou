@@ -58,7 +58,9 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
   기본값은 `core` 의 `StreamSession.DEFAULT_RESTART`), `TaskList`(`am stack list` 파서),
   앱 감시자(빈 화면이면 1초, 아니면 5초 간격)
 - 차: `/api/status.appOnPhone` → 상태 패널 `app-on-phone` → **"차로 가져오기"**(그대로) / **"새로 열기"**(처음부터).
-  홈·최근앱의 칸은 짧게 누르면 가져오기, 길게(600ms) 누르면 새로 열기(`web/src/main.ts` 의 `onPress`)
+  홈·최근앱의 칸은 짧게 누르면 가져오기, 길게(600ms) 누르면 새로 열기(`web/src/main.ts` 의 `onPress`).
+  최근앱(`/api/tasks`, `RunningTasks`)은 차 화면의 `tasks` 뒤에 **폰에서 쓰는 앱** `phone`(display 0, 앞이 지금 보는 것,
+  홈에 있는 앱만, CarCast 자신 제외, 최대 12개)을 "📱 폰에서 쓰는 중 · 눌러서 가져오기" 칸으로 붙인다
 - 검사: `tests/device/tests/03-app.test.mjs`, `tests/e2e/tests/app-conflict.spec.ts`,
   `npm run lifecycle` 의 "앱 전환" 시나리오
 

@@ -3,7 +3,7 @@
 // 그래서 차는 자기 목록을 직접 그린다. 여기서 보는 것은 그 목록을 만드는 두 엔드포인트다.
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { adbAvailable, adbShell, api, collectVideo, pickLauncherApp, sleep, startApp, status } from '../lib.mjs';
+import { adbAvailable, adbShell, api, collectVideo, pickLauncherApp, serverLog, sleep, startApp, status, waitFor } from '../lib.mjs';
 
 test('GET /api/apps — 차 홈에 올릴 앱 목록이 나온다', async (t) => {
   const t0 = Date.now();
@@ -79,6 +79,41 @@ test('GET /api/tasks — 차 화면에서 도는 앱이 "여기"로 나온다', 
   assert.equal(typeof mine[0].taskId, 'number');
   // 최신순: 방금 띄운 것이 맨 앞.
   assert.equal(tasks[0].package, pkg, '방금 띄운 앱이 최근앱 맨 앞에 없다');
+  // 폰 쪽 목록: 폰 화면(0)의 앱 중 홈에서 띄울 수 있는 것만, CarCast 자신은 빼고.
+  assert.ok(Array.isArray(r.phone), `phone 이 배열이 아니다: ${JSON.stringify(r)}`);
+  t.diagnostic(`폰에서 쓰는 앱 ${r.phone.length}개: ${r.phone.map((x) => x.package).join(', ')}`);
+  for (const x of r.phone) {
+    assert.equal(x.display, 0, `폰 화면이 아닌 태스크가 폰 목록에 섞였다: ${JSON.stringify(x)}`);
+    assert.notEqual(x.package, 'com.carcast', 'CarCast 자신이 폰 목록에 있다');
+    assert.ok(x.label && x.label.length > 0, '폰 목록에 보여 줄 이름이 없다');
+  }
+  assert.ok(!r.phone.some((x) => x.package === pkg), '차 화면에서 도는 앱이 폰 목록에도 있다');
+});
+
+test('폰이 쓰는 앱이 최근앱의 폰 목록에 뜨고, 고르면 차로 온다', { skip: adbAvailable ? false : 'adb 없음' }, async (t) => {
+  const s0 = await status();
+  if (s0.source !== 'display') return t.skip('클립 모드');
+  const pkg = pickLauncherApp();
+  await startApp(pkg);
+  // 폰 런처에서 그 앱을 연 것과 같다: task 가 폰 화면(0)으로 간다.
+  const component = adbShell(`cmd package resolve-activity --brief ${pkg}`).split('\n').pop().trim();
+  adbShell(`am start --display 0 -n ${component} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER`);
+  const r = await waitFor(async () => {
+    const x = await api('/api/tasks');
+    return x.phone?.some((p) => p.package === pkg) ? x : null;
+  }, { timeoutMs: 15_000, what: '폰 목록에 그 앱이 나타남' });
+  t.diagnostic(`폰 목록: ${r.phone.map((x) => x.package).join(', ')}`);
+  assert.ok(!r.tasks.some((x) => x.package === pkg), '폰이 가져갔는데 차 목록에도 있다');
+  // 지금 폰에서 보고 있는 것이라 맨 앞이어야 한다 — 운전 중에 목록을 뒤지게 하면 안 된다.
+  assert.equal(r.phone[0].package, pkg, `폰에서 지금 쓰는 앱이 폰 목록 맨 앞이 아니다: ${r.phone.map((x) => x.package).join(', ')}`);
+  // 그 칸을 누른 것과 같은 요청: 그대로 차로 온다.
+  const back = await startApp(pkg);
+  assert.equal(back.action, 'moved', `action=${back.action}\n${await serverLog()}`);
+  const after = await waitFor(async () => {
+    const x = await api('/api/tasks');
+    return x.tasks.some((p) => p.package === pkg) ? x : null;
+  }, { timeoutMs: 15_000, what: '차 목록으로 돌아옴' });
+  assert.ok(!after.phone.some((x) => x.package === pkg), '차로 왔는데 폰 목록에도 남아 있다');
 });
 
 test('홈은 최근에 쓴 앱을 맨 위에 올린다', async (t) => {
