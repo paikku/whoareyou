@@ -105,6 +105,24 @@ class BulkControlTest {
         assertTrue(BulkControl.allOff({}) { })
     }
 
+    /** Each step is published as it starts, and the phase is back to idle (with the step cleared) when it is over. */
+    @Test(timeout = 30_000)
+    fun stepsArePublishedAsTheyHappenAndClearedAtTheEnd() {
+        fake = FakeServer()
+        val seen = CopyOnWriteArrayList<String>()
+        BulkControl.onChange = { seen.add("${BulkControl.phase}:${BulkControl.step}") }
+        try {
+            assertTrue(BulkControl.allOff({}) { })
+        } finally {
+            BulkControl.onChange = null
+        }
+        assertEquals(seen.toString(), "TURNING_OFF:", seen.first())
+        assertTrue(seen.toString(), seen.contains("TURNING_OFF:1/2 서버 종료 중"))
+        assertTrue(seen.toString(), seen.contains("TURNING_OFF:2/2 세션·VPN 종료 중"))
+        assertEquals(seen.toString(), "IDLE:", seen.last())
+        assertEquals("", BulkControl.step)
+    }
+
     @Test(timeout = 30_000)
     fun serverUpFollowsWhetherAnythingIsAnswering() {
         assertFalse(BulkControl.serverUp())

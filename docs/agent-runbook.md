@@ -125,6 +125,23 @@ npm run e2e           # 가짜 폰 상대 웹 회귀 (BASE_URL 없이)
 함께 cgroup 째 SIGKILL 된다(§3.5). `BulkControl.precondition()` 이 셋 중 무엇인지 먼저 말하고, 앱은 경고하되
 막지는 않는다 — TCP 모드가 켜진 폰에서는 이게 매일 쓰는 정상 경로다.
 
+**USB 디버깅은 앱이 켠다 (2026-09-14):** 일괄 켜기의 1/3 단계가 `UsbDebugging.ensureOn()` 이다. 그게 되는 이유는
+`ShellServerLink` 가 shell 을 쥘 때마다 `pm grant com.carcast android.permission.WRITE_SECURE_SETTINGS` 를 실행해
+두기 때문이고(재부팅을 넘어 유지), 그래서 재부팅 직후처럼 shell 이 없는 순간에도 앱이 `adb_enabled` 를 쓸 수 있다.
+TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살아난다(재부팅 전까지). 재부팅 뒤에는 그 포트가 없으므로
+`ShellServerLink` 루프가 Wi-Fi 연결 중 + 무선 디버깅 꺼짐을 보면 `adb_wifi_enabled` 도 같은 방식으로 켠다(실측 통과, 2026-09-14) —
+재부팅 뒤 손작업은 Wi-Fi 켜기 하나다. 결과는 `Outcome` 넷 중 하나로 로그와 위젯에 남는다; `NO_PERMISSION`/`REFUSED` 일 때만 위젯이
+"USB 디버깅을 켜 주세요" 를 붙인다.
+
+**앱 첫 화면은 네 단계·네 불이다** (`ui/SetupSteps.kt`): ① 무선 디버깅 ② 페어링 ③ 시작 ④ 위젯. 각 버튼은 "자세히" 아래의
+같은 컨트롤과 같은 동작이고, 불은 폰 상태에서 읽는다(무선 디버깅 토글 또는 TCP 포트/서버 응답, `prefs.paired`, 서버 응답,
+위젯 배치 여부). ③ 아래 한 줄이 자동으로 된 셋(권한·USB 디버깅·TCP 모드)을 보여 준다. 상태 읽기는 소켓 프로브를 포함하므로
+메인 스레드가 아닌 `setup-read` 스레드에서 한다.
+
+**위젯은 진행 중인 단계를 그대로 보여 준다:** `BulkControl.step`(예: `3/3 서버 응답 대기 12/30초`)과 `lastFailure`,
+그리고 세션은 있는데 서버가 없을 때는 `ShellServerLink.summary()`(무선 디버깅 꺼짐 / 페어링 필요 / 재시도 대기 …).
+둘 다 `onChange`/`onStateChange` 콜백으로 `CarCastWidget.refresh()` 를 부른다 — 위젯은 폴링하지 못하므로.
+
 ## 4. 새 상황을 추가하는 법
 
 `tests/e2e/tests/lifecycle/actions.ts` 에 동작 하나를 더하면 시나리오와 무작위 탐색 양쪽에 자동으로 들어간다.

@@ -40,6 +40,9 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
     private var thread: Thread? = null
     private val wake = Object()
 
+    /** Called after every [state]/[detail] change. The widget hangs off this; it has no process to poll from. */
+    @Volatile var onStateChange: (() -> Unit)? = null
+
     fun start() {
         if (active) { synchronized(wake) { wake.notifyAll() }; return }
         active = true
@@ -59,7 +62,22 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         thread?.interrupt(); thread = null
     }
 
-    private fun set(s: State, d: String) { state = s; detail = d }
+    private fun set(s: State, d: String) { state = s; detail = d; runCatching { onStateChange?.invoke() } }
+
+    /** One short Korean line for the widget: what the link is doing, or what it is waiting on. */
+    fun summary(): String = when (state) {
+        State.IDLE -> "adb 대기"
+        State.SERVER_UP -> if (detail.isEmpty()) "서버 응답 중" else "서버 응답 중 — $detail"
+        State.FINDING_PORT -> "adb 포트 찾는 중"
+        State.CONNECTING -> "adb 접속 중"
+        State.TCP_MODE -> "TCP 모드 전환 중"
+        State.NEEDS_PAIRING -> "페어링 필요 — 앱을 여세요"
+        State.NO_WIFI -> "Wi-Fi에 연결하세요 (TCP 모드 포트가 없어 무선 디버깅이 필요)"
+        State.ADB_WIFI_OFF -> "무선 디버깅 꺼짐"
+        State.STARTING -> "서버 시작 중"
+        State.RETRYING -> "재시도 대기: ${detail.take(40)}"
+        State.STOPPED -> "중지됨"
+    }
 
     private fun loop() {
         var delay = 5_000L
@@ -123,9 +141,18 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                     continue
                 }
                 if (!adbWifiEnabled()) {
-                    // Android switches wireless debugging off whenever Wi-Fi drops; the toggle stays off until the user flips it.
+                    // Android switches wireless debugging off whenever Wi-Fi drops and at every boot. We are on
+                    // Wi-Fi here, so try switching it back on ourselves (WRITE_SECURE_SETTINGS, once granted);
+                    // if the phone takes it, the next pass finds the port. Tried once per off-episode, so a
+                    // phone that reverts the write gets one REFUSED line, not one every three seconds.
+                    if (!adbOffWarned) {
+                        adbOffWarned = true
+                        val o = UsbDebugging.ensureWirelessOn(context)
+                        log(UsbDebugging.describeWireless(o))
+                        if (o == UsbDebugging.Outcome.TURNED_ON) { set(State.ADB_WIFI_OFF, "무선 디버깅 켜는 중"); waitFor(2_000L); continue }
+                        log("무선 디버깅이 꺼져 있음 (Wi-Fi가 끊길 때 자동으로 꺼짐) — '무선 디버깅 설정' 버튼으로 열어 켜면 바로 이어집니다")
+                    }
                     set(State.ADB_WIFI_OFF, "무선 디버깅 꺼짐 — 개발자 옵션에서 켜세요")
-                    if (!adbOffWarned) { adbOffWarned = true; log("무선 디버깅이 꺼져 있음 (Wi-Fi가 끊길 때 자동으로 꺼짐) — '무선 디버깅 설정' 버튼으로 열어 켜면 바로 이어집니다") }
                     waitFor(3_000L); delay = 5_000L
                     continue
                 }
@@ -155,6 +182,7 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         var port = 0
         openLink().use { l ->
             port = l.port
+            grantSecureSettings(l)
             // Only now that adb is confirmed working do we retire an old-build server (kill switch), then relaunch.
             if (replaceStale) {
                 log("이전 빌드 서버 종료 → 이 빌드로 교체")
@@ -284,14 +312,20 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
         notPaired?.let { throw it }
         dropManualPortIfHopeless()
         throw IOException(
-            if (tried.isEmpty()) "adbd 접속 포트를 찾지 못함 — 개발자 옵션에서 무선 디버깅을 켜세요"
-            else "adbd에 붙지 못함. 시도한 포트:$tried\n무선 디버깅은 껐다 켤 때마다 포트가 바뀝니다 — 토글을 껐다 켜고 다시 시도해 보세요"
+            when {
+                tried.isNotEmpty() -> "adbd에 붙지 못함. 시도한 포트:$tried\n무선 디버깅은 껐다 켤 때마다 포트가 바뀝니다 — 토글을 껐다 켜고 다시 시도해 보세요"
+                // The toggle is on (the loop checked before coming here) and still nothing is advertised: that is
+                // not "switch it on". Seen once right after a fresh pairing (2026-09-14 21:46).
+                adbWifiEnabled() -> "무선 디버깅은 켜져 있는데 접속 포트가 광고되지 않음 — 토글을 껐다 켜거나, 무선 디버깅 화면의 'IP 주소 및 포트'의 포트를 '포트 수동…'에 입력하세요"
+                else -> "adbd 접속 포트를 찾지 못함 — 개발자 옵션에서 무선 디버깅을 켜세요"
+            }
         )
     }
 
     /**
-     * TCP mode is only entered when the user asked for it ([AdbPrefs.tcpModeOptIn]): the switch restarts adbd,
-     * so if adbd does not come back serving wireless debugging, the only way in is gone until the user toggles it.
+     * TCP mode is entered unless the user turned it off ([AdbPrefs.tcpModeOptIn]) or it has failed too often: the
+     * switch restarts adbd, so if adbd does not come back serving wireless debugging, the only way in is gone
+     * until the user toggles it.
      */
     @Throws(IOException::class)
     private fun maybeSwitchToTcpMode(link: AdbLink, via: Candidate): AdbLink {
@@ -359,6 +393,27 @@ class ShellServerLink(private val context: Context, private val log: (String) ->
                 "adbd가 재시작되며 무선 디버깅이 꺼졌을 수 있으니 개발자 옵션에서 다시 켜면 이어집니다 (${prefs.tcpModeFailures}/${TCP_MODE_MAX_TRIES}회 실패)",
             last,
         )
+    }
+
+    /**
+     * While we hold shell, hand the app the one permission that lets it switch USB debugging on by itself
+     * later, when there is no shell to ask ([UsbDebugging]). The grant survives reboots, so this is a
+     * one-time thing per install; it is repeated on every launch only because repeating it is free and a
+     * reinstall would otherwise leave the app believing it still had it.
+     */
+    private fun grantSecureSettings(l: AdbLink) {
+        if (UsbDebugging.canWrite(context)) return
+        val out = runCatching { l.shell(UsbDebugging.grantCommand(context.packageName) + " 2>&1").trim() }
+            .getOrElse { "명령 실패: ${it.message}" }
+        if (!UsbDebugging.canWrite(context)) {
+            log("WRITE_SECURE_SETTINGS 부여 실패 ($out) — USB 디버깅은 계속 손으로 켜야 합니다")
+            return
+        }
+        log("WRITE_SECURE_SETTINGS 부여됨 — 다음부터 USB 디버깅이 꺼져 있으면 앱이 스스로 켭니다")
+        // The first session is the one that runs before any widget press has had the chance to switch USB
+        // debugging on — and it is the one a first-time user walks out of Wi-Fi with. Switch it on now.
+        // adbd is already running (we are talking to it), so this does not restart it.
+        log(UsbDebugging.describe(UsbDebugging.ensureOn(context)))
     }
 
     /**

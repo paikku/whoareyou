@@ -47,6 +47,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tcpMode: Button
     private lateinit var useVpn: android.widget.CheckBox
     private lateinit var serverInApp: android.widget.CheckBox
+    private lateinit var setupWireless: Button
+    private lateinit var setupPair: Button
+    private lateinit var setupStart: Button
+    private lateinit var setupWidget: Button
+    private lateinit var setupNote: TextView
+    private lateinit var advanced: android.view.View
+    private lateinit var advancedToggle: Button
     private val handler = Handler(Looper.getMainLooper())
 
     /** What to do once consent comes back: the plain session, or the whole bulk sequence. */
@@ -98,6 +105,28 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.clear_log).setOnClickListener { StreamService.logLines.clear(); lastLog = "" ; log.text = "" }
         useVpn = findViewById(R.id.use_vpn)
         serverInApp = findViewById(R.id.server_in_app)
+
+        // The front page: four steps, four lights (SetupSteps). Each button is the same action as the
+        // corresponding control under "자세히", so a light going green means the same thing in both places.
+        setupWireless = findViewById(R.id.setup_wireless)
+        setupWireless.setOnClickListener {
+            runCatching { startActivity(AdbPrefs.wirelessDebuggingIntent()) }
+                .onFailure { StreamService.log("개발자 옵션을 열지 못함: $it") }
+        }
+        setupPair = findViewById(R.id.setup_pair)
+        setupPair.setOnClickListener { startPairing() }
+        setupStart = findViewById(R.id.setup_start)
+        setupStart.setOnClickListener { toggle.performClick() }
+        setupNote = findViewById(R.id.setup_note)
+        setupWidget = findViewById(R.id.setup_widget)
+        setupWidget.setOnClickListener { pinWidget() }
+        advanced = findViewById(R.id.advanced)
+        advancedToggle = findViewById(R.id.advanced_toggle)
+        advancedToggle.setOnClickListener {
+            val show = advanced.visibility != android.view.View.VISIBLE
+            advanced.visibility = if (show) android.view.View.VISIBLE else android.view.View.GONE
+            advancedToggle.setText(if (show) R.string.advanced_hide else R.string.advanced_show)
+        }
         selfTest.setOnClickListener {
             StreamService.log("self-test 시작 (인터페이스: ${SelfTest.interfaces().joinToString { "${it.name}=${it.address}" }})")
             SelfTest.run(StreamService::log)
@@ -161,6 +190,53 @@ class MainActivity : AppCompatActivity() {
      * Starts the pairing notification (which takes the code) and jumps to Developer options →
      * Wireless debugging, where the user opens "Pair device with pairing code".
      */
+    /** Asks the launcher to place the widget (Android 8+); launchers that cannot get told where to find it. */
+    private fun pinWidget() {
+        val manager = getSystemService(android.appwidget.AppWidgetManager::class.java)
+        val ok = runCatching {
+            manager.isRequestPinAppWidgetSupported &&
+                manager.requestPinAppWidget(android.content.ComponentName(this, com.carcast.widget.CarCastWidget::class.java), null, null)
+        }.getOrDefault(false)
+        if (!ok) android.widget.Toast.makeText(this, R.string.widget_pin_unsupported, android.widget.Toast.LENGTH_LONG).show()
+    }
+
+    /** "● 1  페어링됨" in green, "○ 1  페어링" in the default colour: the light is the first character. */
+    private fun stepLabel(n: Int, done: Boolean, text: String): CharSequence {
+        val s = android.text.SpannableString("${if (done) "●" else "○"}  $n  $text")
+        if (done) s.setSpan(android.text.style.ForegroundColorSpan(0xFF2E7D32.toInt()), 0, 1, 0)
+        return s
+    }
+
+    /** SetupSteps.read probes a socket, which the main thread may not do; one reader at a time, results posted back. */
+    private val setupReader = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "setup-read").apply { isDaemon = true } }
+    private val setupBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun refreshSetup() {
+        if (!setupBusy.compareAndSet(false, true)) return
+        setupReader.execute {
+            val st = runCatching { SetupSteps.read(this) }.getOrNull()
+            setupBusy.set(false)
+            if (st != null) runOnUiThread { if (!isFinishing) renderSetup(st) }
+        }
+    }
+
+    private fun renderSetup(st: SetupSteps.State) {
+        val running = StreamService.running
+        setupWireless.text = stepLabel(
+            1, st.wireless,
+            getString(when { st.wirelessByApp -> R.string.setup_wireless_by_app; st.wireless -> R.string.setup_wireless_done; else -> R.string.setup_wireless }),
+        )
+        setupPair.text = stepLabel(2, st.paired, getString(if (st.paired) R.string.setup_pair_done else R.string.setup_pair))
+        setupStart.text = stepLabel(
+            3, st.server,
+            getString(when { st.server -> R.string.setup_start_running; running -> R.string.setup_start_waiting; else -> R.string.setup_start }),
+        )
+        val note = SetupSteps.note(st, blocker = if (running && !st.server) StreamService.linkSummary else null)
+        setupNote.visibility = if (note == null) android.view.View.GONE else android.view.View.VISIBLE
+        if (note != null) setupNote.text = note
+        setupWidget.text = stepLabel(4, st.widget, getString(if (st.widget) R.string.setup_widget_done else R.string.setup_widget))
+    }
+
     private fun startPairing() {
         startForegroundService(Intent(this, AdbPairingService::class.java))
         runCatching { startActivity(AdbPrefs.wirelessDebuggingIntent()) }
@@ -301,7 +377,8 @@ class MainActivity : AppCompatActivity() {
      */
     private fun bulkOn() {
         val go: () -> Unit = {
-            if (BulkControl.precondition(this) == BulkControl.Survival.NONE) {
+            // Once the app may write the toggle, "on" switches USB debugging on itself, so there is nothing to warn about.
+            if (BulkControl.precondition(this) == BulkControl.Survival.NONE && !com.carcast.adb.UsbDebugging.canWrite(this)) {
                 androidx.appcompat.app.AlertDialog.Builder(this)
                     .setMessage(R.string.bulk_on_warn_none)
                     .setPositiveButton(R.string.bulk_on) { _, _ -> sendBulk(StreamService.ACTION_ALL_ON) }
@@ -360,6 +437,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             val running = StreamService.running
             toggle.text = getString(if (running) R.string.stop else R.string.start)
+            refreshSetup()
             status.text = buildString {
                 append(if (running) "실행 중" else getString(R.string.status_idle))
                 append("  (빌드 ").append(BuildConfig.GIT_SHA).append(")\n")
