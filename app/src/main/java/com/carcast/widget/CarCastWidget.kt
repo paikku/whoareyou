@@ -104,6 +104,38 @@ class CarCastWidget : AppWidgetProvider() {
         }
 
         /**
+         * The line under the switch. While a sequence runs it is that sequence's own step (a countdown while
+         * the server is awaited, not a static "turning on…" that looks the same at second 1 and second 29).
+         * Idle, it is the truth: both halves when they are up, and when the server is not, what the adb link
+         * is stuck on ([link]) — because "session up, server down" is the failure this project spends most of
+         * its time on, and a widget that shows a single dot for it has hidden it. [failure] is why the last
+         * sequence ended without a server; [usb] is what it found the USB debugging toggle to be, mentioned
+         * only when the app could not switch it on — that is the one case where the driver has to.
+         */
+        fun detailFor(
+            phase: BulkControl.Phase,
+            step: String,
+            session: Boolean,
+            server: Boolean,
+            idleLine: String,
+            link: String?,
+            failure: String?,
+            usb: com.carcast.adb.UsbDebugging.Outcome?,
+        ): String {
+            if (phase != BulkControl.Phase.IDLE) return step.ifEmpty { "진행 중…" }
+            val usbNote = when (usb) {
+                com.carcast.adb.UsbDebugging.Outcome.NO_PERMISSION, com.carcast.adb.UsbDebugging.Outcome.REFUSED -> " · USB 디버깅을 켜 주세요"
+                else -> ""
+            }
+            return when {
+                session && server -> idleLine
+                session -> "서버 없음 — ${link ?: "adb 대기"}$usbNote"
+                failure != null -> "⚠ $failure$usbNote"
+                else -> idleLine + usbNote
+            }
+        }
+
+        /**
          * The switch is on only while the session is actually up, and the line under it splits that into the
          * two halves the switch owns — because "on" with a dead server is the failure this project spends
          * most of its time on, and the widget must not hide it behind a single dot.
@@ -117,11 +149,14 @@ class CarCastWidget : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.widget_switch)
             views.setTextViewText(R.id.widget_title, context.getString(R.string.widget_title))
             views.setTextViewText(
-                R.id.widget_detail, when (busy) {
-                    BulkControl.Phase.TURNING_ON -> context.getString(R.string.bulk_on_progress)
-                    BulkControl.Phase.TURNING_OFF -> context.getString(R.string.bulk_off_progress)
-                    BulkControl.Phase.IDLE -> context.getString(R.string.widget_detail, mark(vpn), mark(server))
-                }
+                R.id.widget_detail,
+                detailFor(
+                    busy, BulkControl.step, session, server,
+                    idleLine = context.getString(R.string.widget_detail, mark(vpn), mark(server)),
+                    link = StreamService.linkSummary,
+                    failure = BulkControl.lastFailure,
+                    usb = BulkControl.usbOutcome,
+                ),
             )
             views.setCompoundButtonChecked(R.id.widget_toggle, checked)
             val intent = Intent(context, CarCastWidget::class.java).setAction(ACTION_TOGGLE)

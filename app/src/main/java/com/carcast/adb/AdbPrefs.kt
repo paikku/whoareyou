@@ -36,12 +36,15 @@ class AdbPrefs(context: Context) {
         set(v) = p.edit().putInt("tcpPort", v).apply()
 
     /**
-     * Whether the user asked for TCP mode. Off by default and never turned on by the app itself: the switch
-     * restarts adbd, and on a device whose adbd does not come back serving wireless debugging that leaves the
-     * only way in broken until the user toggles it. Opt in from the app, where the warning is.
+     * Whether TCP mode is wanted. On by default since 2026-09-14: the switch, the recovery without Wi-Fi and
+     * the re-switch after a reboot have all been seen working on the phone (docs/verification-log.md §3.8), and
+     * a first-time user who does not know to opt in loses the server the moment they leave Wi-Fi. It was off
+     * before because one early attempt left adbd not serving wireless debugging (§3.7); [tcpModeFailures]
+     * still stops the app from breaking that repeatedly on a phone that refuses, and the app's button turns
+     * it off for good.
      */
     var tcpModeOptIn: Boolean
-        get() = p.getBoolean("tcpModeOptIn", false)
+        get() = p.getBoolean("tcpModeOptIn", true)
         set(v) = p.edit().putBoolean("tcpModeOptIn", v).apply()
 
     /** Consecutive failures of [manualConnectPort]; it is dropped after a few so a stale port cannot trap the app. */

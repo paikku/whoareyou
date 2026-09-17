@@ -4,6 +4,7 @@ import android.content.Context
 import com.carcast.Config
 import com.carcast.adb.AdbPrefs
 import com.carcast.adb.ShellServerLink
+import com.carcast.adb.UsbDebugging
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -22,7 +23,13 @@ import java.net.URL
  *
  * [precondition] still reports which way back the phone has — TCP mode, USB debugging, or neither — because
  * that decides whether a server that dies in the car can be brought back at all (docs/verification-log.md
- * §3.5, §3.8). It is reported, never enforced.
+ * §3.5, §3.8). It is reported, never enforced — except that **on** first switches USB debugging on when it
+ * can ([UsbDebugging]): that is the one precondition the app is able to meet by itself, and the one the
+ * driver was meeting by hand before every start.
+ *
+ * Progress is published as it happens ([step], [onChange]) because the widget is the only thing the driver
+ * is looking at, and a switch that sits on "turning on…" for thirty seconds and then quietly snaps back has
+ * told them nothing.
  */
 object BulkControl {
 
@@ -31,6 +38,30 @@ object BulkControl {
     @Volatile
     var phase: Phase = Phase.IDLE
         private set
+
+    /** Where the running sequence is, in one line; empty while idle. */
+    @Volatile
+    var step: String = ""
+        private set
+
+    /** What the last **on** found the USB debugging toggle to be; null until a sequence has run. */
+    @Volatile
+    var usbOutcome: UsbDebugging.Outcome? = null
+        private set
+
+    /** Why the last sequence ended without what it was after, or null. Cleared when the next one starts. */
+    @Volatile
+    var lastFailure: String? = null
+        private set
+
+    /** Called on every [phase]/[step]/[lastFailure] change; the widget redraws from it. */
+    @Volatile
+    var onChange: (() -> Unit)? = null
+
+    private fun changed() { runCatching { onChange?.invoke() } }
+
+    /** A step is one line in the log and the same line on the widget. */
+    private fun progress(s: String, log: (String) -> Unit) { step = s; log(s); changed() }
 
     /**
      * One sequence at a time. The phase alone cannot be that guard: two presses a few milliseconds apart
@@ -45,13 +76,20 @@ object BulkControl {
             return false
         }
         phase = target
+        lastFailure = null
+        step = ""
+        changed()
         return true
     }
 
     private fun release() {
         phase = Phase.IDLE
+        step = ""
         busy.set(false)
+        changed()
     }
+
+    private fun fail(why: String, log: (String) -> Unit) { lastFailure = why; log(why); changed() }
 
     /** Losing Wi-Fi kills the server on some setups; this says what would keep it alive through that. */
     enum class Survival {
@@ -86,8 +124,10 @@ object BulkControl {
         if (!claim(Phase.TURNING_OFF, log)) return false
         try {
             log("일괄 끄기: 서버 → 세션 순서로 끕니다 (핫스팟은 앱이 못 바꿉니다 — 설정에서 직접)")
+            progress("1/2 서버 종료 중", log)
             val stopped = ShellServerLink.stopServer()
             log("1/2 서버 종료: $stopped")
+            progress("2/2 세션·VPN 종료 중", log)
             stopSession()
             log("2/2 세션·VPN 종료 완료")
             return true
@@ -103,6 +143,23 @@ object BulkControl {
     fun allOn(context: Context, log: (String) -> Unit, startSession: () -> Unit): Boolean {
         if (!claim(Phase.TURNING_ON, log)) return false
         try {
+            // USB debugging keeps adbd alive through a Wi-Fi drop and reopens the TCP-mode port when it comes
+            // back — so it goes first, before anything tries to reach adbd. Once the app has been granted
+            // WRITE_SECURE_SETTINGS (ShellServerLink does that while it holds shell) this needs no adb at all.
+            progress("1/3 USB 디버깅 확인", log)
+            val usb = UsbDebugging.ensureOn(context)
+            usbOutcome = usb
+            log("1/3 " + UsbDebugging.describe(usb))
+            // adbd takes a few seconds to come up after the toggle, and it reopens the TCP-mode port only once
+            // it has (service.adb.tcp.port survives until reboot). Ask the link to go before that and it reads
+            // "no TCP mode, no Wi-Fi" and says so — wrongly. Wait for the port here, visibly, instead.
+            if (usb == UsbDebugging.Outcome.TURNED_ON && AdbPrefs(context).tcpPort > 0) {
+                val came = awaitTcpPort(context, ADBD_WAIT_MS) { waited ->
+                    step = "1/3 adbd 기동 대기 ${waited / 1000}/${ADBD_WAIT_MS / 1000}초"
+                    changed()
+                }
+                log("1/3 adbd: " + if (came) "TCP 모드 포트 다시 열림" else "${ADBD_WAIT_MS / 1000}초 안에 TCP 모드 포트가 열리지 않음 — 무선 디버깅으로 진행")
+            }
             val survival = precondition(context)
             log(
                 "일괄 켜기: 세션 → 서버 순서로 켭니다 — " + when (survival) {
@@ -112,14 +169,18 @@ object BulkControl {
                 }
             )
             if (serverUp()) {
-                log("1/2 세션·서버: 서버가 이미 응답 중")
+                progress("2/3 세션 시작 (서버는 이미 응답 중)", log)
                 startSession()
             } else {
+                progress("2/3 세션 시작 — 서버 응답을 기다립니다", log)
                 startSession()
-                log("1/2 세션 시작 — 서버 응답을 기다립니다")
             }
-            val up = awaitServer(SERVER_WAIT_MS)
-            log("2/2 서버: " + if (up) "응답 확인" else "${SERVER_WAIT_MS / 1000}초 안에 응답 없음 (로그의 adb 상태를 보세요)")
+            val up = awaitServer(SERVER_WAIT_MS) { waited ->
+                step = "3/3 서버 응답 대기 ${waited / 1000}/${SERVER_WAIT_MS / 1000}초"
+                changed()
+            }
+            if (up) log("3/3 서버: 응답 확인")
+            else fail("3/3 서버: ${SERVER_WAIT_MS / 1000}초 안에 응답 없음 (로그의 adb 상태를 보세요)", log)
             // The hotspot is the driver's to switch; say where it stands rather than leaving them to guess
             // whether the car can reach us at all.
             log("핫스팟: " + when (HotspotState.on()) {
@@ -136,10 +197,33 @@ object BulkControl {
     /** How long "everything on" waits for the shell server before giving up on the hotspot step. */
     const val SERVER_WAIT_MS = 30_000L
 
-    private fun awaitServer(timeoutMs: Long): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
+    /** How long to wait for adbd to reopen the TCP-mode port after USB debugging was just switched on (seen: ~5 s). */
+    const val ADBD_WAIT_MS = 15_000L
+
+    private fun awaitTcpPort(context: Context, timeoutMs: Long, tick: (Long) -> Unit): Boolean {
+        val start = System.currentTimeMillis()
+        var lastTick = 0L
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            if (ShellServerLink.tcpModeReachable(context)) return true
+            val waited = System.currentTimeMillis() - start
+            if (waited - lastTick >= 2_000) { lastTick = waited; tick(waited) }
+            try {
+                Thread.sleep(500)
+            } catch (_: InterruptedException) {
+                return ShellServerLink.tcpModeReachable(context)
+            }
+        }
+        return ShellServerLink.tcpModeReachable(context)
+    }
+
+    /** [tick] gets the elapsed milliseconds every couple of seconds, so a long wait is visibly a wait. */
+    private fun awaitServer(timeoutMs: Long, tick: (Long) -> Unit = {}): Boolean {
+        val start = System.currentTimeMillis()
+        var lastTick = 0L
+        while (System.currentTimeMillis() - start < timeoutMs) {
             if (serverUp()) return true
+            val waited = System.currentTimeMillis() - start
+            if (waited - lastTick >= 2_000) { lastTick = waited; tick(waited) }
             try {
                 Thread.sleep(500)
             } catch (_: InterruptedException) {
