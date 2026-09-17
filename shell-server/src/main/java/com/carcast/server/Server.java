@@ -130,6 +130,9 @@ public final class Server {
         if (source != null) {
             try {
                 injectorTmp = new InputInjector(source::width, source::height, source::displayId);
+                // Touches are stamped into the same ledger the encoder reports into, so "how long did Android
+                // take to answer this touch" and "how long did the encoder take" are two numbers, not one.
+                injectorTmp.timing(source.timing());
             } catch (Throwable t) {
                 System.out.println("carcast-server: input injector unavailable: " + t);
             }

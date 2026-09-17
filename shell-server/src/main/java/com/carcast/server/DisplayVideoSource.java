@@ -57,6 +57,8 @@ public final class DisplayVideoSource implements VideoSource {
     private final int intraRefresh;
     private H264Encoder encoder;
     private EncodedH264Sink sink;
+    /** Where the milliseconds go on this side of the link; survives encoder rebuilds. */
+    private final FrameTiming timing = new FrameTiming();
     /** The encoder's output, bound to the sink once; every encoder built here reports into it. */
     private H264Encoder.Output output;
     private volatile int encoderRestarts;
@@ -88,6 +90,11 @@ public final class DisplayVideoSource implements VideoSource {
         this.intraRefresh = intraRefresh;
     }
 
+    /** The input injector stamps its touches here, so a touch can be timed against the frame that answered it. */
+    public FrameTiming timing() {
+        return timing;
+    }
+
     @Override
     public void start(@NotNull MediaHub hub) {
         Workarounds.apply();
@@ -101,6 +108,9 @@ public final class DisplayVideoSource implements VideoSource {
 
             @Override
             public void onFrame(byte[] annexB, long ptsUs, boolean keyframe) {
+                // First, before the muxing below is charged to the encoder: this runs on the encoder's output
+                // thread, right after dequeueOutputBuffer, which is the moment the measurement needs.
+                timing.onEncodedFrame(ptsUs);
                 s.onFrame(annexB, ptsUs, keyframe);
             }
         };
@@ -425,6 +435,8 @@ public final class DisplayVideoSource implements VideoSource {
         // is the only place the encoder's actual profile shows up — and it decides whether a JS decoder
         // (Baseline only) can be a fallback for the car's Drive mode, where <video> is paused for us.
         m.put("codec", sink != null ? sink.getCodec() : null);
+        // The phone-side latency budget, split (FrameTiming): what the car cannot see from where it sits.
+        m.put("timing", timing.info());
         m.put("frames", sink != null ? sink.getFrames() : 0);
         m.put("keyframes", sink != null ? sink.getKeyframes() : 0);
         m.put("app", lastApp);

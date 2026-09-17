@@ -3,7 +3,7 @@
 // 여기서 잡고 싶은 것이 그 상태다.
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { control, serverLog, sleep, status, waitFor } from '../lib.mjs';
+import { control, ensureApp, serverLog, sleep, status, waitFor, wiggle } from '../lib.mjs';
 
 test('터치와 키가 주입되고, 실패 카운터는 늘지 않는다', async () => {
   const before = await status();
@@ -96,5 +96,36 @@ test('ping 은 되돌아오고, 키프레임 요청은 세션이 센다', async 
     assert.equal(after.injectFailed, before.injectFailed ?? 0);
   } finally {
     c.close();
+  }
+});
+
+// 폰 안쪽 지연 예산(FrameTiming). 차가 잴 수 있는 것은 컨트롤 왕복과 자기 디코드까지이고, 그 사이의
+// "터치가 안드로이드를 지나 그림이 되고 인코더를 빠져나오기까지"는 여태 한 덩어리였다. 여기서 보는 것은
+// 두 가지다: 표본이 실제로 쌓이는가, 그리고 **인코더의 pts 가 우리 시계인가**(skipped 가 그 답이다 —
+// 출력에 자기 시각을 다시 찍는 인코더에서는 이 측정이 무의미하고, 그때는 조용히 틀리는 대신 skipped 가 는다).
+// 숫자 자체는 에뮬레이터(소프트웨어 인코더)에서 의미가 없다 — 실기기(B)와 실차(C)의 몫이다.
+test('폰 안쪽 지연(인코더·터치→프레임)이 표본으로 쌓인다', async () => {
+  await ensureApp();
+  const stop = await wiggle();
+  try {
+    const s = await waitFor(async () => {
+      const x = await status();
+      return (x.timing?.encodeMs?.n ?? 0) > 0 && (x.timing?.touchToFrameMs?.n ?? 0) > 0 ? x : null;
+    }, { timeoutMs: 30_000, what: 'timing 표본' }).catch(async (e) => {
+      throw new Error(`${e.message}\n서버 로그:\n${await serverLog()}`);
+    });
+
+    const enc = s.timing.encodeMs;
+    const seen = enc.n + enc.skipped;
+    assert.ok(enc.skipped / seen < 0.5,
+      `인코더 pts 가 우리 시계가 아니다 (버린 표본 ${enc.skipped}/${seen}) — 이 기기에서는 encodeMs 를 믿으면 안 된다`);
+    assert.equal(typeof enc.p50, 'number', 'p50 이 없다');
+    assert.ok(enc.p50 >= 0 && enc.p50 <= enc.max, `p50 ${enc.p50}ms, max ${enc.max}ms`);
+
+    const touch = s.timing.touchToFrameMs;
+    assert.ok(touch.n > 0, '터치를 계속 넣었는데 터치→프레임 표본이 없다');
+    assert.ok(touch.p50 >= 0, `터치→프레임 p50 ${touch.p50}ms`);
+  } finally {
+    stop();
   }
 });

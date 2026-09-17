@@ -107,7 +107,8 @@ class StreamSession(
         http = server
         running = true
         event("HTTP 서버 시작 ($process): 0.0.0.0:$port" + if (reports.size > 0) ", 저장된 진단 ${reports.size}건" else "")
-        videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개 가득, 다음 키프레임까지 버림") }
+        videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개, 다음 키프레임까지 버림") }
+        videoHub.onNeedKeyframe = { requestKeyframe() }
         videoHub.onClientDropped = { remote -> event("video 클라이언트 $remote 를 놓아줌: init 세그먼트를 받지 못함 — 재접속을 기다린다") }
         val live = videoSource
         if (live != null) {
@@ -217,6 +218,24 @@ class StreamSession(
         private set
     @Volatile private var lastKeyframeRequestAt = 0L
 
+    /**
+     * Ask the source for an IDR. Two callers: the car (it dropped frames or its decoder stalled) and the hub
+     * (it dropped frames that had gone stale in front of a socket). Both mean the same thing — somebody is
+     * waiting for the next keyframe and the GOP is ten seconds — and both can repeat, so the rate limit is
+     * shared: a car in trouble must not be able to turn the stream into all keyframes.
+     *
+     * No lock: the hub calls this from the encoder's output thread, which is holding EncodedH264Sink's
+     * monitor, and a lock taken in that order is a lock ordering to maintain forever. Two callers slipping
+     * through the gap at once cost one extra IDR, which is what the gap is there to bound anyway.
+     */
+    private fun requestKeyframe() {
+        val now = System.currentTimeMillis()
+        if (now - lastKeyframeRequestAt < KEYFRAME_REQUEST_MIN_GAP_MS) return
+        lastKeyframeRequestAt = now
+        keyframeRequests++
+        if (liveSourceRunning) videoSource?.requestKeyframe()
+    }
+
     private fun onControl(conn: WebSocketConnection, data: ByteArray) {
         if (data.isEmpty()) return
         controlPackets++
@@ -227,15 +246,7 @@ class StreamSession(
             is ControlMessage.Ping -> { conn.offer(data); return }
             // The car dropped frames or its decoder stalled: an IDR now beats waiting out the GOP or reconnecting.
             // Rate-limited so a car in trouble cannot turn the stream into all keyframes.
-            is ControlMessage.Keyframe -> {
-                val now = System.currentTimeMillis()
-                if (now - lastKeyframeRequestAt >= KEYFRAME_REQUEST_MIN_GAP_MS) {
-                    lastKeyframeRequestAt = now
-                    keyframeRequests++
-                    if (liveSourceRunning) videoSource?.requestKeyframe()
-                }
-                return
-            }
+            is ControlMessage.Keyframe -> { requestKeyframe(); return }
             else -> {}
         }
         val handler = controlHandler ?: return
@@ -269,6 +280,7 @@ class StreamSession(
             "accepting" to (http?.accepting ?: false),
             "lastAcceptAgoMs" to http?.lastAcceptAt?.takeIf { it > 0 }?.let { System.currentTimeMillis() - it },
             "videoDropped" to videoHub.dropped,
+            "videoStaleDropped" to videoHub.staleDropped,
             "reports" to reports.size,
             "lastReport" to reports.last?.let { mapOf("id" to it.id, "receivedAt" to it.receivedAt, "remote" to it.remote, "summary" to it.summary) },
         )
