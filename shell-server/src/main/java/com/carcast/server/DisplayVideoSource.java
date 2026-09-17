@@ -45,6 +45,8 @@ public final class DisplayVideoSource implements VideoSource {
     /** How long after a launch the ping-pong is likely, so the fast poll is worth its cost. */
     private static final long APP_WATCH_FAST_WINDOW_MS = 20_000;
     private static final int APP_WATCH_MAX_FAILURES = 3;
+    /** Our own package: its activities on the car display are tools (the latency probe), never the app being watched. */
+    private static final String SELF_PACKAGE = "com.carcast";
 
     private final DisplayCapture display;
     /** Current encoder parameters; {@link #reconfigure} changes them at runtime. */
@@ -278,6 +280,21 @@ public final class DisplayVideoSource implements VideoSource {
         String result = Command.execReadOutput(cmd.toArray(new String[0])).trim();
         // core Log, not Ln: these lines must reach /api/log (what the app and the laptop read), not only the file.
         Log.INSTANCE.i(TAG, "start app " + component + " on display " + id + " (" + action + ", was on display " + from + ", restart=" + restart + "): " + result);
+        if (SELF_PACKAGE.equals(pkg)) {
+            // Our own activity (the latency probe) is a tool that sits on top of the app for a few seconds. It is
+            // not "the app the car is using": the watcher keeps following that one, the history does not learn
+            // it, and /api/status.app does not change — otherwise the moment the probe finishes the watcher finds
+            // the package's other task (the app's main screen, on the phone) and the car says "the phone took it".
+            requestKeyframe();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("result", result);
+            m.put("action", "started");
+            m.put("package", pkg);
+            m.put("fromDisplay", null);
+            m.put("display", id);
+            m.put("transient", true);
+            return m;
+        }
         lastApp = component;
         lastPackage = pkg;
         appDisplay = id;

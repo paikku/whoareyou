@@ -49,25 +49,16 @@ test('지연 측정은 터치를 보내고 밝기가 뒤집힐 때까지를 재�
   await startPlayback(page);
   await page.waitForFunction(() => (window as any).__carcast.stats().controlWs.open);
   await page.evaluate(() => fetch('/api/reset'));
-  // 가짜 폰의 그림은 안 뒤집히므로: 터치가 폰에 닿는 것을 보고 밝기를 손으로 뒤집어 준다(feedLuma).
+  // 가짜 폰의 그림은 안 뒤집히므로: 터치를 보낸 직후(onTouch) 60ms 뒤에 밝기를 손으로 뒤집어 준다(feedLuma).
   const result = await page.evaluate(async () => {
     const c = (window as any).__carcast;
     c.feedLuma(20);
-    const done = c.runProbe({ trials: 3, launch: false });
     let luma = 20;
-    let seen = 0; // 폰에 닿은 슬롯 9 의 DOWN 수 중 이미 답해 준 것
-    for (let i = 0; i < 3; i++) {
-      // 새 터치가 폰에 닿을 때까지 기다렸다가 60ms 뒤에 화면이 바뀐 것으로 친다.
-      for (let k = 0; k < 300; k++) {
-        const now = (await (await fetch('/api/status')).json()).touches.filter((t: any) => t.id === 9 && t.action === 0).length;
-        if (now > seen) { seen = now; break; }
-        await new Promise((r) => setTimeout(r, 10));
-      }
-      await new Promise((r) => setTimeout(r, 60));
-      luma = luma > 128 ? 20 : 235;
-      c.feedLuma(luma);
-    }
-    return done;
+    return c.runProbe({
+      trials: 3,
+      launch: false,
+      onTouch: () => setTimeout(() => { luma = luma > 128 ? 20 : 235; c.feedLuma(luma); }, 60),
+    });
   });
   expect(result.n).toBe(3);
   expect(result.fails).toBe(0);

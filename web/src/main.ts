@@ -426,7 +426,8 @@ function maybeOpenHome(st: any, arrived = false) {
   const becameEmpty = empty && hadAppOnCar !== false;
   hadAppOnCar = !empty;
   // 재생이 시작되기 전에는 띄우지 않는다: 시작은 화면을 한 번 눌러야 하는데, 그 손짓을 홈이 가로챈다.
-  if (becameEmpty && started && sheet.hidden) void (arrived ? resumeOrHome() : openHome());
+  // 화질 시트가 열려 있으면 그 위에 홈을 얹지 않는다 — 시트 위의 버튼이 눌리지 않게 된다(e2e 에서 걸렸다).
+  if (becameEmpty && started && sheet.hidden && qualityPanel.hidden) void (arrived ? resumeOrHome() : openHome());
 }
 
 /**
@@ -519,8 +520,11 @@ async function launch(name: string, restart: Restart = 'never', auto = false): P
     // 앱이 차 화면에 왔으니 그것을 보여 준다. 홈이 저절로 떠 있던 채로 ▶ 나 패널 버튼을 눌렀을 때
     // 시트가 그대로 남아 새 앱을 덮던 것 — 칸에서 고를 때는 pick 이 먼저 닫지만 다른 길은 아니었다.
     closeSheet();
-    localStorage.setItem('carcast.app', name);
-    lastPackage = r.package ?? name;
+    // 잠깐 얹히는 도구(지연 측정 액티비티)는 "쓰던 앱"이 아니다: 기억하지도, 되찾기 대상으로 삼지도 않는다.
+    if (!r.transient) {
+      localStorage.setItem('carcast.app', name);
+      lastPackage = r.package ?? name;
+    }
     appOnPhone = false;
     appEpoch++; // a status poll that was already in flight describes the world before this launch
     note(`app ${r.package ?? name}: ${r.action ?? '?'} (from display ${r.fromDisplay ?? '-'}, restart=${restart})${auto ? ' [resume]' : ''}`);
@@ -805,6 +809,7 @@ function openQuality(): void {
     el.addEventListener('click', () => { void applyPreset(p, 'picked'); });
     return el;
   }));
+  closeSheet(); // 홈·최근앱 위에 얹지 않는다
   qualityPanel.hidden = false;
   renderQuality();
 }
@@ -856,7 +861,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PROBE_ACTIVITY = 'com.carcast/.ui.LatencyProbeActivity';
 const PROBE_SLOT = 9; // 운전자의 손가락(0..)과 겹치지 않는 슬롯
 
-async function runProbe(opts: { trials?: number; launch?: boolean } = {}): Promise<ProbeResult | null> {
+/** `onTouch` 는 테스트용 고리: 터치를 보낸 직후 불린다(가짜 폰은 화면을 못 뒤집으므로 테스트가 대신 밝기를 넣는다). */
+async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () => void } = {}): Promise<ProbeResult | null> {
   if (probeRunning) return null;
   if (!(renderer instanceof H264Renderer)) { notice('지연 측정은 h264 렌더러에서만 됩니다', 5000); return null; }
   probeRunning = true;
@@ -882,6 +888,7 @@ async function runProbe(opts: { trials?: number; launch?: boolean } = {}): Promi
       const stamp = touchClock();
       control.send(encodeTouch(TouchAction.Down, PROBE_SLOT, 0.5, 0.5, 1, stamp));
       control.send(encodeTouch(TouchAction.Up, PROBE_SLOT, 0.5, 0.5, 0, stamp + 30));
+      opts.onTouch?.();
       const flipped = await waitFor(() => lastLumaAt > since && Math.abs(lastLuma - base) > 64, 2500);
       if (flipped) samples.push(Math.round(lastLumaAt - t0));
       else fails++;
@@ -959,7 +966,7 @@ const stats = () => ({
   // 화질·지연 측정을 테스트에서 몰기 위한 고리. feedLuma 는 디코더 대신 밝기를 넣어 준다(가짜 폰은 그림을 못 뒤집는다).
   applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
   stepDown: (why = 'test') => stepDown(why),
-  runProbe: (opts: { trials?: number; launch?: boolean }) => runProbe(opts),
+  runProbe: (opts: { trials?: number; launch?: boolean; onTouch?: () => void }) => runProbe(opts),
   feedLuma: (l: number) => { lastLuma = l; lastLumaAt = performance.now(); },
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
   restartControl: () => control.restart(),
