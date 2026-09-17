@@ -9,8 +9,13 @@ import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.Signature
+import java.security.KeyFactory
+import java.security.PrivateKey
+import java.security.cert.Certificate
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
+import java.security.spec.PKCS8EncodedKeySpec
+import java.util.Base64
 import java.security.spec.ECGenParameterSpec
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -50,14 +55,39 @@ import javax.net.ssl.SSLContext
 object SelfSignedCert {
     private const val TAG = "SelfSignedCert"
     private const val ALIAS = "carcast"
+    /**
+     * The tun address the car opens (Config.TUN_ADDRESS in the app). Kept here because both the self-signed
+     * SAN list and the "which host name should the car type" hint have to agree on it.
+     */
+    const val CAR_ADDRESS = "100.99.9.9"
     private val PASSWORD = "carcast".toCharArray()
     /** Ten years. This certificate is trusted by nobody, so a long life costs nothing and saves a re-prompt. */
     private const val VALID_DAYS = 3650L
 
-    class Tls(val sslContext: SSLContext, val certificate: X509Certificate) {
+    class Tls(val sslContext: SSLContext, val certificate: X509Certificate, val selfSigned: Boolean = true) {
         /** SHA-256 of the DER, colon-separated — the same string the browser shows under "certificate details". */
         val fingerprint: String by lazy {
             MessageDigest.getInstance("SHA-256").digest(certificate.encoded).joinToString(":") { "%02X".format(it) }
+        }
+
+        val subject: String get() = certificate.subjectX500Principal.name
+
+        /**
+         * The host name the car should type, when the certificate is a wildcard for a domain whose DNS turns a
+         * dashed address back into that address (`*.local-ip.sh` → `100-99-9-9.local-ip.sh` → 100.99.9.9).
+         * That is the whole trick: a **publicly trusted** certificate for the phone's own private address, so
+         * the car gets a secure context with no warning to click through — and this car has no way to click
+         * through one (2026-09-17: the interstitial came up non-overridable, NET::ERR_CERT_AUTHORITY_INVALID
+         * with no "Advanced", so a self-signed certificate cannot ask the WebCodecs question here).
+         *
+         * Null for a self-signed certificate, which has no such domain.
+         */
+        fun hostFor(ip: String): String? {
+            val wildcards = certificate.subjectAlternativeNames.orEmpty()
+                .filter { it[0] == 2 }.map { it[1].toString() }
+                .filter { it.startsWith("*.") }
+            val domain = wildcards.firstOrNull() ?: return null
+            return "${ip.replace('.', '-')}.${domain.removePrefix("*.")}"
         }
     }
 
@@ -89,6 +119,68 @@ object SelfSignedCert {
         return fromKeyStore(ks)
     }
 
+    /**
+     * A certificate somebody else's CA signed, handed to us as PEM (chain + private key).
+     *
+     * Why this exists: the car's interstitial turned out to be the **non-overridable** kind — the text reads
+     * "지금은 100.99.9.9에 방문할 수 없습니다", there is no Advanced button, and so a self-signed certificate
+     * can never reach a secure context there. A publicly trusted certificate has no interstitial at all. It
+     * does not need a domain of our own either: services like local-ip.sh hold a Let's Encrypt wildcard for a
+     * domain whose DNS decodes a dashed address (`100-99-9-9.local-ip.sh` → 100.99.9.9) and publish the key,
+     * which is exactly what a diagnostic needs and exactly what a product must not ship (everyone has that
+     * key, so it proves nothing about who is answering).
+     *
+     * Both PKCS#8 (`BEGIN PRIVATE KEY`) and PKCS#1 (`BEGIN RSA PRIVATE KEY`, what Let's Encrypt tooling
+     * usually writes) are accepted; Java only reads the former, so the latter is rewrapped here.
+     */
+    fun fromPem(certPem: String, keyPem: String): Tls {
+        val factory = CertificateFactory.getInstance("X.509")
+        val chain: List<Certificate> = pemBlocks(certPem, "CERTIFICATE")
+            .map { factory.generateCertificate(ByteArrayInputStream(it)) }
+        require(chain.isNotEmpty()) { "no CERTIFICATE block in the certificate PEM" }
+        val ks = KeyStore.getInstance("PKCS12").apply {
+            load(null, null)
+            setKeyEntry(ALIAS, privateKey(keyPem), PASSWORD, chain.toTypedArray())
+        }
+        val leaf = chain.first() as X509Certificate
+        Log.i(TAG, "certificate from PEM: ${leaf.subjectX500Principal.name} (${chain.size} in chain, until ${leaf.notAfter})")
+        return fromKeyStore(ks).let { Tls(it.sslContext, it.certificate, selfSigned = false) }
+    }
+
+    private fun privateKey(pem: String): PrivateKey {
+        val pkcs8 = pemBlocks(pem, "PRIVATE KEY").firstOrNull()
+            ?: throw IllegalArgumentException("no PRIVATE KEY block in the key PEM")
+        // "BEGIN RSA PRIVATE KEY" is PKCS#1: the bare RSAPrivateKey, without the algorithm wrapper Java wants.
+        val der = if (pem.contains("BEGIN RSA PRIVATE KEY")) pkcs1ToPkcs8(pkcs8) else pkcs8
+        val algorithm = if (pem.contains("BEGIN RSA PRIVATE KEY")) "RSA" else guessAlgorithm(der)
+        return KeyFactory.getInstance(algorithm).generatePrivate(PKCS8EncodedKeySpec(der))
+    }
+
+    /** PrivateKeyInfo ::= SEQUENCE { version 0, AlgorithmIdentifier(rsaEncryption, NULL), OCTET STRING(pkcs1) } */
+    private fun pkcs1ToPkcs8(pkcs1: ByteArray): ByteArray = seq(
+        der(TAG_INTEGER, byteArrayOf(0)),
+        seq(oid("1.2.840.113549.1.1.1"), der(0x05, ByteArray(0))),
+        der(TAG_OCTET_STRING, pkcs1),
+    )
+
+    /** EC and RSA are the only shapes anyone hands us; the OID inside the PKCS#8 says which. */
+    private fun guessAlgorithm(pkcs8: ByteArray): String =
+        if (oid("1.2.840.10045.2.1").let { ec -> pkcs8.indexOfSlice(ec) >= 0 }) "EC" else "RSA"
+
+    private fun ByteArray.indexOfSlice(needle: ByteArray): Int {
+        outer@ for (i in 0..size - needle.size) {
+            for (j in needle.indices) if (this[i + j] != needle[j]) continue@outer
+            return i
+        }
+        return -1
+    }
+
+    /** Every `-----BEGIN x-----` … `-----END x-----` body in [pem], Base64-decoded, in order. */
+    private fun pemBlocks(pem: String, kind: String): List<ByteArray> {
+        val re = Regex("-----BEGIN [A-Z ]*$kind-----(.*?)-----END [A-Z ]*$kind-----", RegexOption.DOT_MATCHES_ALL)
+        return re.findAll(pem).map { Base64.getMimeDecoder().decode(it.groupValues[1]) }.toList()
+    }
+
     private fun readKeyStore(file: File): KeyStore =
         KeyStore.getInstance("PKCS12").apply { file.inputStream().use { load(it, PASSWORD) } }
 
@@ -104,7 +196,7 @@ object SelfSignedCert {
         // P-256: every browser takes it, and the key pair is made in milliseconds on a phone (RSA-2048 is
         // hundreds of times slower and this runs while the driver is waiting for a picture).
         val keys = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
-        val ips = (listOf("100.99.9.9", "127.0.0.1") + addresses).map { it.substringAfterLast('=') }
+        val ips = (listOf(CAR_ADDRESS, "127.0.0.1") + addresses).map { it.substringAfterLast('=') }
             .filter { it.count { c -> c == '.' } == 3 }
             .distinct()
         val tbs = tbsCertificate(keys.public.encoded, ips)

@@ -19,6 +19,10 @@ import java.io.File
  *                       (0 turns it off). The car shows a warning once; past it the page is a secure
  *                       context, which is the only place /diag can ask whether this browser has
  *                       WebCodecs. A measuring instrument — see net/SelfSignedCert.kt.
+ *  - tls_cert=<pem>     a certificate a public CA signed (chain) and its key, used instead of the
+ *    tls_key=<pem>      self-signed one. The car this was built for will not let anyone click through a
+ *                       certificate warning, so only a trusted certificate reaches a secure context there.
+ *                       A pair bundled in the APK under assets/tls/ is used when these are absent.
  *  - daemon=true        do not watch stdin; run until killed (pkill -f com.carcast.server.Server).
  *                       For car tests without a PC in the car:
  *                       adb shell 'CLASSPATH=... setsid nohup app_process / com.carcast.server.Server <sha> daemon=true >/dev/null 2>&1 &'
@@ -38,6 +42,8 @@ object ServerMain {
         val httpsPort: Int get() = raw["https_port"]?.toIntOrNull() ?: DEFAULT_HTTPS_PORT
         /** Next to the reports, which is the directory this process already owns. */
         val tlsKeystore: File? get() = reportDir?.let { File(it, "tls.p12") }
+        val tlsCert: File? get() = raw["tls_cert"]?.let { File(it) } ?: reportDir?.let { File(it, "tls-cert.pem") }
+        val tlsKey: File? get() = raw["tls_key"]?.let { File(it) } ?: reportDir?.let { File(it, "tls-key.pem") }
     }
 
     fun parse(args: Array<String>): Options {
@@ -78,6 +84,7 @@ object ServerMain {
         val session = StreamSession(
             opts.assets, opts.port, process = "shell", extraStatus = extraStatus, reportDir = opts.reportDir, videoSource = videoSource,
             staticVersion = opts.buildId, httpsPort = opts.httpsPort, tlsKeystore = opts.tlsKeystore,
+            tlsCert = opts.tlsCert, tlsKey = opts.tlsKey,
         )
         session.onStartApp = startApp
         session.controlHandler = control

@@ -40,12 +40,22 @@ class StreamSession(
     private val httpsPort: Int = 0,
     /** Where the self-signed certificate is kept so the car is not asked to trust a new one every start. */
     private val tlsKeystore: File? = null,
+    /**
+     * A certificate somebody's CA already signed (PEM chain + key), preferred over the self-signed one.
+     * This is what a car that will not let anyone click through a warning needs — see [startTls].
+     */
+    private val tlsCert: File? = null,
+    private val tlsKey: File? = null,
 ) {
     val reports = ReportStore(reportDir)
     private var http: HttpServer? = null
     private var https: HttpServer? = null
-    /** SHA-256 of the self-signed certificate the car is being asked to accept; null when TLS is off. */
+    /** SHA-256 of the certificate the car is being asked to accept; null when TLS is off. */
     @Volatile private var tlsFingerprint: String? = null
+    /** What that certificate is, and where the car should go: see [startTls] and /api/status. */
+    @Volatile private var tlsSubject: String? = null
+    @Volatile private var tlsTrusted = false
+    @Volatile private var tlsHost: String? = null
     private val videoHub = MediaHub()
     private val audioHub = MediaHub()
     private var clip: ClipSource? = null
@@ -148,16 +158,43 @@ class StreamSession(
     private fun startTls() {
         if (httpsPort <= 0) return
         try {
-            val tls = SelfSignedCert.load(tlsKeystore, localAddresses())
+            val tls = tlsCredentials()
             val server = HttpServer(assets, httpsPort, ::onWebSocket, ::onApi, staticVersion, ssl = tls.sslContext)
             server.start()
             https = server
             tlsFingerprint = tls.fingerprint
-            event("HTTPS 서버 시작: 0.0.0.0:$httpsPort — 차에서 경고를 한 번 넘기면 secure context 다 (인증서 ${tls.fingerprint.take(17)}…)")
+            tlsSubject = tls.subject
+            tlsTrusted = !tls.selfSigned
+            tlsHost = tls.hostFor(SelfSignedCert.CAR_ADDRESS)
+            event(
+                if (tlsTrusted) "HTTPS 서버 시작: 0.0.0.0:$httpsPort — ${tls.subject}, 차는 https://${tlsHost}:$httpsPort 를 경고 없이 연다"
+                else "HTTPS 서버 시작: 0.0.0.0:$httpsPort — 자체서명이라 차가 경고를 넘겨야 한다 (인증서 ${tls.fingerprint.take(17)}…)"
+            )
         } catch (e: Throwable) {
             event("HTTPS 서버 실패 (${e.message ?: e}) — 평문은 그대로 돈다")
             Log.w(TAG, "TLS listener failed", e)
         }
+    }
+
+    /**
+     * Which certificate to serve, best first.
+     *
+     * 1. Files the host pointed at (`tls_cert=`/`tls_key=`), 2. a pair bundled in the APK under `tls/`,
+     * 3. one we sign ourselves. The first two are for a car that cannot click through a warning: this Model Y
+     * (2026-09-17) showed the **non-overridable** interstitial for a self-signed certificate — no "Advanced",
+     * no way in — so on that car only a publicly trusted certificate reaches a secure context at all.
+     */
+    private fun tlsCredentials(): SelfSignedCert.Tls {
+        val fromFiles = tlsCert?.takeIf { it.canRead() } to tlsKey?.takeIf { it.canRead() }
+        if (fromFiles.first != null && fromFiles.second != null) {
+            return SelfSignedCert.fromPem(fromFiles.first!!.readText(), fromFiles.second!!.readText())
+        }
+        if (assets.exists(TLS_CERT_ASSET) && assets.exists(TLS_KEY_ASSET)) {
+            val cert = assets.open(TLS_CERT_ASSET)!!.use { it.readBytes().toString(Charsets.US_ASCII) }
+            val key = assets.open(TLS_KEY_ASSET)!!.use { it.readBytes().toString(Charsets.US_ASCII) }
+            return SelfSignedCert.fromPem(cert, key)
+        }
+        return SelfSignedCert.load(tlsKeystore, localAddresses())
     }
 
     private fun startClip() {
@@ -300,6 +337,11 @@ class StreamSession(
             // accept. Absent means no TLS listener — and then a "WebCodecs X" in a report means nothing.
             "httpsPort" to (httpsPort.takeIf { https != null } ?: 0),
             "tlsFingerprint" to tlsFingerprint,
+            "tlsSubject" to tlsSubject,
+            // True when a public CA signed it: then the car opens tlsHost with no interstitial at all, which
+            // matters because this Model Y's interstitial has no way through.
+            "tlsTrusted" to tlsTrusted,
+            "tlsHost" to tlsHost,
             "videoClients" to videoHub.clientCount,
             "videoClientStats" to videoHub.clientStats(),
             "controlClients" to controlClients.size,
@@ -343,6 +385,9 @@ class StreamSession(
         /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
         private const val ACCEPT_LOG_EVERY = 100L
         const val TEST_CLIP = "test-720p30.cmp4"
+        /** A trusted certificate bundled with the build (not in git — see tools/tls/README.md). */
+        const val TLS_CERT_ASSET = "tls/cert.pem"
+        const val TLS_KEY_ASSET = "tls/key.pem"
         /** Two keyframe requests closer than this collapse into one; an IDR is dozens of P-frames' worth of bytes. */
         const val KEYFRAME_REQUEST_MIN_GAP_MS = 500L
         /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to [DEFAULT_RESTART]. */

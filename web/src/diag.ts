@@ -148,15 +148,23 @@ async function codecProbe(): Promise<void> {
   // than leaving a reader to wonder whether the X above was an answer.
   if (!isSecureContext) {
     let httpsPort = 0;
+    let trusted = false;
+    let host = '';
     try {
       const st = await (await fetch('/api/status')).json();
       httpsPort = Number(st.httpsPort) || 0;
+      trusted = st.tlsTrusted === true;
+      host = typeof st.tlsHost === 'string' ? st.tlsHost : '';
     } catch { /* the note below still says what this X means */ }
     if (httpsPort) {
-      secure.httpsUrl = `https://${location.hostname}:${httpsPort}/diag.html`;
+      // 신뢰받는 인증서가 있으면 그 이름으로 가야 한다 — 주소(100.99.9.9)로 가면 이름이 안 맞아 도로 경고다.
+      // 그리고 이 차의 경고는 넘길 수가 없다(2026-09-17: 고급 버튼이 없는 NET::ERR_CERT_AUTHORITY_INVALID).
+      secure.httpsUrl = `https://${trusted && host ? host : location.hostname}:${httpsPort}/diag.html`;
       note.innerHTML = `평문 http 라 <b>물어볼 수 없었습니다</b> — 위의 X 는 "없다"가 아니라 "못 물었다"입니다. ` +
-        `<a class="link" href="${secure.httpsUrl}">${secure.httpsUrl}</a> 를 열고 경고를 넘긴 뒤 다시 보세요 ` +
-        `(자체서명 인증서라 경고가 뜹니다 — 그것이 정상입니다).`;
+        `<a class="link" href="${secure.httpsUrl}">${secure.httpsUrl}</a> 를 열어 주세요` +
+        (trusted && host
+          ? ' — 공개 CA 가 서명한 인증서라 <b>경고 없이</b> 열립니다. 안 열리면 그것은 차가 그 이름을 해석하지 못한다는 뜻입니다(DNS).'
+          : ' (자체서명이라 경고가 뜹니다. 넘길 수 없으면 거기서 멈추고 그대로 기록하세요.)');
     } else {
       note.textContent = '평문 http 라 물어볼 수 없었고, 폰에 TLS listener 도 없습니다 (https_port=0). 위의 X 는 답이 아닙니다.';
     }

@@ -68,3 +68,41 @@ test('평문에서는 물어볼 수 없다고 말하고, 어디로 가야 하는
     expect(secure.httpsUrl).toMatch(/^https:\/\/.+\/diag\.html$/);
   }
 });
+
+// 진짜 CA 가 서명한 인증서를 폰이 서빙할 때, 차가 **경고 없이** 열리는가.
+//
+// 2026-09-17 실차에서 자체서명은 넘길 수 없는 경고에 막혔다(고급 버튼 없음). 그래서 남은 길은 공개 CA 뿐이고,
+// 도메인을 사지 않고도 되는 방법이 있다: `*.local-ip.sh` 는 Let's Encrypt 와일드카드 인증서와 키를 공개하고
+// 그 DNS 는 이름에 적힌 주소를 돌려준다(`100-99-9-9.local-ip.sh` → `100.99.9.9`).
+//
+// 이 검사는 다른 검사와 달리 **인증서 오류를 무시하지 않는 브라우저**를 새로 띄운다 — 무시해 버리면 정작
+// 알고 싶은 것("경고가 안 뜨는가")을 못 본다. 이름은 host-resolver-rules 로 테스트 서버에 꽂는다.
+test('공개 CA 인증서를 쓰면 경고 자체가 없다', async ({ playwright }) => {
+  const st = await (await fetch(`${BASE}/api/status`)).json();
+  test.skip(!st.tlsTrusted, '이 빌드에는 공개 CA 인증서가 없다 (tools/tls/README.md)');
+  const host = st.tlsHost as string;
+  const port = new URL(BASE).port || '80';
+
+  const browser = await playwright.chromium.launch({
+    executablePath: process.env.CHROME_PATH || undefined,
+    // --no-proxy-server: 개발 컨테이너의 HTTPS_PROXY 를 타면 host-resolver-rules 가 무시되고 프록시가
+    // 연결을 끊는다. 차에는 프록시가 없으니 여기서도 없애는 쪽이 차와 같은 조건이다.
+    args: [`--host-resolver-rules=MAP ${host} 127.0.0.1`, '--no-proxy-server'],
+  });
+  try {
+    // ignoreHTTPSErrors 를 켜지 않는다: 경고가 뜨면 이 검사는 실패해야 한다.
+    const page = await browser.newContext({ ignoreHTTPSErrors: false }).then((c) => c.newPage());
+    const url = `https://${host}:${st.httpsPort}/diag.html`;
+    const res = await page.goto(url, { waitUntil: 'domcontentloaded' });
+    expect(res?.status(), `경고 화면이 떴다: ${url}`).toBe(200);
+    expect(await page.evaluate(() => isSecureContext)).toBe(true);
+    expect(await page.title()).toContain('CarCast');
+
+    await page.waitForFunction(() => (window as any).__diag?.secure !== undefined, null, { timeout: 30_000 });
+    const secure = await page.evaluate(() => (window as any).__diag.secure);
+    expect(secure.videoDecoder).toBe(true);
+    console.log(`trusted origin ${url} — port ${port} 의 평문과 같은 서버`);
+  } finally {
+    await browser.close();
+  }
+});

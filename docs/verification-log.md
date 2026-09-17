@@ -458,8 +458,22 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
      context 이고**, 거기서 `VideoDecoder` 가 보이며 Baseline·High 가 `no-preference` 로 `supported`,
      `prefer-hardware` 는 이 컨테이너(GPU 없음)에서 `unsupported` — 즉 **프로브가 하드웨어와
      소프트웨어를 실제로 가른다.**
-   - 차에서 볼 것: ① 경고 화면이 뜨고 "고급 → 계속"이 있는가(없으면 이 길은 끝), ② `isSecureContext`,
-     ③ `VideoDecoder`, ④ `prefer-hardware` 가 supported 인가.
+   - **① 은 실차에서 답이 나왔다 — ❌ 넘길 수 없다 (2026-09-17, Model Y 2026.26).** 자체서명으로
+     `https://100.99.9.9:3443` 을 열면 `NET::ERR_CERT_AUTHORITY_INVALID` 가 뜨는데 **"고급" 버튼이 없고**
+     본문이 *"웹사이트가 Chromium이 처리할 수 없는 암호화된 사용자 인증 정보를 전송하였으므로 지금은
+     100.99.9.9에 방문할 수 없습니다"* — 크로미엄이 **우회를 막았을 때**(`SSLErrorOverrideAllowed=false`
+     정책으로 보인다) 쓰는 문구다. 즉 **이 차에서 자체서명은 영영 secure context 에 못 간다.**
+     다만 같은 화면이 알려 주는 것이 하나 더 있다: 차가 생 IP 로 **https 를 열고 TLS 핸드셰이크를 해서
+     우리 손으로 쓴 인증서를 파싱까지 했다**(불평한 것은 발급자뿐이다). 프로토콜 쪽은 멀쩡하다.
+   - **그래서 공개 CA 로 갈아탔다(같은 날).** 도메인을 사지 않고도 된다: `local-ip.sh` 가 `*.local-ip.sh`
+     의 Let's Encrypt 와일드카드 인증서와 키를 **공개**하고, 그 DNS 가 이름에 적힌 주소를 돌려준다
+     (`100-99-9-9.local-ip.sh` → `100.99.9.9`). 그 쌍을 APK 에 실으면(`assets/tls/`, git 에는 없다 —
+     tools/tls/README.md) 서버가 자체서명 대신 그것을 쓰고 `/api/status.tlsHost` 가 주소를 알려 준다.
+     A 층 확인(Chrome 148, **인증서 오류를 무시하지 않는 브라우저**): `https://100-99-9-9.local-ip.sh:3444/diag.html`
+     이 **경고 없이 200 으로 열리고** secure context, `VideoDecoder` 보임. curl 의 시스템 CA 검증도 통과
+     (`ssl_verify_result=0`).
+   - 차에서 볼 것(다음 방문): ② 그 주소가 **열리는가**(= 차가 그 이름을 해석하는가 — DNS64/NAT64 위험,
+     Castla #51), ③ `isSecureContext`, ④ `VideoDecoder`, ⑤ `prefer-hardware` 가 supported 인가.
    - 판정: `isSecureContext O` 인데 `VideoDecoder X` → **테슬라 빌드에 WebCodecs 가 없다. 진짜 인증서
      작업은 무의미하니 접고 WebRTC(평문에서도 되는 `RTCPeerConnection`, 실차 O)를 본다.** 둘 다 O 면
      그때 비로소 "경고 없이 열리게 하는 법"(공개 도메인 + 진짜 인증서)이 할 일이 된다.

@@ -2,6 +2,7 @@ package com.carcast.core
 
 import com.carcast.core.net.SelfSignedCert
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -72,6 +73,79 @@ class SelfSignedCertTest {
         store.writeText("this is not a PKCS12 file")
         assertNotNull(SelfSignedCert.load(store, emptyList()).certificate)
     }
+
+    /**
+     * A certificate somebody else signed, handed over as PEM. This is the path that matters on the car:
+     * its interstitial for a self-signed certificate turned out to be the non-overridable kind (no
+     * "Advanced"), so only a publicly trusted certificate can ever reach a secure context there.
+     *
+     * The fixture is made here rather than committed — a private key in git is a bad habit even when the
+     * key is worthless — and it is round-tripped through both PEM shapes Let's Encrypt tooling produces.
+     */
+    @Test(timeout = 20_000)
+    fun aCertificateHandedOverAsPemIsUsedAsIs() {
+        val made = SelfSignedCert.load(tmp.newFile("src.p12").also { it.delete() }, emptyList())
+        val certPem = pem("CERTIFICATE", made.certificate.encoded)
+
+        val store = java.security.KeyStore.getInstance("PKCS12").apply {
+            tmp.root.resolve("src.p12").inputStream().use { load(it, "carcast".toCharArray()) }
+        }
+        val key = store.getKey("carcast", "carcast".toCharArray()) as java.security.PrivateKey
+        val loaded = SelfSignedCert.fromPem(certPem, pem("PRIVATE KEY", key.encoded))
+
+        assertEquals("the same certificate should come back", made.fingerprint, loaded.fingerprint)
+        assertFalse("a PEM we were handed is not ours to call self-signed", loaded.selfSigned)
+    }
+
+    /** Let's Encrypt's tooling usually writes PKCS#1; Java only reads PKCS#8, so it is rewrapped. */
+    @Test(timeout = 20_000)
+    fun aPkcs1RsaKeyIsAccepted() {
+        val keys = java.security.KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val pkcs1 = innerPkcs1(keys.private.encoded)
+        // A certificate is needed to pair with it; any will do, so borrow the one we can make.
+        val cert = SelfSignedCert.load(null, emptyList()).certificate
+        // The key will not match that certificate's public key, which PKCS12 does not check — what is under
+        // test is that the PKCS#1 body is parsed at all (a wrong wrapper throws InvalidKeySpecException).
+        val tls = SelfSignedCert.fromPem(pem("CERTIFICATE", cert.encoded), pem("RSA PRIVATE KEY", pkcs1))
+        assertNotNull(tls.certificate)
+    }
+
+    /**
+     * The RSAPrivateKey inside a PKCS#8 PrivateKeyInfo: SEQUENCE { INTEGER 0, AlgorithmIdentifier,
+     * OCTET STRING(pkcs1) }. Java will not emit PKCS#1, so the test takes it back apart.
+     */
+    private fun innerPkcs1(pkcs8: ByteArray): ByteArray {
+        var i = 0
+        /** Reads the length at [i], leaves [i] on the first content byte, returns the content size. */
+        fun len(): Int {
+            val first = pkcs8[i++].toInt() and 0xFF
+            if (first < 0x80) return first
+            var n = 0
+            repeat(first and 0x7F) { n = (n shl 8) or (pkcs8[i++].toInt() and 0xFF) }
+            return n
+        }
+        /** Skips one whole TLV, whatever it is. (`i += len()` would not: Kotlin reads i before len() moves it.) */
+        fun skip(expectedTag: Int) {
+            require(pkcs8[i].toInt() == expectedTag) { "expected tag $expectedTag at $i, found ${pkcs8[i]}" }
+            i++
+            val n = len()
+            i += n
+        }
+        require(pkcs8[i].toInt() == 0x30) { "PrivateKeyInfo is not a SEQUENCE" }
+        i++
+        len()
+        skip(0x02) // version
+        skip(0x30) // AlgorithmIdentifier
+        require(pkcs8[i].toInt() == 0x04) { "expected the OCTET STRING holding the key" }
+        i++
+        val n = len()
+        return pkcs8.copyOfRange(i, i + n)
+    }
+
+    private fun pem(kind: String, der: ByteArray): String =
+        "-----BEGIN $kind-----\n" +
+            java.util.Base64.getMimeEncoder(64, "\n".toByteArray()).encodeToString(der) +
+            "\n-----END $kind-----\n"
 
     /** End to end: the same pages, over TLS, to a client that completes a real handshake. */
     @Test(timeout = 30_000)
