@@ -25,8 +25,9 @@ final class InputInjector {
     private static final int MAX_POINTERS = 10;
     private static final int DEFAULT_DEVICE_ID = 0;
 
-    private final int width;
-    private final int height;
+    /** Read on every event: the display can be resized at runtime (/api/encoder), and the car's coordinates are normalised. */
+    private final java.util.function.IntSupplier width;
+    private final java.util.function.IntSupplier height;
     private final java.util.function.IntSupplier displayId;
 
     private final MotionEvent.PointerProperties[] props = new MotionEvent.PointerProperties[MAX_POINTERS];
@@ -58,7 +59,7 @@ final class InputInjector {
     private volatile long injected;
     private volatile long failed;
 
-    InputInjector(int width, int height, java.util.function.IntSupplier displayId) {
+    InputInjector(java.util.function.IntSupplier width, java.util.function.IntSupplier height, java.util.function.IntSupplier displayId) {
         this.width = width;
         this.height = height;
         this.displayId = displayId;
@@ -193,8 +194,8 @@ final class InputInjector {
         long now = SystemClock.uptimeMillis();
         MotionEvent event = null;
         for (ControlMessage.Sample s : b.getSamples()) {
-            lastX[slot] = s.getX() * width;
-            lastY[slot] = s.getY() * height;
+            lastX[slot] = s.getX() * width.getAsInt();
+            lastY[slot] = s.getY() * height.getAsInt();
             lastPressure[slot] = Math.max(s.getPressure(), 0.01f);
             int count = fillPointers();
             long time = eventTime(s.getTMs(), now);
@@ -263,8 +264,8 @@ final class InputInjector {
         if (action == MotionEvent.ACTION_DOWN) {
             down[slot] = true;
         }
-        lastX[slot] = t.getX() * width;
-        lastY[slot] = t.getY() * height;
+        lastX[slot] = t.getX() * width.getAsInt();
+        lastY[slot] = t.getY() * height.getAsInt();
         lastPressure[slot] = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL ? 0f : Math.max(t.getPressure(), 0.01f);
 
         // Build the pointer arrays from every finger that is down (the one going up is still included).

@@ -34,7 +34,9 @@ final class AppHistory {
 
     /** 차에서 앱을 띄웠다. 실패한 실행은 기록하지 않는다 — 쓴 적 없는 앱이 맨 위에 오면 안 된다. */
     static synchronized void used(String pkg) {
-        if (pkg == null || pkg.isEmpty()) {
+        // CarCast itself (the latency probe activity runs on the car display) is never something the driver
+        // "used" — it must not float to the top of the car's home.
+        if (pkg == null || pkg.isEmpty() || "com.carcast".equals(pkg)) {
             return;
         }
         load();

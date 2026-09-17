@@ -1,5 +1,5 @@
 // Car-side client entry. Thin by design: decode, draw, forward input. All UI logic lives on the phone.
-import { KEYCODE, KeyAction, MediaType, encodeKey, encodeKeyframeRequest, encodePing, encodeText, parseMediaPacket, parsePingEcho, touchClock } from './protocol';
+import { KEYCODE, KeyAction, MediaType, TouchAction, encodeKey, encodeKeyframeRequest, encodePing, encodeText, encodeTouch, parseMediaPacket, parsePingEcho, touchClock } from './protocol';
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { MseRenderer, mseSupported } from './renderer/mse';
 import { MjpegRenderer } from './renderer/mjpeg';
@@ -510,6 +510,7 @@ let lastPackage = '';
  * `auto`: 사람이 누른 것이 아니라 차가 스스로 띄우는 것(지난번 앱 이어서). 실패해도 대화상자를 띄우지 않고
  * 상태줄에만 적는다 — 운전 중에 누르라고 뜨는 alert 는 최악이다.
  */
+const launchApp = (name: string, restart: Restart, auto: boolean) => launch(name, restart, auto);
 async function launch(name: string, restart: Restart = 'never', auto = false): Promise<boolean> {
   const fail = (msg: string) => { if (auto) notice(msg, 6000); else window.alert(msg); };
   try {
@@ -560,6 +561,9 @@ async function pollStatus(): Promise<void> {
     lastStatus = st;
     statusFailedAt = 0;
     if (typeof st.app === 'string' && st.app) lastPackage = st.app.split('/')[0]!;
+    // 화질을 바꾸면 그림의 크기가 바뀐다(/api/encoder). 터치 좌표는 그 크기 기준이므로 여기서도 맞춘다.
+    if (st.width && st.height) touch.setVideoSize(st.width, st.height);
+    renderQuality();
     const now = st.appOnPhone === true;
     if (now !== appOnPhone) {
       appOnPhone = now;
@@ -720,7 +724,203 @@ setInterval(() => {
   perfFrames = s.framesDecoded;
   perfDropped = s.droppedFrames;
   if (perf.length > PERF_KEEP) perf.shift();
+  maybeStepDown(perf[perf.length - 1]!);
 }, PERF_SAMPLE_MS);
+
+// ── 화질 (인코더 설정) ─────────────────────────────────────────────────────────────────────────
+//
+// 폰의 인코더를 차에서 바꾼다(POST /api/encoder): 크기·fps·비트레이트. 폰은 앱을 그대로 둔 채 인코더만
+// 갈아끼우고 선택을 기억한다. 무엇이 맞는지는 이 차의 디코더가 정한다 — 실측(2026-09-17)에서 720p 한 장에
+// 10ms 였으니 60fps(예산 16ms)와 900p 는 해 볼 만하고, 1080p 60 은 아닐 것이다. 그래서 자동 모드는
+// **내리기만** 한다: 적체나 드롭이 두 샘플 연속 보이면 한 단계 아래로. 올리는 것은 사람이 고른다.
+interface Preset { id: string; label: string; width: number; height: number; fps: number; bitrate: number }
+const PRESETS: Preset[] = [
+  { id: '720p30', label: '기본 · 720p 30fps', width: 1280, height: 720, fps: 30, bitrate: 4_000_000 },
+  { id: '720p60', label: '부드럽게 · 720p 60fps', width: 1280, height: 720, fps: 60, bitrate: 6_000_000 },
+  { id: '900p30', label: '선명하게 · 900p 30fps', width: 1600, height: 900, fps: 30, bitrate: 6_000_000 },
+  { id: '900p60', label: '선명하고 부드럽게 · 900p 60fps', width: 1600, height: 900, fps: 60, bitrate: 8_000_000 },
+  { id: '1080p30', label: '최대 · 1080p 30fps', width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
+];
+/** 부담 순서(가로×세로×fps). 자동 모드가 한 단계 내릴 때 이 순서를 따른다. */
+const byCost = [...PRESETS].sort((a, b) => a.width * a.height * a.fps - b.width * b.height * b.fps);
+const qualityPanel = $('quality');
+const qualityGrid = $('quality-grid');
+const qualityNow = $('quality-now');
+const qualityAuto = $<HTMLInputElement>('quality-auto');
+const qualityProbe = $<HTMLButtonElement>('quality-probe');
+const qualityResult = $('quality-result');
+let autoQuality = true;
+try { autoQuality = localStorage.getItem('carcast.autoQuality') !== '0'; } catch { /* 저장소 없음 */ }
+qualityAuto.checked = autoQuality;
+qualityAuto.addEventListener('change', () => {
+  autoQuality = qualityAuto.checked;
+  try { localStorage.setItem('carcast.autoQuality', autoQuality ? '1' : '0'); } catch { /* 저장소 없음 */ }
+});
+
+/** 지금 폰이 도는 설정에 맞는 프리셋, 없으면 null (PC 명령으로 띄운 별난 설정). */
+function currentPreset(): Preset | null {
+  const st = lastStatus;
+  if (!st?.width || !st?.height || !st?.maxFps) return null;
+  return PRESETS.find((p) => p.width === st.width && p.height === st.height && p.fps === st.maxFps) ?? null;
+}
+
+let applyingPreset = false;
+async function applyPreset(p: Preset, why: string): Promise<boolean> {
+  if (applyingPreset) return false;
+  applyingPreset = true;
+  try {
+    const q = `width=${p.width}&height=${p.height}&fps=${p.fps}&bitrate=${p.bitrate}`;
+    const r = await (await fetch(`/api/encoder?${q}`, { method: 'POST' })).json();
+    if (!r.ok) { notice(`화질 변경 실패: ${r.error ?? '?'}`, 6000); note(`encoder ${p.id} (${why}) failed: ${r.error}`); return false; }
+    note(`encoder ${p.id} (${why}): ${r.width}x${r.height} ${r.fps}fps ${Math.round(r.bitrate / 1000)}k`);
+    notice(`화질: ${p.label}`);
+    if (lastStatus) { lastStatus.width = r.width; lastStatus.height = r.height; lastStatus.maxFps = r.fps; lastStatus.bitRate = r.bitrate; }
+    touch.setVideoSize(r.width, r.height);
+    renderQuality();
+    return true;
+  } catch (e) {
+    notice(`화질 변경 요청 실패: ${String(e)}`, 6000);
+    return false;
+  } finally {
+    applyingPreset = false;
+  }
+}
+
+function renderQuality(): void {
+  if (qualityPanel.hidden) return;
+  const cur = currentPreset();
+  const st = lastStatus;
+  qualityNow.textContent = st?.width
+    ? `지금: ${st.width}x${st.height} ${st.maxFps ?? '?'}fps ${st.bitRate ? Math.round(st.bitRate / 1000) + 'k' : ''}${cur ? '' : ' (프리셋 아님)'}`
+    : '지금: 폰 응답 대기';
+  for (const el of qualityGrid.querySelectorAll<HTMLElement>('.tile')) el.classList.toggle('held', el.dataset.preset === cur?.id);
+}
+
+function openQuality(): void {
+  qualityGrid.replaceChildren(...PRESETS.map((p) => {
+    const el = document.createElement('button');
+    el.className = 'tile';
+    el.dataset.preset = p.id;
+    el.textContent = p.label;
+    el.addEventListener('click', () => { void applyPreset(p, 'picked'); });
+    return el;
+  }));
+  qualityPanel.hidden = false;
+  renderQuality();
+}
+$('btn-quality').addEventListener('click', openQuality);
+$('quality-close').addEventListener('click', () => { qualityPanel.hidden = true; });
+qualityPanel.addEventListener('click', (e) => { if (e.target === qualityPanel) qualityPanel.hidden = true; });
+
+/**
+ * 자동 내리기. perf 샘플(10초)에서 적체가 4 를 넘거나 드롭이 있으면 "나쁜 샘플"이고, 두 번 연속이면
+ * 한 단계 아래 프리셋으로 간다. 60초에 한 번만. 가장 낮은 단계이거나 프리셋이 아닌 설정이면 손대지 않는다.
+ */
+let badSamples = 0;
+let lastStepDownAt = 0;
+let autoStepDowns = 0;
+function maybeStepDown(sample: PerfSample): void {
+  const bad = sample.backlog > 4 || sample.dropped > 0;
+  badSamples = bad ? badSamples + 1 : 0;
+  if (!autoQuality || badSamples < 2) return;
+  void stepDown(`backlog ${sample.backlog}, dropped ${sample.dropped}`);
+}
+async function stepDown(why: string): Promise<boolean> {
+  if (Date.now() - lastStepDownAt < 60_000) return false;
+  const cur = currentPreset();
+  if (!cur) return false;
+  const i = byCost.indexOf(cur);
+  if (i <= 0) return false;
+  lastStepDownAt = Date.now();
+  badSamples = 0;
+  autoStepDowns++;
+  const ok = await applyPreset(byCost[i - 1]!, `auto: ${why}`);
+  if (ok) notice(`차가 못 따라와 화질을 내렸습니다: ${byCost[i - 1]!.label}`, 8000);
+  return ok;
+}
+
+// ── 끝에서 끝까지 지연 측정 ────────────────────────────────────────────────────────────────────
+//
+// lag(디코드)와 rtt(링크)는 재지만 터치 → 폰 렌더 → 인코드 → 전송 → 디코드까지의 전체 숫자는 아무도 몰랐다.
+// 폰의 LatencyProbeActivity 는 터치마다 화면을 검정↔흰색으로 뒤집는다. 여기서는 그 액티비티를 차 화면에
+// 띄우고, 가운데를 누른 뒤 디코드된 그림의 가운데 밝기가 뒤집힐 때까지를 잰다. 카메라도 노트북도 없이
+// 차 안에서 글래스 투 글래스 값이 나온다. 결과는 상태줄과 💾 리포트에 실린다.
+interface ProbeResult { n: number; fails: number; medianMs: number; p90Ms: number; minMs: number; samples: number[]; at: string; preset: string | null }
+let latencyProbe: ProbeResult | null = null;
+let probeRunning = false;
+let lastLuma = -1;
+let lastLumaAt = 0;
+if (renderer instanceof H264Renderer) renderer.onLuma = (l, at) => { lastLuma = l; lastLumaAt = at; };
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const PROBE_ACTIVITY = 'com.carcast/.ui.LatencyProbeActivity';
+const PROBE_SLOT = 9; // 운전자의 손가락(0..)과 겹치지 않는 슬롯
+
+async function runProbe(opts: { trials?: number; launch?: boolean } = {}): Promise<ProbeResult | null> {
+  if (probeRunning) return null;
+  if (!(renderer instanceof H264Renderer)) { notice('지연 측정은 h264 렌더러에서만 됩니다', 5000); return null; }
+  probeRunning = true;
+  qualityProbe.disabled = true;
+  qualityResult.textContent = '측정 중…';
+  const trials = opts.trials ?? 10;
+  const launch = opts.launch ?? true;
+  const samples: number[] = [];
+  let fails = 0;
+  try {
+    if (launch) {
+      const ok = await launchApp(PROBE_ACTIVITY, 'never', true);
+      if (!ok) { qualityResult.textContent = '측정 액티비티를 못 띄웠습니다'; return null; }
+      note('latency probe: activity launched');
+      await sleep(1500);
+    }
+    for (let i = 0; i < trials; i++) {
+      // 기준: 지금 그림의 밝기. 최근에 디코드된 그림이 있어야 한다(액티비티가 뜨면 프레임이 온다).
+      const since = performance.now();
+      if (lastLuma < 0) { await waitFor(() => lastLuma >= 0, 4000); }
+      const base = lastLuma;
+      const t0 = performance.now();
+      const stamp = touchClock();
+      control.send(encodeTouch(TouchAction.Down, PROBE_SLOT, 0.5, 0.5, 1, stamp));
+      control.send(encodeTouch(TouchAction.Up, PROBE_SLOT, 0.5, 0.5, 0, stamp + 30));
+      const flipped = await waitFor(() => lastLumaAt > since && Math.abs(lastLuma - base) > 64, 2500);
+      if (flipped) samples.push(Math.round(lastLumaAt - t0));
+      else fails++;
+      qualityResult.textContent = `측정 중… ${i + 1}/${trials}${samples.length ? ` (마지막 ${samples[samples.length - 1]}ms)` : ''}`;
+      await sleep(700);
+    }
+    const sorted = [...samples].sort((a, b) => a - b);
+    const q = (f: number) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(f * (sorted.length - 1)))]! : -1;
+    latencyProbe = { n: samples.length, fails, medianMs: q(0.5), p90Ms: q(0.9), minMs: sorted[0] ?? -1, samples, at: new Date().toISOString(), preset: currentPreset()?.id ?? null };
+    const text = samples.length
+      ? `끝에서 끝까지 ${latencyProbe.medianMs}ms (최소 ${latencyProbe.minMs}, p90 ${latencyProbe.p90Ms}, ${samples.length}회${fails ? `, 실패 ${fails}` : ''})`
+      : `측정 실패 (${fails}회 모두 화면이 안 바뀜)`;
+    qualityResult.textContent = text;
+    notice(text, 10000);
+    note(`latency probe: ${text}`);
+    return latencyProbe;
+  } finally {
+    probeRunning = false;
+    qualityProbe.disabled = false;
+    if (launch) {
+      // 측정 액티비티에서 나간다: 뒤로가기는 차 화면의 앱에 간다. 그 밑에 있던 앱이 돌아온다.
+      control.send(encodeKey(KeyAction.Down, KEYCODE.BACK));
+      control.send(encodeKey(KeyAction.Up, KEYCODE.BACK));
+    }
+  }
+}
+
+function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    const tick = () => {
+      if (cond()) { resolve(true); return; }
+      if (performance.now() - t0 > timeoutMs) { resolve(false); return; }
+      setTimeout(tick, 4);
+    };
+    tick();
+  });
+}
+qualityProbe.addEventListener('click', () => { void runProbe(); });
 
 /** 초반과 최근을 견준다. 처음부터 느린 것과 **점점** 느려지는 것은 다른 문제다. */
 function perfTrend(): { early: number; recent: number; backlog: number } | null {
@@ -748,11 +948,19 @@ const stats = () => ({
   rttMs,
   keyframeRequests,
   touch: { ...touch.stats },
+  latencyProbe,
+  autoStepDowns,
+  encoder: lastStatus ? { width: lastStatus.width, height: lastStatus.height, fps: lastStatus.maxFps, bitrate: lastStatus.bitRate } : null,
 });
 (window as any).__carcast = {
   stats, start, events, perf,
   restartVideo: () => videoWs.restart(),
   requestKeyframe: () => requestKeyframe('test'),
+  // 화질·지연 측정을 테스트에서 몰기 위한 고리. feedLuma 는 디코더 대신 밝기를 넣어 준다(가짜 폰은 그림을 못 뒤집는다).
+  applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
+  stepDown: (why = 'test') => stepDown(why),
+  runProbe: (opts: { trials?: number; launch?: boolean }) => runProbe(opts),
+  feedLuma: (l: number) => { lastLuma = l; lastLumaAt = performance.now(); },
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
   restartControl: () => control.restart(),
   activePointers: () => touch.activePointers,
@@ -784,7 +992,8 @@ $('btn-save').addEventListener('click', async () => {
   const phone = st ? ` | 폰 build=${st.build ?? '?'} ${st.interactive === false ? '잠듦' : '깨어있음'} 화면${st.screenOn === false ? 'OFF' : 'ON'}${st.sleepRecoveries ? ` 되살림${st.sleepRecoveries}` : ''}${st.keptActive ? ` 활성유지${st.keptActive}` : ''} idle${Math.round((s.idleMs ?? 0) / 100) / 10}s` : '';
   const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
   const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
+  const e2e = s.latencyProbe && s.latencyProbe.n ? ` 끝까지${s.latencyProbe.medianMs}ms` : '';
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
   // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는

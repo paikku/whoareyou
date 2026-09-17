@@ -99,8 +99,9 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/status') {
     res.writeHead(200, { 'content-type': 'application/json' });
     const last = reports[reports.length - 1];
+    const enc = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, encoderRestarts: 0 };
     res.end(JSON.stringify({
-      type: 'status', running: true, source: 'fake', width: 1280, height: 720, addresses: ADDRESSES,
+      type: 'status', running: true, source: 'fake', width: enc.width, height: enc.height, maxFps: enc.fps, bitRate: enc.bitrate, encoderRestarts: enc.encoderRestarts, addresses: ADDRESSES,
       reports: reports.length, lastReport: last ? { id: last.id, receivedAt: last.receivedAt, remote: last.remote, summary: last.summary } : null,
       ...state,
     }));
@@ -185,6 +186,24 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ display: 7, tasks, phone, elsewhere: phone.length + 1 /* 런처 */ }));
     return;
   }
+  // 폰 인코더의 런타임 설정. 진짜 서버는 인코더를 갈아끼운다; 여기서는 값만 들고 있다가 /api/status 에 싣는다.
+  if (url.pathname === '/api/encoder') {
+    state.encoder = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, encoderRestarts: 0 };
+    if (req.method === 'POST') {
+      const n = (k) => (url.searchParams.get(k) ? Number(url.searchParams.get(k)) : null);
+      const w = n('width') ?? state.encoder.width, h = n('height') ?? state.encoder.height, fps = n('fps') ?? state.encoder.fps, bitrate = n('bitrate') ?? state.encoder.bitrate;
+      if (w < 320 || h < 180 || fps < 1 || fps > 120 || bitrate < 200_000) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `bad encoder settings ${w}x${h} ${fps}fps ${bitrate}` }));
+        return;
+      }
+      state.encoder = { width: w, height: h, fps, bitrate, encoderRestarts: state.encoder.encoderRestarts + 1 };
+      state.encoderPosts = (state.encoderPosts ?? 0) + 1;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, ...state.encoder }));
+    return;
+  }
   if (url.pathname === '/api/screen') {
     if (req.method === 'POST') state.screenOn = url.searchParams.get('on') !== '0';
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -222,6 +241,7 @@ const server = createServer((req, res) => {
     // 입력 기록과 앱 상태를 처음으로. 하나의 가짜 폰이 모든 스펙과 프로필을 차례로 받으므로, 앞 테스트가
     // 남긴 "차 화면 비어 있음"이 다음 테스트의 시작 화면(홈이 저절로 뜸)을 바꾸던 것을 여기서 끊는다.
     state.touches = []; state.keys = []; state.texts = []; state.batches = 0; state.keyframeRequests = 0; state.pings = 0;
+    delete state.encoder; state.encoderPosts = 0;
     state.apps = []; state.appOnPhone = false; delete state.appDisplay; delete state.app;
     res.writeHead(200); res.end('ok');
     return;

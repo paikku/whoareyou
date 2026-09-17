@@ -72,3 +72,10 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 #bar button.ic:active, #bar .link.ic:active { background: #2b2b2b; }
 #bar .ic svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 #bar button.nav svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+/* 화질 시트: 칸은 홈과 같은 타깃 크기, 아래 줄은 스위치 하나와 버튼 하나. */
+#quality .grid { flex: 0 1 auto; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+#quality .tile { min-height: 64px; font-size: 16px; }
+.sheet-note { flex: 1; min-width: 0; color: #bbb; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-row { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; color: #ddd; font-size: 16px; }
+.sheet-row input[type=checkbox] { width: 22px; height: 22px; }

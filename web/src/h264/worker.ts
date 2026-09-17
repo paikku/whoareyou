@@ -52,13 +52,29 @@ function present(): void {
   }
 }
 
+/**
+ * 그림 가운데 32x32 블록의 평균 밝기(Y, 0..255). 지연 측정(main.ts 의 probe)이 "화면이 뒤집혔다"를 이걸로
+ * 본다 — 폰의 측정 액티비티가 터치마다 검정↔흰색을 오간다. 한 장에 1024 바이트라 비용은 없다시피 하다.
+ */
+function centreLuma(yuv: Uint8Array, width: number, height: number): number {
+  const half = 16;
+  const x0 = (width >> 1) - half, y0 = (height >> 1) - half;
+  let sum = 0;
+  for (let y = 0; y < half * 2; y++) {
+    const row = (y0 + y) * width + x0;
+    for (let x = 0; x < half * 2; x++) sum += yuv[row + x]!;
+  }
+  return sum / (half * 2 * half * 2);
+}
+
 function onPicture(yuv: Uint8Array, width: number, height: number): void {
+  const luma = centreLuma(yuv, width, height);
   if (!gl) {
     // post 모드: 버퍼는 디코더가 새로 만든 복사본이라 넘겨도(transfer) 안전하다.
-    post({ type: 'pictureReady', width, height, data: yuv.buffer }, [yuv.buffer as ArrayBuffer]);
+    post({ type: 'pictureReady', width, height, luma, data: yuv.buffer }, [yuv.buffer as ArrayBuffer]);
     return;
   }
-  post({ type: 'pictureReady', width, height });
+  post({ type: 'pictureReady', width, height, luma });
   if (pending) skipped++;
   pending = { yuv, width, height };
   if (!raf) { present(); return; }

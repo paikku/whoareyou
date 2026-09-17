@@ -44,6 +44,8 @@
 | — | **S26U 의 `c2.qti.avc.encoder` 가 Constrained Baseline + CBR 을 받는다** (`bitrate_mode=cbr` 기본값) | ✅ **확인됨 (2026-09-17, 빌드 `f0e43e2`)**: `encoderProfile: constrained-baseline+cbr 요청`(거부 아님), SPS `avc1.42C020`. GOP 10 초도 그대로: 5303 프레임에 키프레임 13 | B/C | `H264Encoder.open` |
 | — | **13 바이트 터치(차의 시계)·MOVE 묶음(kind 5)·ping(kind 6)·키프레임 요청(kind 4) 이 One UI 8 에서 주입·응답된다** | ✅ **실차 (2026-09-17, report #59)**: `injected 18, injectFailed 0, controlErrors 0`, ping 왕복 5~11ms. 이 세션은 탭만 있었고 드래그가 없어 **묶음(batches)은 0** — 플링 세기가 고른지는 ⏳(다음 방문에서 스크롤·플링을 해 보고 리포트의 `touch.batches` 와 체감을 함께 적는다). 키프레임 요청은 드롭이 없어 한 번도 안 나갔다(`keyframeRequests 0`) | C | `InputInjector`, `StreamSession.onControl` |
 | — | 워커 WebGL 이 안 되는 브라우저에서 메인 스레드로 물러나 그림이 나온다 (`fallBackToMainThread`) | ⏳ 차에서는 필요 없었다(위). 코드 경로만 있고 실측된 브라우저는 아직 없다 | — | `renderer/h264.ts` |
+| — | **런타임 인코더 재설정** (`POST /api/encoder?width=&height=&fps=&bitrate=`): 앱은 그대로, 인코더만 교체, 크기가 바뀌면 VD 도 `resize` | ⏳ A+(`tests/device/tests/09-encoder`)·B·C 미실시. 실차에서 볼 것: 720p60 에서 적체·드롭 없이 도는가(디코드 10ms/장이니 예산 안), 900p 에서 글자가 또렷해지는가, 자동 내리기가 실제로 걸리는가 | A+ → C | `DisplayVideoSource.reconfigure`, 차의 화질 시트 |
+| — | **끝에서 끝까지 지연 측정** (차가 `LatencyProbeActivity` 를 띄우고 터치 → 가운데 밝기 뒤집힘까지) | ⏳ 가짜 폰에서 상태 기계만 확인(`quality.spec`). 실차 값이 없다 — 이것이 60fps·해상도를 정할 숫자다 | C | `main.ts runProbe`, `ui/LatencyProbeActivity` |
 
 **설계에 반영된 결론:** 가정 1의 조건 때문에 HTTP/WS 서버는 앱이 아니라 shell 프로세스에서 돈다
 ([dev-plan.md 아키텍처 3항](dev-plan.md)). 앱은 tun 주소 유지·페어링·기동·UI만 맡는다.

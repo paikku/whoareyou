@@ -38,9 +38,10 @@ final class DisplayCapture {
     /** android.view.WindowManager.DISPLAY_IME_POLICY_LOCAL: the keyboard shows on the virtual display itself. */
     static final int DISPLAY_IME_POLICY_LOCAL = 0;
 
-    final int width;
-    final int height;
-    final int dpi;
+    /** Current size; changes through {@link #resize} (the encoder is rebuilt around it, the app re-laid out). */
+    volatile int width;
+    volatile int height;
+    volatile int dpi;
     private final boolean systemDecorations;
     private VirtualDisplay virtualDisplay;
     private int displayId = -1;
@@ -110,6 +111,21 @@ final class DisplayCapture {
     void detachSurface() {
         if (virtualDisplay != null) {
             virtualDisplay.setSurface(null);
+        }
+    }
+
+    /**
+     * Change the display's size and density in place. The app on it gets a configuration change (like a
+     * rotation) and lays itself out again; its task stays where it is. Call with the encoder surface detached,
+     * then {@link #start} a new encoder's surface.
+     */
+    void resize(int newWidth, int newHeight, int newDpi) {
+        width = newWidth;
+        height = newHeight;
+        dpi = newDpi;
+        if (virtualDisplay != null) {
+            virtualDisplay.resize(newWidth, newHeight, newDpi);
+            Ln.i("Display resized: " + newWidth + "x" + newHeight + "/" + newDpi);
         }
     }
 

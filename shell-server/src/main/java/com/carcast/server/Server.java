@@ -129,7 +129,7 @@ public final class Server {
         InputInjector injectorTmp = null;
         if (source != null) {
             try {
-                injectorTmp = new InputInjector(source.width(), source.height(), source::displayId);
+                injectorTmp = new InputInjector(source::width, source::height, source::displayId);
             } catch (Throwable t) {
                 System.out.println("carcast-server: input injector unavailable: " + t);
             }
@@ -225,6 +225,30 @@ public final class Server {
             if ("/api/hotspot".equals(path)) {
                 return Hotspot.route(method);
             }
+            // The encoder at runtime: GET says what it is, POST ?width=&height=&fps=&bitrate= rebuilds it (the display
+            // and the app stay). The car's quality picker and its automatic step-down both come through here.
+            if ("/api/encoder".equals(path)) {
+                if (source == null) {
+                    return "{\"ok\":false,\"error\":\"no display source\"}";
+                }
+                if (!"POST".equals(method)) {
+                    return com.carcast.core.Json.INSTANCE.obj(source.encoderInfo());
+                }
+                try {
+                    Map<String, Object> info = source.reconfigure(
+                            intOrNull(query.get("width")), intOrNull(query.get("height")),
+                            intOrNull(query.get("fps")), intOrNull(query.get("bitrate")));
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    out.put("ok", true);
+                    out.putAll(info);
+                    return com.carcast.core.Json.INSTANCE.obj(out);
+                } catch (Exception e) {
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    out.put("ok", false);
+                    out.put("error", e.getMessage() == null ? e.toString() : e.getMessage());
+                    return com.carcast.core.Json.INSTANCE.obj(out);
+                }
+            }
             if (!"/api/screen".equals(path)) {
                 return null;
             }
@@ -245,6 +269,13 @@ public final class Server {
             screen.setCarWatching(() -> session.getVideoClients() > 0);
             return kotlin.Unit.INSTANCE;
         });
+    }
+
+    private static Integer intOrNull(String s) {
+        if (s == null || s.isEmpty()) {
+            return null;
+        }
+        return Integer.parseInt(s);
     }
 
     /** "1280x720/160" → {width, height, dpi}; dpi defaults to 160. */

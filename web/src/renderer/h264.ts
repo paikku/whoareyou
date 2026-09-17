@@ -53,6 +53,8 @@ export class H264Renderer implements Renderer {
   readonly needsGesture = false;
   /** 프레임을 버렸거나 디코더가 막혔을 때 부른다 — 폰에 키프레임을 부탁하는 길. main.ts 가 건다. */
   onNeedKeyframe: (() => void) | null = null;
+  /** 그림 한 장이 디코드될 때마다 가운데 밝기(0..255)와 시각을 준다 — 지연 측정이 듣는다. */
+  onLuma: ((luma: number, atMs: number) => void) | null = null;
   private worker: Worker | null = null;
   private gl: YuvGl | null = null;
   /** 워커가 직접 그리는가(OffscreenCanvas). false 면 워커가 YUV 를 넘기고 여기서 그린다. */
@@ -108,7 +110,7 @@ export class H264Renderer implements Renderer {
     }
   }
 
-  private onWorkerMessage(msg: { type: string; width?: number; height?: number; data?: ArrayBuffer; skipped?: number; message?: string }): void {
+  private onWorkerMessage(msg: { type: string; width?: number; height?: number; data?: ArrayBuffer; skipped?: number; message?: string; luma?: number }): void {
     if (msg.type === 'decoderReady') {
       this.ready = true;
       for (const nal of this.queued) this.send(nal);
@@ -133,6 +135,7 @@ export class H264Renderer implements Renderer {
     const pushedAt = this.inFlight.shift();
     if (pushedAt !== undefined) this.st.latencyMs = performance.now() - pushedAt;
     this.st.framesDecoded++;
+    if (typeof msg.luma === 'number') this.onLuma?.(msg.luma, performance.now());
 
     if (this.offscreen) return; // 그리기와 fps 는 워커의 drawn 이 말한다
     if (!msg.data) return;
