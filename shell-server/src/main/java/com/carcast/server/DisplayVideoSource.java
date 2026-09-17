@@ -280,7 +280,7 @@ public final class DisplayVideoSource implements VideoSource {
                 } else if (now == vd) {
                     Log.INSTANCE.i(TAG, "앱 " + pkg + " 이 차 화면(display " + vd + ")으로 돌아옴");
                 } else {
-                    Log.INSTANCE.i(TAG, "폰이 앱 " + pkg + " 을 가져감 (display " + now + ") — 차 화면은 비어 있음. 차에서 ▶를 누르면 폰 쪽을 종료하고 다시 띄움");
+                    Log.INSTANCE.i(TAG, "폰이 앱 " + pkg + " 을 가져감 (display " + now + ") — 차 화면은 비어 있음. 차에서 ▶(차로 가져오기)를 누르면 그 상태 그대로 돌아옴");
                 }
             }
         }, "app-watch");
