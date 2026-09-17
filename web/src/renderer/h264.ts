@@ -116,9 +116,11 @@ export class H264Renderer implements Renderer {
       return;
     }
     if (msg.type === 'error') {
-      // 워커 쪽 WebGL 이 죽었으면 여기서 그리는 길로 내려온다 — 캔버스는 이미 넘어갔으므로 그것은 못 하고,
-      // 이유만 남긴다. 차에서 이 줄이 보이면 OffscreenCanvas 가 안 되는 브라우저다.
       this.st.lastError = msg.message ?? '워커 오류';
+      // 워커가 OffscreenCanvas 에 WebGL 을 못 열었다(워커 안 WebGL2 가 없는 브라우저). 넘긴 캔버스는 돌려받을 수
+      // 없으므로 새 캔버스를 그 자리에 놓고 여기서 그린다 — 워커는 이제 YUV 를 넘겨 준다(post 모드).
+      // 검은 화면으로 끝나는 것보다 낫고, 이 줄이 리포트에 남으면 그 차의 브라우저가 어디까지 되는지 안다.
+      if (this.offscreen && (msg.message ?? '').includes('워커 WebGL 실패')) this.fallBackToMainThread();
       return;
     }
     if (msg.type === 'drawn') {
@@ -141,6 +143,19 @@ export class H264Renderer implements Renderer {
       return;
     }
     this.tick();
+  }
+
+  private fallBackToMainThread(): void {
+    this.offscreen = false;
+    try {
+      const fresh = document.createElement('canvas');
+      fresh.id = this.canvas.id;
+      this.canvas.replaceWith(fresh); // #stage canvas 의 스타일이 그대로 붙는다
+      this.gl = new YuvGl(fresh);
+      this.st.lastError = `${this.st.lastError} → 메인 스레드에서 그림`;
+    } catch (e) {
+      this.st.lastError = `${this.st.lastError}; 메인도 실패: ${String(e)}`;
+    }
   }
 
   /** 화면에 한 장이 올라갔다: fps 창에 적는다. */
