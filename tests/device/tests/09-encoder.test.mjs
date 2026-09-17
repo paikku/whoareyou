@@ -113,3 +113,35 @@ test('인코더 프로파일을 High 로 올렸다가 Baseline 으로 되돌릴 
     assert.ok((await api('/api/encoder')).width === before.width, '되돌리면서 크기가 바뀌었다');
   }
 });
+
+// 큰 프리셋에서 Baseline 이 살아남는가 — H264Level 이 생긴 이유.
+//
+// 인코더는 Baseline 을 요청할 때 레벨도 같이 말해야 하는데(레벨 없는 프로파일을 무시하는 벤더가 있다),
+// 그 레벨이 크기·fps 와 무관하게 3.2 로 고정돼 있었다. 3.2 는 프레임당 5120 매크로블록·초당 216000 까지라
+// 900p(5700)도 1080p30(244800/s)도 넘는다. 넘으면 configure 가 거부되고 H264Encoder 는 **벤더 기본값**
+// (모든 시험 기기에서 High)으로 물러나는데, 평문 경로의 차는 WASM 디코더라 High 를 읽지 못한다 —
+// 증상은 "화질을 올렸더니 화면이 멈춤"이고 로그에는 인코더가 다시 떴다고만 남는다.
+//
+// 그래서 여기서 보는 것은 속도가 아니라 **SPS 가 여전히 Baseline 인가** 하나다(avc1.42…).
+test('큰 프리셋에서도 Baseline 요청이 살아남는다', async (t) => {
+  const s0 = await status();
+  if (s0.source !== 'display') { t.skip('가상 디스플레이가 없다'); return; }
+  const before = await api('/api/encoder');
+  try {
+    for (const [w, h, fps] of [[1600, 900, 60], [1920, 1080, 30], [1920, 1080, 60]]) {
+      await sleep(2100); // /api/encoder 는 2초에 한 번만 받는다
+      const r = await api(`/api/encoder?width=${w}&height=${h}&fps=${fps}&profile=baseline`, { method: 'POST' });
+      assert.equal(r.ok, true, `${w}x${h}@${fps} 거부: ${r.error}`);
+      assert.equal(r.width, w);
+      assert.equal(r.fps, fps);
+      assert.ok(
+        String(r.codec ?? '').startsWith('avc1.42'),
+        `${w}x${h}@${fps} 에서 SPS 가 ${r.codec} — Baseline 요청이 거부돼 벤더 기본값으로 물러났다`,
+      );
+    }
+  } finally {
+    await sleep(2100);
+    const back = await api(`/api/encoder?width=${before.width}&height=${before.height}&fps=${before.fps}&bitrate=${before.bitrate}&profile=baseline`, { method: 'POST' });
+    assert.equal(back.ok, true, JSON.stringify(back));
+  }
+});

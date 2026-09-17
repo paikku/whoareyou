@@ -77,6 +77,8 @@
 | `core` | `ExtraApiTest` | 호스트가 더한 `/api` 경로가 요청을 받고 그 답이 서빙된다. null 을 주면 코어 경로로 넘어간다 — 호스트 경로가 `/api/status` 를 가려 버리면 차가 멈춘다 |
 | `core` | `SelfSignedCertTest` | 손으로 쓴 X.509(DER)가 **진짜 파서에 통과하는가**: `CertificateFactory` 파싱, 자기 서명 검증, SAN 에 `100.99.9.9`·loopback·핫스팟 주소, extKeyUsage serverAuth, CA 아님. 그리고 재기동 후 같은 인증서(차가 매번 다시 경고를 넘지 않게), 깨진 키스토어는 교체(페이지를 잃지 않게), 마지막으로 **진짜 TLS 핸드셰이크로 `/api/status` 가 나오는가** |
 | `core` | `StaleFrameTest` | 영상 소켓 앞의 큐가 **지연 예산**이라는 계약: 4장을 넘으면 P프레임을 버리고(다음 키프레임까지) 소스에 IDR 을 부탁한다, 키프레임은 언제나 보낸다(그것이 복구를 끝내는 것), 따라오는 손님은 한 장도 안 잃는다. 예전 계약(64장 = 2초를 쌓아 두었다가 전부 늦게 배달)이 리포트 #27 의 모양이었다 |
+| `shell-server` | `H264LevelTest` | 크기·fps 에 맞는 H.264 레벨을 고르는가(Annex A Table A-1). 예전에는 Baseline 을 요청할 때 레벨이 **3.2 로 고정**돼 있었는데, 차가 고를 수 있는 여섯 칸 중 넷이 그것을 넘는다(900p·1080p). 넘으면 `configure` 가 거부되고 인코더는 **벤더 기본값(High)** 으로 물러나며, 평문 경로의 WASM 디코더는 High 를 못 읽는다 — 증상은 "화질을 올렸더니 화면이 멈춤" |
+| `app` | `CertInstallTest` | 만료된 인증서를 **폰 위에서** 갈아끼우는 길(`CertInstall`): 두 파일로 주는 출처(local-ip.sh)와 한 덩어리로 주는 출처를 둘 다 다루고, PEM 이 아닌 것은 **서버에 닿기 전에** 멈추고, 개인키를 평문(http)으로 받지 않고, 서버의 거부 사유를 지어내지 않고 그대로 옮긴다. 마지막 한 건은 진짜 소켓으로 loopback 에 POST |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
@@ -90,10 +92,13 @@
 | `stream.spec` | MSE 렌더러 fps ≥ 25, pts 대비 렌더 지연 < 300ms, 10초 무정지, `?renderer=mjpeg` 강제 | ✅ | ✅ |
 | `input.spec` | 클릭 → 서버가 받은 정규화 좌표(레터박스 보정) 검증, 네비 바 → Android 키코드 | ✅ | skip(가짜 폰 전용 API) |
 | `reconnect.spec` | 핸드셰이크 거부 34% + 150ms 지연 + 5초마다 소켓 절단 하에서 15초 내 영상 복구 | ✅ | skip |
+| `quality.spec` | 화질 사다리가 **렌더러에 따라 갈리는가**: 평문(WASM)에서는 다섯 칸이고 `1080p60` 이 없다, 하드웨어(webcodecs)에서는 여섯 칸이다, 그리고 **하드웨어 전용 설정으로 도는 폰에 평문으로 들어오면 한 단계 내려 준다**(폰은 차가 고른 값을 파일로 기억하므로 실제로 생기는 조합이고, 그 증상은 멈춘 화면이라 자동 내리기가 손대지 못한다). 더해서 자동 내리기와 끝에서 끝까지 지연 측정 | ✅ | skip(가짜 폰 전용 API) |
 | `secure-context.spec` (webcodecs) | secure context 에서 렌더러가 **webcodecs 로 골라지고**, 프레임이 나오고, 폰 인코더가 High 로 올라가는가. 하드웨어가 없는 자리(이 컨테이너)에서는 `stats.hardware=false` 로 소프트웨어 WebCodecs 로 내려간다 — 그래도 lag 5.7ms(WASM 은 10ms) | skip(TLS 없음) | ✅ |
 | `secure-context.spec` | **자체서명 인증서를 넘긴 https 오리진이 secure context 인가**, 거기서 `VideoDecoder` 가 보이고 `isConfigSupported` 표가 채워져 리포트에 실리는가. 평문에서는 "못 물었다"를 말하고 https 주소를 안내하는가 | skip(TLS 없음) | ✅ (2026-09-17, Chrome 148) |
 
-결과: 가짜 폰 대상 **14/14**, JVM으로 띄운 shell 서버(`./gradlew :core:run`, APK의 assets 그대로) 대상 **8/14 통과, 6 skip**.
+결과(2026-09-17, `npm run e2e`): 가짜 폰 대상 세 프로필 합쳐 **108 통과 / 36 skip**, JVM으로 띄운 shell
+서버(`BASE_URL=http://127.0.0.1:3399`, APK의 assets 그대로) 대상 **9 통과 / 39 skip**(가짜 폰 전용 API 를
+쓰는 것들이 빠진다; 대신 `secure-context.spec` 네 건은 여기서만 돈다).
 같은 서버 코드가 폰의 shell 프로세스에서 돌기 때문에, 폰에서 남는 미검증 요소는 프로세스 환경과 네트워크뿐이다(§3.3에서 확인).
 
 이 층에서 잡은 문제와 수정: 클립 루프 시 `tfdt`가 원래 pts로 남아 MSE 타임라인이 되감기던 10초 정지(재스탬프),
@@ -504,6 +509,15 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
    없다(자기 적체는 0, `30fps dropped 0`). 리포트 #27(`lag 144ms`, 나머지는 멀쩡, 사용자는 불만)이 그 모양.
    확인할 것: 주행 중 `videoStaleDropped` 가 0 이상으로 오르는 구간이 있는지, 그때 화면이 **끊기는지(새 정책)**
    아니면 **밀리는지(옛 정책)**, 그리고 `keyframeRequests` 가 그만큼 따라 오르는지.
+11. **1080p60 이 실제로 이 차에서 도는가 (C):** 2026-09-17 에 사다리를 하드웨어 경로에서만 한 칸 늘렸다
+   (`1080p60`, 12Mbps, High). 근거는 report #67 의 `prefer-hardware: supported` 뿐이고, **supported 는
+   "이 설정을 받아 준다"이지 "60fps 를 낸다"가 아니다.** A 층에서 확인된 것은 사다리가 렌더러에 따라
+   갈린다는 것과 프리셋 값이 폰에 닿는다는 것까지다(`quality.spec`). 차에서 볼 것: 💾 리포트의
+   `fps`·`lag`·`backlog` 추이(1분 이상), 자동 내리기가 돌았는지(`autoStepDowns`), 그리고 핫스팟 링크가
+   12Mbps 를 견디는지(`rtt` 가 같이 오르면 링크 쪽이다). 함께 볼 것: 폰 쪽 `timing.encodeMs` —
+   1080p60 은 인코더 예산(16ms)이 720p 의 10ms 보다 빡빡하다.
+   폰 쪽 위험은 따로 잡아 뒀다: 큰 프리셋에서 Baseline 요청이 거부되지 않는가(`H264LevelTest`,
+   그리고 실기기에서 `tests/device/09-encoder` 의 "큰 프리셋에서도 Baseline 요청이 살아남는다").
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
 ---

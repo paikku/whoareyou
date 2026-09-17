@@ -107,10 +107,15 @@ final class H264Encoder {
         return inputSurface;
     }
 
-    private static String describe(boolean baseline, String mode, int refresh) {
+    /** The level this encoder's size and rate need. The frame rate is the cap the car asked for, 60 when none. */
+    private int level() {
+        return H264Level.levelFor(width, height, maxFps > 0 ? maxFps : 60);
+    }
+
+    private String describe(boolean baseline, String mode, int refresh) {
         StringBuilder sb = new StringBuilder();
         if (baseline) {
-            sb.append("constrained-baseline");
+            sb.append("constrained-baseline ").append(H264Level.describe(level()));
         }
         if (!mode.isEmpty()) {
             sb.append(sb.length() > 0 ? "+" : "").append(mode);
@@ -125,8 +130,10 @@ final class H264Encoder {
         MediaFormat format = format();
         if (baseline) {
             format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline);
-            // A profile without a level is ignored by some encoders; 3.2 covers 720p60.
-            format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel32);
+            // A profile without a level is ignored by some encoders, so one has to be named — and it has to be
+            // the level this size and rate actually need. It used to be a fixed 3.2 ("covers 720p60"), which
+            // 900p and 1080p both exceed; see H264Level for what that cost.
+            format.setInteger(MediaFormat.KEY_LEVEL, level());
         }
         // CBR: every frame about the same size, so decode time and transfer time are steady too — steadiness is
         // what the car's software decoder and the hotspot link want, more than the sharper frames VBR spends on.

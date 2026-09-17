@@ -177,7 +177,12 @@ class StreamSession(
             https = null
             startTls()
             event("인증서 교체: ${tls.subject} (${tls.notAfter} 까지)")
-            Json.obj(mapOf("ok" to true, "subject" to tls.subject, "notAfter" to tls.notAfter, "host" to tlsHost, "trusted" to tlsTrusted))
+            // 포트까지 같이 준다: 이걸 부르는 쪽(앱)은 "차가 열 주소"를 한 줄로 보여 주려는 것이고,
+            // 호스트만으로는 그 줄을 만들 수 없다.
+            Json.obj(mapOf(
+                "ok" to true, "subject" to tls.subject, "notAfter" to tls.notAfter,
+                "host" to tlsHost, "port" to httpsPort, "trusted" to tlsTrusted,
+            ))
         } catch (e: Exception) {
             Json.obj(mapOf("ok" to false, "error" to (e.message ?: e.toString())))
         }

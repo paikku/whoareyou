@@ -578,6 +578,8 @@ async function pollStatus(): Promise<void> {
     renderFastAddress();
     // 하드웨어 디코더로 붙었으면 Baseline 에 머물 이유가 없다 — 한 번만 올려 달라고 한다.
     void askForProfile();
+    // 반대쪽: 하드웨어가 없는데 폰이 하드웨어 전용 설정을 기억하고 있으면 내린다.
+    void guardPreset();
     const now = st.appOnPhone === true;
     if (now !== appOnPhone) {
       appOnPhone = now;
@@ -744,19 +746,40 @@ setInterval(() => {
 // ── 화질 (인코더 설정) ─────────────────────────────────────────────────────────────────────────
 //
 // 폰의 인코더를 차에서 바꾼다(POST /api/encoder): 크기·fps·비트레이트. 폰은 앱을 그대로 둔 채 인코더만
-// 갈아끼우고 선택을 기억한다. 무엇이 맞는지는 이 차의 디코더가 정한다 — 실측(2026-09-17)에서 720p 한 장에
-// 10ms 였으니 60fps(예산 16ms)와 900p 는 해 볼 만하고, 1080p 60 은 아닐 것이다. 그래서 자동 모드는
-// **내리기만** 한다: 적체나 드롭이 두 샘플 연속 보이면 한 단계 아래로. 올리는 것은 사람이 고른다.
-interface Preset { id: string; label: string; width: number; height: number; fps: number; bitrate: number }
+// 갈아끼우고 선택을 기억한다. 무엇이 맞는지는 **이 차의 디코더가** 정하고, 그 디코더가 둘로 갈렸다:
+//
+// - 평문(WASM h264bsd): 차 CPU 가 한 장씩 푼다. 720p 한 장에 10ms 였으니(실측 2026-09-17) 60fps 는
+//   예산(16ms)에 겨우 닿고 1080p 는 그 위다. 여기서의 천장은 1080p30 이고, 그것도 여유가 없다.
+// - https(WebCodecs 하드웨어): 차가 전용 블록으로 푼다. 실차 report #67 에서 Baseline·High 둘 다
+//   `prefer-hardware: supported` 였다. 1080p60 은 그쪽에서만 의미가 있다.
+//
+// 그래서 사다리는 렌더러에 따라 다르다([available]). 하드웨어 전용 칸을 평문에서 보여 주는 것은
+// "고르면 화면이 검어지는 버튼"을 놓는 것과 같다 — 골라도 안 되는 게 아니라, 폰은 순순히 그 설정으로
+// 갈아끼우고 WASM 디코더가 못 따라올 뿐이라 증상이 "그냥 멈춤"이다.
+//
+// 자동 모드는 여전히 **내리기만** 한다: 적체나 드롭이 두 샘플 연속 보이면 한 단계 아래로. 올리는 것은
+// 사람이 고른다(차에서 오르내림이 반복되는 것보다 낮은 데 머무는 편이 낫다).
+interface Preset {
+  id: string; label: string; width: number; height: number; fps: number; bitrate: number;
+  /** 하드웨어 디코더(webcodecs)에서만 고를 수 있다. WASM 으로는 풀리지 않는다. */
+  hardware?: true;
+}
 const PRESETS: Preset[] = [
   { id: '720p30', label: '기본 · 720p 30fps', width: 1280, height: 720, fps: 30, bitrate: 4_000_000 },
   { id: '720p60', label: '부드럽게 · 720p 60fps', width: 1280, height: 720, fps: 60, bitrate: 6_000_000 },
   { id: '900p30', label: '선명하게 · 900p 30fps', width: 1600, height: 900, fps: 30, bitrate: 6_000_000 },
   { id: '900p60', label: '선명하고 부드럽게 · 900p 60fps', width: 1600, height: 900, fps: 60, bitrate: 8_000_000 },
   { id: '1080p30', label: '최대 · 1080p 30fps', width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
+  // 하드웨어 디코더 전용. 비트레이트는 화소율 그대로 1080p30 의 1.5 배 — High 프로파일이 같은 화질을
+  // 더 적은 비트로 내므로(하드웨어 경로는 High 를 쓴다) 두 배까지는 필요 없다.
+  { id: '1080p60', label: '최대 · 1080p 60fps (하드웨어)', width: 1920, height: 1080, fps: 60, bitrate: 12_000_000, hardware: true },
 ];
-/** 부담 순서(가로×세로×fps). 자동 모드가 한 단계 내릴 때 이 순서를 따른다. */
-const byCost = [...PRESETS].sort((a, b) => a.width * a.height * a.fps - b.width * b.height * b.fps);
+/** 디코더가 지불하는 부담: 화소 수 × fps. */
+const cost = (p: Preset): number => p.width * p.height * p.fps;
+/** 이 렌더러가 실제로 풀 수 있는 프리셋만. */
+const available = (): Preset[] => PRESETS.filter((p) => !p.hardware || renderer.name === 'webcodecs');
+/** 부담 순서로 세운 사다리. 자동 모드가 한 단계 내릴 때 이 순서를 따른다. */
+const ladder = (): Preset[] => [...available()].sort((a, b) => cost(a) - cost(b));
 const qualityPanel = $('quality');
 const qualityGrid = $('quality-grid');
 const qualityNow = $('quality-now');
@@ -834,7 +857,7 @@ function renderQuality(): void {
 }
 
 function openQuality(): void {
-  qualityGrid.replaceChildren(...PRESETS.map((p) => {
+  qualityGrid.replaceChildren(...available().map((p) => {
     const el = document.createElement('button');
     el.className = 'tile';
     el.dataset.preset = p.id;
@@ -866,15 +889,53 @@ function maybeStepDown(sample: PerfSample): void {
 async function stepDown(why: string): Promise<boolean> {
   if (Date.now() - lastStepDownAt < 60_000) return false;
   const cur = currentPreset();
-  if (!cur) return false;
-  const i = byCost.indexOf(cur);
-  if (i <= 0) return false;
+  const next = cur && below(cur);
+  if (!next) return false;
   lastStepDownAt = Date.now();
   badSamples = 0;
   autoStepDowns++;
-  const ok = await applyPreset(byCost[i - 1]!, `auto: ${why}`);
-  if (ok) notice(`차가 못 따라와 화질을 내렸습니다: ${byCost[i - 1]!.label}`, 8000);
+  const ok = await applyPreset(next, `auto: ${why}`);
+  if (ok) notice(`차가 못 따라와 화질을 내렸습니다: ${next.label}`, 8000);
   return ok;
+}
+
+/**
+ * 지금 설정보다 한 단계 가벼우면서 **이 렌더러가 풀 수 있는** 프리셋, 없으면 null.
+ *
+ * 사다리 안에 있으면 그 바로 아래이고, 사다리 밖이면(하드웨어 전용 설정을 평문에서 만난 경우) 부담이
+ * 더 작은 것 중 가장 위다. 인덱스 대신 부담으로 재는 이유가 그것이다.
+ */
+function below(cur: Preset): Preset | null {
+  const lighter = ladder().filter((p) => cost(p) < cost(cur));
+  return lighter[lighter.length - 1] ?? null;
+}
+
+/**
+ * 폰이 **이 렌더러로는 풀 수 없는** 설정으로 돌고 있으면 한 단계 내린다.
+ *
+ * 폰은 차가 고른 값을 파일로 기억한다(encoder.conf, 서버를 다시 띄워도 남는다). 그래서 https 로 열어
+ * 1080p60 을 골라 둔 폰에 평문으로 들어오면 — 북마크 하나만 달라도 그렇게 된다 — WASM 디코더가 그
+ * 스트림을 받는다. 증상은 "화면이 멈춤"이고, 자동 내리기는 손대지 못한다: 프레임이 아예 안 풀리니
+ * 적체도 드롭도 자라지 않는다. 그래서 이것은 성능 판단이 아니라 능력 판단이고, 자동 모드 여부와
+ * 무관하게 한 번 바로잡는다.
+ *
+ * 아는 것은 사다리뿐이다: PC 에서 손으로 띄운 별난 크기(프리셋 아님)는 손대지 않는다 — 그건 누군가
+ * 일부러 그렇게 둔 것이고, 그 의도를 이쪽에서 추측하는 것보다 그대로 두는 편이 낫다.
+ */
+let guardedPreset = false;
+async function guardPreset(): Promise<void> {
+  if (guardedPreset || applyingPreset) return;
+  const cur = currentPreset();
+  if (!cur?.hardware || renderer.name === 'webcodecs') return;
+  const next = below(cur);
+  if (!next) return;
+  guardedPreset = true;
+  note(`preset ${cur.id} needs a hardware decoder, renderer is ${renderer.name} — stepping down`);
+  if (await applyPreset(next, 'guard: 하드웨어 디코더 없음')) {
+    notice(`${cur.label} 는 하드웨어 디코더가 있어야 합니다 — ${next.label} 로 내렸습니다`, 8000);
+  } else {
+    guardedPreset = false;
+  }
 }
 
 // ── 끝에서 끝까지 지연 측정 ────────────────────────────────────────────────────────────────────
@@ -1018,6 +1079,10 @@ const stats = () => ({
   touch: { ...touch.stats },
   latencyProbe,
   autoStepDowns,
+  // 이 렌더러가 고를 수 있는 사다리, 그리고 못 푸는 설정을 만나 내렸는지. 리포트에 실려서, 차가
+  // 어느 경로로 열렸고 무엇까지 고를 수 있었는지가 나중에도 읽힌다.
+  presets: available().map((p) => p.id),
+  presetGuarded: guardedPreset,
   encoder: lastStatus ? { width: lastStatus.width, height: lastStatus.height, fps: lastStatus.maxFps, bitrate: lastStatus.bitRate } : null,
 });
 (window as any).__carcast = {

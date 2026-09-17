@@ -5,6 +5,10 @@
     <string name="selftest">네트워크 자가 테스트</string>
     <string name="netdiag">라우팅 진단 공유 (ip rule/route)</string>
     <string name="share_reports">차에서 보낸 진단 결과 공유 (/api/reports)</string>
+    <string name="cert_install">인증서 받아서 심기 (HTTPS 갱신)</string>
+    <string name="cert_install_title">인증서 받아서 심기</string>
+    <string name="cert_install_hint">공개 CA 가 서명한 인증서를 받아 폰의 서버에 심습니다. 차는 그 주소를 경고 없이 열고, 그래야 하드웨어 디코더(WebCodecs)에 닿습니다.\n\n기본 주소 local-ip.sh 는 인증서와 개인키를 함께 공개하는 진단용입니다 — 누구나 같은 이름으로 서버를 세울 수 있으니, 제품으로 쓰려면 우리 도메인으로 받은 PEM(체인+키) 주소를 넣으세요.</string>
+    <string name="cert_install_go">받아서 심기</string>
     <string name="use_vpn">가짜 IP(100.99.9.9) 사용 — 끄면 핫스팟 주소로만 접속</string>
     <string name="server_in_app">서버를 앱 프로세스에서 실행 (핫스팟 주소 테스트 전용, 100.99.9.9 불가)</string>
     <string name="status_idle">대기 중</string>
