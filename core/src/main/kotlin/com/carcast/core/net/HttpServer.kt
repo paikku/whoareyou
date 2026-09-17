@@ -109,7 +109,12 @@ class HttpServer(
             if (req.isWebSocketUpgrade) {
                 socket.soTimeout = 0
                 WebSocketConnection.handshake(req, output)
-                val conn = WebSocketConnection(socket, input, output, queueCapacity = 64)
+                // 영상 소켓만 큐를 짧게 잡는다. 64칸은 30fps 에서 2초치 **낡은** 화면이고, 링크가 한 번
+                // 막혔다 뚫리면 차는 그 2초를 성실히 다시 재생한다(고무줄). 화면 스트림에서 낡은 프레임은
+                // 버리는 편이 맞고, 버린 자리는 MediaHub 가 바로 청하는 IDR 이 메운다. 제어·오디오 소켓은
+                // 그대로 둔다 — 거기서 떨어지는 것은 되돌릴 수 없는 사건이다.
+                val cap = if (req.path.startsWith("/ws/video")) VIDEO_QUEUE else DEFAULT_QUEUE
+                val conn = WebSocketConnection(socket, input, output, queueCapacity = cap)
                 if (!wsHandler.onWebSocket(req.path, req.query, conn)) {
                     conn.close()
                     return
@@ -170,5 +175,9 @@ class HttpServer(
         const val MAX_BODY = 256 * 1024
         /** Breathing room after a failed accept, so a permanent failure cannot become a hot loop. */
         private const val ACCEPT_RETRY_MS = 100L
+        /** 제어·오디오 소켓: 떨어뜨리면 안 되는 것들이라 넉넉히 둔다. */
+        const val DEFAULT_QUEUE = 64
+        /** 영상 소켓: 30fps 에서 0.5초치. 그보다 뒤처지면 기다리지 말고 버리고 새 IDR 로 따라잡는다. */
+        const val VIDEO_QUEUE = 16
     }
 }

@@ -38,9 +38,10 @@ final class DisplayCapture {
     /** android.view.WindowManager.DISPLAY_IME_POLICY_LOCAL: the keyboard shows on the virtual display itself. */
     static final int DISPLAY_IME_POLICY_LOCAL = 0;
 
-    final int width;
-    final int height;
-    final int dpi;
+    /** Not final: /api/encoder may resize the display while the car is watching (see resize). */
+    int width;
+    int height;
+    int dpi;
     private final boolean systemDecorations;
     private VirtualDisplay virtualDisplay;
     private int displayId = -1;
@@ -104,6 +105,23 @@ final class DisplayCapture {
         } else {
             virtualDisplay.setSurface(surface);
         }
+    }
+
+    /**
+     * Change the display's size in place, keeping the display id and the app running on it. Android
+     * re-lays-out the app for the new size, exactly as a fold/unfold does. Used by /api/encoder: a
+     * smaller display is the one lever that makes the car's software decoder keep up, and trying it
+     * must not mean reinstalling the APK in a parking lot.
+     */
+    synchronized void resize(int newWidth, int newHeight, int newDpi) {
+        if (virtualDisplay == null) {
+            throw new IllegalStateException("no virtual display");
+        }
+        virtualDisplay.resize(newWidth, newHeight, newDpi);
+        width = newWidth;
+        height = newHeight;
+        dpi = newDpi;
+        Ln.i("Display resized: " + newWidth + "x" + newHeight + "/" + newDpi + " (id=" + displayId + ")");
     }
 
     /** Detach the encoder surface (encoder restart) without destroying the display and the app on it. */

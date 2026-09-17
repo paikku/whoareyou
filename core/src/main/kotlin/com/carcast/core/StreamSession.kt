@@ -41,6 +41,12 @@ class StreamSession(
         private set
     @Volatile var controlPackets = 0L
         private set
+
+    /** IDR 을 따로 청한 횟수(뒤처진 차 때문에). /api/status 에서 "링크가 자주 막힌다"를 읽는 자리다. */
+    @Volatile var keyframeRequests = 0L
+        private set
+    private val keyframeLock = Any()
+    private var lastKeyframeRequestMs = 0L
     val videoClients: Int get() = videoHub.clientCount
     val controlClientCount: Int get() = controlClients.size
 
@@ -111,6 +117,15 @@ class StreamSession(
         if (live != null) {
             try {
                 videoHub.onClientAttached = { live.requestKeyframe() }
+                // 뒤처진 차에게 다음 GOP(2초)를 기다리게 하지 않는다 — 지금 IDR 을 하나 달라고 한다.
+                // 혼잡할 때 키프레임 폭풍이 되지 않도록 간격을 둔다: 그 안의 요청은 어차피 같은 IDR 이 답한다.
+                videoHub.onKeyframeNeeded = {
+                    val now = System.currentTimeMillis()
+                    val ask = synchronized(keyframeLock) {
+                        (now - lastKeyframeRequestMs >= KEYFRAME_REQUEST_MIN_MS).also { if (it) lastKeyframeRequestMs = now }
+                    }
+                    if (ask) { keyframeRequests++; live.requestKeyframe() }
+                }
                 live.start(videoHub)
                 liveSourceRunning = true
                 event("라이브 소스 시작: ${live.info()}")
@@ -245,6 +260,7 @@ class StreamSession(
             "accepting" to (http?.accepting ?: false),
             "lastAcceptAgoMs" to http?.lastAcceptAt?.takeIf { it > 0 }?.let { System.currentTimeMillis() - it },
             "videoDropped" to videoHub.dropped,
+            "keyframeRequests" to keyframeRequests,
             "reports" to reports.size,
             "lastReport" to reports.last?.let { mapOf("id" to it.id, "receivedAt" to it.receivedAt, "remote" to it.remote, "summary" to it.summary) },
         )
@@ -268,6 +284,8 @@ class StreamSession(
         private const val TAG = "StreamSession"
         /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
         private const val ACCEPT_LOG_EVERY = 100L
+        /** 뒤처진 클라이언트 때문에 IDR 을 청하는 최소 간격. 이보다 잦은 요청은 같은 IDR 이 답한다. */
+        private const val KEYFRAME_REQUEST_MIN_MS = 300L
         const val TEST_CLIP = "test-720p30.cmp4"
         /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to [DEFAULT_RESTART]. */
         val RESTART_MODES = setOf("auto", "always", "never")

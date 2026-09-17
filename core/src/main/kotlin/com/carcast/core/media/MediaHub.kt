@@ -31,6 +31,14 @@ open class MediaHub {
     /** Called when a client was dropped because it could not take the init segment. */
     @Volatile var onClientDropped: (remote: String) -> Unit = {}
 
+    /**
+     * A client just fell behind and is now waiting for a keyframe again. Until one comes it sees a frozen
+     * picture, and the GOP is two seconds — so the source is asked for an IDR *now* instead. Without this the
+     * car pays the full GOP for every hiccup of the hotspot link, which is what "가끔 뚝뚝 끊긴다" is made of.
+     * Called on the encoder's output thread: it must not block (MediaCodec.setParameters does not).
+     */
+    @Volatile var onKeyframeNeeded: () -> Unit = {}
+
     /** How many clients we let go of because they would not take an init segment. For /api/status. */
     @Volatile var dropped = 0L
         private set
@@ -81,16 +89,21 @@ open class MediaHub {
 
     open fun onFrame(packet: ByteArray, keyframe: Boolean) {
         if (keyframe) lastKey = packet
+        var fellBehind = false
         for (c in clients) {
             if (c.waitingForKey && !keyframe) continue
             if (c.conn.offer(packet)) {
                 c.waitingForKey = false
                 c.sent++
             } else {
+                // Only the *transition* into waiting counts: a client that is already waiting has already
+                // asked, and one request per frame would be a keyframe storm on a link that is congested.
+                if (!c.waitingForKey) fellBehind = true
                 c.waitingForKey = true
                 if (c.dropped++ == 0L) onClientStalled(c.conn.remote, c.conn.queuedFrames)
             }
         }
+        if (fellBehind) onKeyframeNeeded()
     }
 
     fun closeAll() {
