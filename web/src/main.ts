@@ -855,7 +855,9 @@ let latencyProbe: ProbeResult | null = null;
 let probeRunning = false;
 let lastLuma = -1;
 let lastLumaAt = 0;
-if (renderer instanceof H264Renderer) renderer.onLuma = (l, at) => { lastLuma = l; lastLumaAt = at; };
+/** 테스트가 밝기를 손으로 넣는 동안(feedLuma) 디코더의 밝기는 무시한다 — 가짜 폰의 클립이 덮어쓰면 측정이 어긋난다. */
+let lumaFed = false;
+if (renderer instanceof H264Renderer) renderer.onLuma = (l, at) => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PROBE_ACTIVITY = 'com.carcast/.ui.LatencyProbeActivity';
@@ -967,7 +969,7 @@ const stats = () => ({
   applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
   stepDown: (why = 'test') => stepDown(why),
   runProbe: (opts: { trials?: number; launch?: boolean; onTouch?: () => void }) => runProbe(opts),
-  feedLuma: (l: number) => { lastLuma = l; lastLumaAt = performance.now(); },
+  feedLuma: (l: number) => { lumaFed = true; lastLuma = l; lastLumaAt = performance.now(); },
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
   restartControl: () => control.restart(),
   activePointers: () => touch.activePointers,
