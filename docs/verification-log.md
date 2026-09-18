@@ -552,7 +552,9 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
    `late` 가 대신 찍히는지, `keyframeRequests` 가 GOP 당 한 번 미만인지, 그래도 무너지면 그때의 `backlog` (30 을
    넘겨야 예전 규칙이 켜진다). 같은 세션에서 화질 시트의 **인트라 리프레시** 토글을 켜고 1 분: `keys`·`keyBytes` 가
    P 프레임 크기로 내려오는지, 벤더가 그 키를 받았는지(`encoderProfile`). 절차: testing-guide §C 4b.
-16. **HEVC·AV1 로 갈 수 있는가 — 양쪽 절반 (C + B):** https `/diag` 의 "하드웨어 디코더" 표에 HEVC Main 4.0·AV1
+16. **HEVC·AV1 로 갈 수 있는가 — 양쪽 절반 (C + B): 차 쪽 절반은 답 나옴 (2026-09-19, car-tests/model-y §12) —
+   HEVC Main 은 1080p(4.1)까지 prefer-hardware O, AV1 은 prefer-hardware X(소프트웨어뿐), High 4.2 @1080p 도 하드웨어 O.
+   남은 것은 폰 쪽: `/api/status.encoders` 와 `/api/bench?codec=hevc`.** (원래 질문:) https `/diag` 의 "하드웨어 디코더" 표에 HEVC Main 4.0·AV1
    Main 4.0·VP9 의 `prefer-hardware` 줄이 실린다(no-preference 의 AV1 은 크로미엄의 dav1d 라 늘 O — 뜻이 없다).
    폰 쪽은 `/api/status.encoders` (S26U 의 `c2.qti.hevc.encoder`·`c2.qti.av1.encoder` 가 있는지). 둘 다 O 여야
    비로소 "코덱 교체" 가 선택지가 되고, 그래도 얻는 것은 같은 화질에 비트 30~40% 이지 되먹임 구조의 변화가
@@ -561,14 +563,19 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
    인코더와 무관). 볼 것: HEVC/AV1 의 requestedKeyBytes 가 AVC 의 몇 % 인지, 그리고 p50 이 AVC(7~9 ms)보다 얼마나
    깊은지 — 그 둘이 곧 코덱 교체의 손익이다. 차의 1080p 줄(`High 4.2 @1080p` 등)이 prefer-hardware 에서 X 면
    그 칸은 지금도 소프트웨어로 풀리고 있었던 것이다. 파이프라인 쪽 할 일은 `web/src/paths.ts` 주석.
-17. **WebRTC 가 이 차의 브라우저에서 성립하는가 (C):** 같은 `/diag` 의 "WebRTC" 표. 평문에서도 되는 유일한
+17. **WebRTC 가 이 차의 브라우저에서 성립하는가 (C): ✅ 답 나옴 (2026-09-19, §12) — 루프백 H264/AV1/VP9 전부 O, 수신
+   코덱에 H264 High(64001f)와 H265 있음, 비신뢰 채널 O, WebTransport O. `decoderImplementation` 은 예상대로 빈 문자열.
+   폰 쪽 스택이 없다는 것만 남았다.** (원래 질문:) 같은 `/diag` 의 "WebRTC" 표. 평문에서도 되는 유일한
    하드웨어 디코드 길이고 TCP 머리막힘을 벗어나는 유일한 전송이라, 1·2·15 가 실패했을 때의 다음 카드다.
    볼 것: 루프백 O/X, 협상 코덱(H.264 가 되는가 — 되면 재인코딩 없이 그대로 실을 수 있다), `decoderImplementation`
    (ExternalDecoder 류면 하드웨어, FFmpeg/libvpx/dav1d 면 소프트웨어), 데이터 채널. PC(Chrome 148)에서는
    H264 루프백 120f/4s, AV1·VP9 도 O, 데이터 채널·비신뢰 채널 O, `decoderImplementation` 은 **빈 문자열**이었다
    (크로미엄이 미디어 권한을 받은 페이지에만 채운다 — 차에서도 빌 수 있고, 그러면 하드웨어 여부는 WebCodecs 표로
    본다; `tests/e2e/tests/diag.spec.ts`). 폰 쪽 스택(ICE·DTLS·SRTP)은 없다 — O 가 나와도 그것을 세우는 일이 남는다.
-18. **이 링크에서 IDR 한 장은 몇 ms 인가 (C):** `/diag` 의 "링크" 칸(`link`, `/api/blob`). 64K·256K·600K×2·2M 의 소요
+18. **이 링크에서 IDR 한 장은 몇 ms 인가 (C): 답 나옴 (2026-09-19, §12, 유휴 링크) — 600 KB 가 50~69 ms(71~98 Mbps),
+   2 MB 가 115 ms. §11 의 "575 KB = 0.46 초"(10 Mbps 가정)는 이 링크에서 틀렸다. 그래서 #76 의 붕괴는 링크 시간이 아니라
+   차의 버리기 규칙 × 큰 IDR 의 디코드로 읽힌다 — 이 빌드가 끊은 고리이고, 15 가 확인한다. 스트림이 도는 중의 링크는
+   따로 잰 적 없다.** (원래 질문:) `/diag` 의 "링크" 칸(`link`, `/api/blob`). 64K·256K·600K×2·2M 의 소요
    시간과 Mbps. 실차 #76 의 "575 KB = 0.46 초" 는 10 Mbps 를 가정한 계산이었고 이것이 측정이다. 600KB#2 의 ms 에
    인코더 벤치의 `requestedKeyBytes/600KB` 를 곱한 것이 그 차의 키프레임 한 장 값이고, 100 ms 를 넘으면 QP 상한·
    인트라 리프레시가 필요한 링크다. PC loopback: 600 KB 42 ms(뜻 없음, 길이 이어지는지만).
