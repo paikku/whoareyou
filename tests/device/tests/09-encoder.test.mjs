@@ -98,6 +98,7 @@ test('지연 측정 액티비티가 차 화면에 뜨고, 앱 히스토리에는
 // SPS 가 최종 답이므로 요청이 아니라 `codec` 문자열(avc1.<profile>…)을 본다.
 test('인코더 프로파일을 High 로 올렸다가 Baseline 으로 되돌릴 수 있다', async () => {
   const before = await api('/api/encoder');
+  await sleep(2100); // 앞 검사의 재빌드 잠금(2 초)
   try {
     const high = await api('/api/encoder?profile=high', { method: 'POST' });
     assert.equal(high.ok, true, `profile=high 실패: ${high.error}`);
@@ -107,8 +108,11 @@ test('인코더 프로파일을 High 로 올렸다가 Baseline 으로 되돌릴 
       console.log(`주의: High 를 요청했으나 SPS 는 ${high.codec} — 이 기기 인코더가 거부했다`);
     }
   } finally {
+    // 프로파일 변경은 재빌드라 2 초 안의 재요청은 거부된다 — 에뮬레이터 run #135 에서 되돌리기가 그 잠금에 걸려
+    // `profile` 없는 거부 응답을 받았다. 잠금은 설계이므로 검사가 기다린다.
+    await sleep(2100);
     const back = await api('/api/encoder?profile=baseline', { method: 'POST' });
-    assert.equal(back.profile, 'baseline', '되돌리기 실패 — 다음 검사가 Baseline 을 기대한다');
+    assert.equal(back.profile, 'baseline', `되돌리기 실패 — 다음 검사가 Baseline 을 기대한다: ${JSON.stringify(back)}`);
     assert.ok(String(back.codec ?? '').startsWith('avc1.42'), `되돌린 뒤 SPS 가 ${back.codec}`);
     assert.ok((await api('/api/encoder')).width === before.width, '되돌리면서 크기가 바뀌었다');
   }
