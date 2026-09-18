@@ -30,6 +30,25 @@ test('화질 시트에서 고르면 폰 인코더 설정이 바뀌고 터치 좌
   expect(s.encoder).toMatchObject({ width: 1600, height: 900, fps: 30 });
 });
 
+// 인트라 리프레시 토글: 폰이 말한 값으로 그려지고, 누르면 `intra_refresh=30|0` 이 POST 로 간다. 실차에서는
+// 이 손잡이가 "키프레임 버스트가 범인인가"를 가르는 실험이다(car-tests/model-y §11).
+test('인트라 리프레시 토글은 폰의 값을 따르고, 누르면 인코더에 그 값이 간다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+  await page.locator('#btn-quality').click();
+  const toggle = page.locator('#quality-intra');
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect.poll(async () => (await statusOf(page)).intraRefresh).toBe(30);
+  expect((await statusOf(page)).encoderRestarts).toBe(1);
+  await expect(page.locator('#stats')).toContainText('인트라 리프레시 켬');
+  await toggle.uncheck();
+  await expect.poll(async () => (await statusOf(page)).intraRefresh).toBe(0);
+  await expect(toggle).not.toBeChecked();
+});
+
 test('자동 내리기는 한 단계 아래 프리셋으로 가고, 맨 아래에서는 손대지 않는다', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);

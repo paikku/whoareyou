@@ -45,6 +45,27 @@ interface Report {
     /** Where the same page can be reopened in a secure context (the phone's TLS listener), if there is one. */
     httpsUrl: string;
   };
+  /**
+   * WebRTC 가 이 브라우저에서 **도는가** — 평문에서도 되는 유일한 하드웨어 디코드 길이고(prior-art §5),
+   * TCP/WebSocket 의 머리막힘(큰 IDR 하나가 뒤의 전부를 막는 것)을 벗어나는 유일한 전송이라 언젠가 쓸 수
+   * 있는지를 미리 물어 둔다. 같은 페이지 안에서 pc1 → pc2 로 캔버스 영상을 보내 본다: ICE·DTLS·SRTP 가 이
+   * 브라우저에서 성립하는지, 무슨 코덱으로 협상됐는지, 디코더가 무엇이었는지(`decoderImplementation` —
+   * 하드웨어면 ExternalDecoder 류, 아니면 FFmpeg/libvpx/dav1d). 폰 쪽 스택은 아직 없다 — 이것은 가능성 조사다.
+   */
+  webrtc?: {
+    present: boolean;
+    /** RTCRtpReceiver.getCapabilities('video') 가 말한 코덱들(rtx·fec 제외). */
+    codecs: string[];
+    /** 'ok' | 'no frames' | 실패 이유. */
+    loopback: string;
+    framesDecoded: number;
+    /** 협상된 코덱(mimeType). */
+    codec: string;
+    decoder: string;
+    powerEfficient: boolean | null;
+    dataChannel: boolean;
+    ms: number;
+  };
   summary: string;
   log: string;
 }
@@ -137,7 +158,20 @@ async function codecProbe(): Promise<void> {
     // 42C01F: exactly what the phone's encoder sends today (Constrained Baseline 3.1). 640028: High 4.0 —
     // if that one decodes in hardware, the encoder could stop being held down to Baseline for the sake of
     // the car's WASM decoder, which is worth a chunk of bitrate at the same picture.
-    for (const [label, codec] of [['우리 스트림 (Baseline)', 'avc1.42C01F'], ['High 4.0', 'avc1.640028']] as const) {
+    //
+    // 그 다음 셋은 "H.264 말고 다른 코덱으로 갈 수 있나"의 차 쪽 절반이다(폰 쪽 절반은 /api/status.encoders).
+    // HEVC Main 4.0 · AV1 Main 4.0 8-bit · VP9 profile 0 — 같은 화질에 비트를 30~40% 덜 쓰고, 그만큼 IDR 도
+    // 작아진다(실차 #76 의 575 KB 가 이 프로젝트의 병목이었다). 크로미엄은 AV1 소프트 디코더(dav1d)를 늘 품고
+    // 있어서 av01 의 no-preference 는 거의 항상 O 다 — 뜻이 있는 칸은 **prefer-hardware** 쪽이다.
+    // 여기서 O 가 나와도 파이프라인은 아직 H.264 뿐이다(paths.ts 의 주석이 할 일 목록).
+    const CODECS = [
+      ['우리 스트림 (Baseline)', 'avc1.42C01F'],
+      ['High 4.0', 'avc1.640028'],
+      ['HEVC Main 4.0', 'hvc1.1.6.L120.B0'],
+      ['AV1 Main 4.0', 'av01.0.08M.08'],
+      ['VP9 profile 0', 'vp09.00.40.08'],
+    ] as const;
+    for (const [label, codec] of CODECS) {
       for (const hw of ['no-preference', 'prefer-hardware'] as const) {
         const key = `${label} / ${hw}`;
         try {
@@ -336,6 +370,115 @@ async function addressProbe(): Promise<void> {
   (window as any).__diag.addresses = result;
 }
 
+/**
+ * WebRTC 가능성 조사. 결론만 말하면 되므로 한 방향, 한 트랙, 4 초다. 전부 시간 상한이 있다 — 차에서 이
+ * 페이지가 "측정 중…"에 멈추는 것이 최악이다. H.264 를 먼저 청하는 이유: 폰이 지금 만드는 것이 그것이라,
+ * 만약 WebRTC 로 간다면 재인코딩 없이 그대로 실을 수 있는지가 첫 질문이기 때문이다.
+ */
+const RTC_MS = 4000;
+async function webrtcProbe(): Promise<void> {
+  const table = $('rtc');
+  const note = $('rtc-note');
+  const PC = (window as any).RTCPeerConnection as typeof RTCPeerConnection | undefined;
+  const r: NonNullable<Report['webrtc']> = {
+    present: typeof PC === 'function', codecs: [], loopback: '', framesDecoded: 0, codec: '', decoder: '', powerEfficient: null, dataChannel: false, ms: 0,
+  };
+  const finish = (): void => {
+    row(table, '루프백', r.loopback === 'ok' ? `O (${r.framesDecoded}f, ${r.codec || '?'}, ${r.decoder || '?'}${r.powerEfficient === true ? ', 저전력' : ''}, ${r.ms}ms)` : `X ${r.loopback}`);
+    row(table, '데이터 채널', r.dataChannel);
+    note.textContent = r.present
+      ? '같은 페이지 안에서 보내고 받아 본 것이다. O 는 "이 브라우저에서 WebRTC 가 성립한다"까지이고, 폰 쪽 스택은 아직 없다.'
+      : 'RTCPeerConnection 이 없다 — 이 브라우저에서 WebRTC 는 길이 아니다.';
+    report.webrtc = r;
+    (window as any).__diag.webrtc = r;
+    log(`webrtc probe ${JSON.stringify(r)}`);
+  };
+  row(table, 'RTCPeerConnection', r.present);
+  if (!PC) { r.loopback = 'RTCPeerConnection 없음'; finish(); return; }
+  try {
+    const caps = (window as any).RTCRtpReceiver?.getCapabilities?.('video') as RTCRtpCapabilities | null | undefined;
+    const seen = new Set<string>();
+    for (const c of caps?.codecs ?? []) {
+      const name = c.mimeType.replace(/^video\//i, '');
+      if (/^(rtx|red|ulpfec|flexfec-03)$/i.test(name)) continue;
+      const profile = /profile-level-id=([0-9a-f]+)/i.exec(c.sdpFmtpLine ?? '')?.[1] ?? /profile=(\d+)/.exec(c.sdpFmtpLine ?? '')?.[1];
+      seen.add(profile ? `${name} ${profile}` : name);
+    }
+    r.codecs = [...seen];
+  } catch (e) { r.codecs = [`getCapabilities 실패: ${String(e)}`]; }
+  row(table, '수신 코덱', r.codecs.join(', ') || '-');
+
+  const t0 = performance.now();
+  const canvas = document.createElement('canvas');
+  canvas.width = 320; canvas.height = 180;
+  const ctx = canvas.getContext('2d');
+  let hue = 0;
+  // 움직이는 그림이어야 프레임이 난다(정지 화면은 캡처도 인코더도 쉰다).
+  const paint = setInterval(() => { if (ctx) { hue = (hue + 37) % 360; ctx.fillStyle = `hsl(${hue} 80% 50%)`; ctx.fillRect(0, 0, 320, 180); } }, 33);
+  let pc1: RTCPeerConnection | null = null;
+  let pc2: RTCPeerConnection | null = null;
+  let video: HTMLVideoElement | null = null;
+  try {
+    const stream = (canvas as any).captureStream?.(30) as MediaStream | undefined;
+    const track = stream?.getVideoTracks()[0];
+    if (!stream || !track) { r.loopback = 'canvas.captureStream 없음'; finish(); return; }
+    pc1 = new PC(); pc2 = new PC();
+    const a = pc1, b = pc2;
+    a.onicecandidate = (e) => { if (e.candidate) void b.addIceCandidate(e.candidate).catch(() => { /* 늦게 온 후보 */ }); };
+    b.onicecandidate = (e) => { if (e.candidate) void a.addIceCandidate(e.candidate).catch(() => { /* 늦게 온 후보 */ }); };
+    const dc = a.createDataChannel('probe');
+    dc.onopen = () => { r.dataChannel = true; };
+    const tx = a.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
+    try {
+      const send = (window as any).RTCRtpSender?.getCapabilities?.('video') as RTCRtpCapabilities | null | undefined;
+      const codecs = send?.codecs ?? [];
+      const h264 = codecs.filter((c) => /h264/i.test(c.mimeType));
+      if (h264.length && typeof (tx as any).setCodecPreferences === 'function') {
+        (tx as any).setCodecPreferences([...h264, ...codecs.filter((c) => !/h264/i.test(c.mimeType))]);
+      }
+    } catch { /* 취향일 뿐이다 — 안 받아 주면 브라우저 기본 순서로 간다 */ }
+    const gotTrack = new Promise<MediaStream | null>((res) => { b.ontrack = (e) => res(e.streams[0] ?? new MediaStream([e.track])); });
+    const offer = await a.createOffer();
+    await a.setLocalDescription(offer);
+    await b.setRemoteDescription(offer);
+    const answer = await b.createAnswer();
+    await b.setLocalDescription(answer);
+    await a.setRemoteDescription(answer);
+    const remote = await Promise.race([gotTrack, sleep(RTC_MS).then(() => null)]);
+    if (!remote) { r.loopback = `${RTC_MS}ms 안에 트랙이 안 옴`; finish(); return; }
+    // 싱크가 있어야 크로미엄이 디코드한다. 화면 밖에 두는 게 아니라 작게 보이게 둔다 — 보이지 않는 요소는 재생을 멈출 수 있다.
+    video = document.createElement('video');
+    video.muted = true; video.autoplay = true; (video as any).playsInline = true;
+    video.style.cssText = 'width:64px;height:36px;background:#000';
+    video.srcObject = remote;
+    table.parentElement?.append(video);
+    void video.play().catch(() => { /* 자동재생 제한이면 getStats 가 0f 로 말해 준다 */ });
+    await sleep(RTC_MS);
+    const stats = await b.getStats();
+    let codecId = '';
+    stats.forEach((st: any) => {
+      if (st.type === 'inbound-rtp' && (st.kind === 'video' || st.mediaType === 'video')) {
+        r.framesDecoded = Number(st.framesDecoded ?? 0);
+        r.decoder = String(st.decoderImplementation ?? '');
+        r.powerEfficient = typeof st.powerEfficientDecoder === 'boolean' ? st.powerEfficientDecoder : null;
+        codecId = String(st.codecId ?? '');
+      }
+    });
+    const codec: any = codecId ? stats.get(codecId) : null;
+    r.codec = String(codec?.mimeType ?? '').replace(/^video\//i, '');
+    r.ms = Math.round(performance.now() - t0);
+    r.loopback = r.framesDecoded > 0 ? 'ok' : 'no frames';
+  } catch (e) {
+    r.loopback = `실패: ${String(e)}`;
+  } finally {
+    clearInterval(paint);
+    try { pc1?.close(); } catch { /* 이미 닫힘 */ }
+    try { pc2?.close(); } catch { /* 이미 닫힘 */ }
+    try { video?.remove(); } catch { /* 없음 */ }
+  }
+  finish();
+}
+
 function summarize(): string {
   const v = report.video;
   const w = report.ws;
@@ -350,6 +493,8 @@ function summarize(): string {
     `private-ip blocked=${blocked} reachable=${reachable}`,
     // Reading a report later, "WebCodecs X" is worthless without knowing where it was asked.
     report.secure ? `secure=${report.secure.isSecureContext ? 'O' : 'X'} webcodecs=${report.secure.videoDecoder ? 'O' : 'X'}` : '',
+    // 가능성 조사 한 칸: WebRTC 가 이 브라우저에서 돌았는가, 돌았다면 무엇으로 풀었는가.
+    report.webrtc ? `webrtc=${report.webrtc.loopback === 'ok' ? `O ${report.webrtc.codec || '?'}/${report.webrtc.decoder || '?'}` : `X ${report.webrtc.loopback}`}` : '',
   ].filter(Boolean).join(', ');
 }
 
@@ -378,7 +523,7 @@ async function submit(): Promise<void> {
 }
 
 (window as any).__diag = { done: false };
-// Worst case of the probes above: WS 20×3s + video 5+3+5s + addresses 4×4s ≈ 90s. Past that,
+// Worst case of the probes above: WS 20×3s + video 5+3+5s + addresses 4×4s + webrtc 4+4s ≈ 100s. Past that,
 // something is wedged; save what we have rather than sit on "측정 중…" forever.
 const WATCHDOG_MS = 120_000;
 async function step(name: string, fn: () => Promise<void>): Promise<void> {
@@ -393,6 +538,7 @@ async function step(name: string, fn: () => Promise<void>): Promise<void> {
   await step('ws probe', wsProbe);
   await step('video probe', videoProbe);
   await step('address probe', addressProbe);
+  await step('webrtc probe', webrtcProbe);
   clearTimeout(watchdog);
   await submit();
   (window as any).__diag.done = true;

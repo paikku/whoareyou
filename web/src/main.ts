@@ -728,12 +728,15 @@ const PERF_SAMPLE_MS = 10_000;
 const PERF_KEEP = 360; // 10초 × 360 = 한 시간
 interface PerfSample {
   t: number; fps: number; lagMs: number; dropped: number; backlog: number; rttMs: number; skipped: number;
+  /** 밀린 채 왔지만 버리지 않고 푼 수(webcodecs, `RendererStats.late`). 드롭 0 에 이것이 크면 링크가 끊겼다 이어진 것이다. */
+  late: number;
   /** 그 10 초 동안 실제로 받은 kbps, 키프레임 수, 가장 큰 키프레임(바이트), 그때의 비트레이트 목표(kbps). */
   kbps: number; keys: number; keyBytes: number; targetKbps: number;
 }
 const perf: PerfSample[] = [];
 let perfFrames = 0;
 let perfDropped = 0;
+let perfLate = 0;
 let perfBytes = 0;
 let perfKeys = 0;
 let perfAt = Date.now();
@@ -752,6 +755,7 @@ setInterval(() => {
     backlog: s.backlog ?? 0,
     rttMs,
     skipped: s.skipped ?? 0,
+    late: (s.late ?? 0) - perfLate,
     kbps: secs > 0 ? Math.round((rxBytes - perfBytes) * 8 / secs / 1000) : 0,
     keys: keyframesSeen - perfKeys,
     keyBytes: winKeyBytes,
@@ -759,6 +763,7 @@ setInterval(() => {
   });
   perfFrames = s.framesDecoded;
   perfDropped = s.droppedFrames;
+  perfLate = s.late ?? 0;
   perfBytes = rxBytes;
   perfKeys = keyframesSeen;
   winKeyBytes = 0;
@@ -795,6 +800,35 @@ qualityAuto.addEventListener('change', () => {
   autoQuality = qualityAuto.checked;
   try { localStorage.setItem('carcast.autoQuality', autoQuality ? '1' : '0'); } catch { /* 저장소 없음 */ }
 });
+
+// 인트라 리프레시(실험). 폰의 `intra_refresh=N` 은 IDR 한 장 대신 I-매크로블록을 N 프레임에 나눠 싣는다 —
+// 키프레임 버스트(1080p 에서 260~575 KB, 실차 #76)가 링크를 반 초 막는 것을 없애는 손잡이인데, 지금까지는
+// 노트북의 curl 로만 켤 수 있어서 실차에서 한 번도 못 돌았다. 여기서 켜고 끄면 폰이 encoder.conf 에 남긴다.
+// 켠 뒤에도 차가 부탁한 키프레임(kind 4)에는 IDR 이 온다 — 그것이 얼마나 자주 오는지가 곧 이 손잡이의 성적이다.
+const qualityIntra = $<HTMLInputElement>('quality-intra');
+const INTRA_REFRESH_FRAMES = 30;
+qualityIntra.addEventListener('change', () => { void applyIntraRefresh(qualityIntra.checked); });
+async function applyIntraRefresh(on: boolean): Promise<boolean> {
+  const n = on ? INTRA_REFRESH_FRAMES : 0;
+  try {
+    const r = await (await fetch(`/api/encoder?intra_refresh=${n}`, { method: 'POST' })).json();
+    if (!r.ok) {
+      notice(`인트라 리프레시 변경 실패: ${r.error ?? '?'}`, 6000);
+      note(`encoder intra_refresh=${n} failed: ${r.error}`);
+      renderQuality(); // 체크 상태를 폰이 말한 값으로 되돌린다
+      return false;
+    }
+    note(`encoder intra_refresh=${n}${r.rebuilt === false ? ' (그대로)' : ''}`);
+    notice(on ? `인트라 리프레시 켬 (${INTRA_REFRESH_FRAMES} 프레임)` : '인트라 리프레시 끔 (키프레임)');
+    if (lastStatus) lastStatus.intraRefresh = typeof r.intraRefresh === 'number' ? r.intraRefresh : n;
+    renderQuality();
+    return true;
+  } catch (e) {
+    notice(`인트라 리프레시 요청 실패: ${String(e)}`, 6000);
+    renderQuality();
+    return false;
+  }
+}
 
 /** 지금 폰이 도는 설정에 맞는 프리셋, 없으면 null (PC 명령으로 띄운 별난 설정). */
 function currentPreset(): Preset | null {
@@ -858,6 +892,10 @@ function renderQuality(): void {
     ? `지금: ${st.width}x${st.height} ${st.maxFps ?? '?'}fps ${st.bitRate ? Math.round(st.bitRate / 1000) + 'k' : ''}${cur ? '' : ' (프리셋 아님)'}`
     : '지금: 폰 응답 대기';
   for (const el of qualityGrid.querySelectorAll<HTMLElement>('.tile')) el.classList.toggle('held', el.dataset.preset === cur?.id);
+  // 폰이 말해 주는 값이 곧 체크 상태다. 말해 주지 않으면(클립 소스, 옛 서버) 손잡이를 잠근다 — 없는 것을 켜는 척하지 않는다.
+  const intra = typeof st?.intraRefresh === 'number' ? st.intraRefresh : null;
+  qualityIntra.disabled = intra === null;
+  qualityIntra.checked = (intra ?? 0) > 0;
 }
 
 function openQuality(): void {
@@ -932,6 +970,7 @@ let abrDisabled = '';
 /** 테스트가 표본을 직접 넣는 동안 자기 시계로는 돌지 않는다. */
 let abrManual = false;
 let abrDropped = 0;
+let abrLate = 0;
 let abrBusy = false;
 let abrSentAt = 0;
 const abrActive = (): boolean => !abrDisabled && lastStatus?.bitrateLive === true && abr.nominal > 0;
@@ -982,8 +1021,11 @@ async function abrTick(sample: AbrSample): Promise<AbrAction | null> {
 setInterval(() => {
   if (abrManual || !started) return;
   const s = renderer.stats();
-  const dropped = Math.max(0, s.droppedFrames - abrDropped);
+  // 늦게 온 것(버리지 않고 푼 것)도 드롭과 같은 신호다: 한꺼번에 왔다는 것은 그 앞에서 링크가 막혔다는 뜻이다.
+  // 하드웨어 경로는 이제 버리지 않으므로(webcodecs.ts MAX_BACKLOG) 이것이 없으면 abr 은 rtt 만 보게 된다.
+  const dropped = Math.max(0, s.droppedFrames - abrDropped) + Math.max(0, (s.late ?? 0) - abrLate);
   abrDropped = s.droppedFrames;
+  abrLate = s.late ?? 0;
   void abrTick({ nowMs: Date.now(), rttMs, dropped, backlog: s.backlog ?? 0 });
 }, 2000);
 
@@ -1229,6 +1271,7 @@ const stats = () => ({
   stats, start, events, perf,
   restartVideo: () => videoWs.restart(),
   requestKeyframe: () => requestKeyframe('test'),
+  applyIntraRefresh,
   // 화질·지연 측정을 테스트에서 몰기 위한 고리. feedLuma 는 디코더 대신 밝기를 넣어 준다(가짜 폰은 그림을 못 뒤집는다).
   applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
   choosePath: (id: string | null) => choosePath(id ? (PATHS.find((x) => x.id === id) ?? null) : null),
@@ -1248,6 +1291,7 @@ setInterval(() => {
     s.videoWs.connects > 1 ? `↻${s.videoWs.connects - 1}` : '',
     s.recoveries ? `복구${s.recoveries}` : '',
     s.droppedFrames ? `드롭${s.droppedFrames}` : '',
+    s.late ? `늦음${s.late}` : '',
     s.appOnPhone ? '📱폰이 앱을 가져감' : '',
     s.idleMs > 1500 ? `폰 무응답 ${Math.round(s.idleMs / 1000)}s` : '',
     s.lastError ? `err ${s.lastError}` : '',
@@ -1271,7 +1315,7 @@ $('btn-save').addEventListener('click', async () => {
   const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
   const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
   const e2e = s.latencyProbe && s.latencyProbe.n ? ` 끝까지${s.latencyProbe.medianMs}ms` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.late ? ` 늦음${s.late}` : ''}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
   // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는

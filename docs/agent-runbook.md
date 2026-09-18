@@ -166,6 +166,20 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
 - 검사: A `quality.spec`("링크가 막히면…"), A+ `09-encoder`("비트레이트만 바꾸면…", "인트라 리프레시를 켰다 끌 수 있다")
 - **폰의 소켓 큐(`videoClientStats.queued`)가 0 이라고 링크가 멀쩡한 것은 아니다.** 커널 송신 버퍼가 그 앞에 있다.
   64 KB 로 줄여 두었지만(`StreamSession.VIDEO_SEND_BUFFER_BYTES`) 링크가 막혔는지는 차의 rtt 가 먼저 안다
+- **하드웨어 경로는 밀린 프레임을 버리지 않는다** (`web/src/renderer/webcodecs.ts`, 2026-09-18). 예전에는 8 장 넘게
+  밀리면 P 프레임을 키프레임까지 버리고 IDR 을 부탁했는데, 그것이 되먹임의 첫 고리였다(10 초 GOP 의 IDR 이
+  링크를 200 ms 막으면 그 뒤 12 장이 한꺼번에 와 문턱을 넘겼다 → IDR 요청 → 575 KB → 다시). 하드웨어 디코더는
+  한 장에 1.1 ms 라 30 장이 밀려도 50 ms 면 따라잡으므로 그냥 푼다. 그 수는 `RendererStats.late`(상태줄 `늦음N`,
+  perf 의 `late`)로 남고 abr 에는 드롭과 같은 신호로 들어간다. 키프레임 요청은 새 디코더·디코드 오류·30 장 넘는
+  적체(무언가 잘못된 것)·2 초 스톨에서만 나간다. 소프트 디코더(h264.ts)는 CPU 가 바닥이라 예전 규칙 그대로다
+- **인트라 리프레시는 화질 시트에서 켠다** ("키프레임 대신 인트라 리프레시", `POST /api/encoder?intra_refresh=30|0`).
+  폰이 `intraRefresh` 를 말해 줄 때만 살아 있고, 선택은 encoder.conf 에 남는다. 켠 뒤에도 차가 부탁한 키프레임에는
+  IDR 이 온다 — 그 횟수(`keyframeRequests`)가 곧 이 손잡이의 성적이다. 실차 기록은 아직 없다(열린 질문 15)
+- **다른 코덱·다른 전송으로 갈 수 있는지는 프로브가 답한다.** 차 쪽: https 의 `/diag` 가 HEVC Main·AV1 Main·VP9 를
+  `isConfigSupported`(prefer-hardware) 로 묻고(`secure.configs`), 같은 페이지 안에서 WebRTC 루프백(pc1 → pc2, 캔버스
+  트랙, H.264 우선)을 돌려 협상 코덱·`decoderImplementation`·데이터 채널을 적는다(`webrtc`). 폰 쪽: `/api/status.encoders`
+  가 avc·hevc·av1·vp9 인코더 이름을 하드웨어 먼저 나열한다. **둘 다 조사일 뿐 파이프라인은 H.264/WebSocket 그대로다** —
+  다음 단계로 가려면 `web/src/paths.ts` 주석의 할 일 목록(폰 쪽 절반)이 필요하다
 
 ## 4. 새 상황을 추가하는 법
 

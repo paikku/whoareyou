@@ -54,6 +54,9 @@
     </div>
     <div id="quality-grid" class="grid"></div>
     <label class="sheet-row"><input id="quality-auto" type="checkbox"> 차가 못 따라오면 자동으로 한 단계 내리기</label>
+    <!-- 실험용 손잡이: 키프레임(IDR) 한 장 대신 I-매크로블록을 30 프레임에 나눠 싣는다. IDR 버스트가 링크를 막는 차에서
+         켜 보고, 리포트의 keyBytes·드롭이 어떻게 달라지는지 본다(car-tests/model-y §11). 폰이 그 값을 말해 줄 때만 산다. -->
+    <label class="sheet-row"><input id="quality-intra" type="checkbox"> 키프레임 대신 인트라 리프레시 (실험 · IDR 버스트 없애기)</label>
     <div class="sheet-row">
       <button id="quality-probe" class="state-action">끝에서 끝까지 지연 측정 (10회)</button>
       <span id="quality-result" class="sheet-note"></span>

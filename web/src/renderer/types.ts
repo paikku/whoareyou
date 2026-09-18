@@ -14,6 +14,12 @@ export interface RendererStats {
   backlog?: number;
   /** rAF 에 맞춰 그리면서 건너뛴 그림의 수(한 vsync 에 두 장이 왔을 때). h264 렌더러만 낸다. */
   skipped?: number;
+  /**
+   * 밀린 채(적체 8 초과) 도착했지만 **버리지 않고 푼** 프레임의 수. webcodecs 렌더러만 낸다 — 하드웨어
+   * 디코더는 밀린 것을 따라잡을 수 있으므로 버리지 않고, 대신 "한꺼번에 왔다"를 이 수로 남긴다. 링크가
+   * 잠깐 막혔다는 신호라 abr 이 드롭과 같이 읽는다(main.ts).
+   */
+  late?: number;
   /** 워커가 OffscreenCanvas 에 직접 그리는가. h264 렌더러만 낸다. */
   offscreen?: boolean;
   /**

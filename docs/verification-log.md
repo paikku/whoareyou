@@ -546,6 +546,24 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
    디코더뿐이고 1080p60 은 이 차의 천장 위로 확정된다. 절차: testing-guide §C 4b.
 14. **하드웨어 경로의 끝에서 끝까지 지연이 인코더 5 ms 만큼 줄었는가 (C):** 12 와 같은 측정. 720p30 43 ms 가
    38 안팎이어야 한다.
+15. **차 쪽 되먹임을 끊은 것이 실차에서 보이는가 (C):** 2026-09-18 의 리포트 재검토 결론은 "병목은 인코더 속도가
+   아니라 IDR 크기 × TCP 링크 × 차의 버리기 규칙" 이었다(car-tests/model-y §9·§11). 그래서 하드웨어 경로는 밀린
+   프레임을 버리지 않고 푼다(`webcodecs.ts`, `late` 로 센다). 볼 것: 1080p60 에서 `droppedFrames` 가 0 에 가깝고
+   `late` 가 대신 찍히는지, `keyframeRequests` 가 GOP 당 한 번 미만인지, 그래도 무너지면 그때의 `backlog` (30 을
+   넘겨야 예전 규칙이 켜진다). 같은 세션에서 화질 시트의 **인트라 리프레시** 토글을 켜고 1 분: `keys`·`keyBytes` 가
+   P 프레임 크기로 내려오는지, 벤더가 그 키를 받았는지(`encoderProfile`). 절차: testing-guide §C 4b.
+16. **HEVC·AV1 로 갈 수 있는가 — 양쪽 절반 (C + B):** https `/diag` 의 "하드웨어 디코더" 표에 HEVC Main 4.0·AV1
+   Main 4.0·VP9 의 `prefer-hardware` 줄이 실린다(no-preference 의 AV1 은 크로미엄의 dav1d 라 늘 O — 뜻이 없다).
+   폰 쪽은 `/api/status.encoders` (S26U 의 `c2.qti.hevc.encoder`·`c2.qti.av1.encoder` 가 있는지). 둘 다 O 여야
+   비로소 "코덱 교체" 가 선택지가 되고, 그래도 얻는 것은 같은 화질에 비트 30~40% 이지 되먹임 구조의 변화가
+   아니다. 인코더 지연은 폰만으로 잰다(`timing.encodeMs`, AV1 하드웨어 인코더는 파이프라인이 더 깊을 수 있다).
+   파이프라인 쪽 할 일은 `web/src/paths.ts` 주석.
+17. **WebRTC 가 이 차의 브라우저에서 성립하는가 (C):** 같은 `/diag` 의 "WebRTC" 표. 평문에서도 되는 유일한
+   하드웨어 디코드 길이고 TCP 머리막힘을 벗어나는 유일한 전송이라, 1·2·15 가 실패했을 때의 다음 카드다.
+   볼 것: 루프백 O/X, 협상 코덱(H.264 가 되는가 — 되면 재인코딩 없이 그대로 실을 수 있다), `decoderImplementation`
+   (ExternalDecoder 류면 하드웨어, FFmpeg/libvpx/dav1d 면 소프트웨어), 데이터 채널. PC(Chrome 148)에서는
+   H264 루프백 120f/4s, 데이터 채널 O 였다(`tests/e2e/tests/diag.spec.ts`). 폰 쪽 스택(ICE·DTLS·SRTP)은 없다 —
+   O 가 나와도 그것을 세우는 일이 남는다.
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
 ---

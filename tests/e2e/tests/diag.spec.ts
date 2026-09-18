@@ -34,6 +34,13 @@ test('diag page reports environment, API support, WS success and decode', async 
 
   // The page pushed everything it measured to the phone, and the phone lists it back.
   expect(diag.report.ok, JSON.stringify(diag.report)).toBe(true);
+  // WebRTC 가능성 조사: 같은 엔진(Chrome 148)이라 여기서는 루프백이 서야 한다. 차에서 X 가 나오면 그것이 답이다.
+  // 코덱·디코더 이름은 이 PC 의 사정이라 단언하지 않고 기록만 한다.
+  expect(diag.webrtc, 'webrtc 프로브 결과가 없다').toBeTruthy();
+  expect(diag.webrtc.present).toBe(true);
+  expect(diag.webrtc.loopback, JSON.stringify(diag.webrtc)).toBe('ok');
+  expect(diag.webrtc.dataChannel).toBe(true);
+  console.log('webrtc here:', diag.webrtc);
   await expect(page.locator('#report-result')).toContainText('저장됨');
   await expect(page.locator('#summary')).toContainText(teslaToken ? 'Tesla 2026.26' : 'X11 Linux x86_64 Chrome/148 (no Tesla/ token)');
   const reports = await page.evaluate(async () => (await fetch('/api/reports')).json());

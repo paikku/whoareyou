@@ -102,6 +102,8 @@ const server = createServer((req, res) => {
     const enc = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, nominal: 4_000_000, encoderRestarts: 0, bitrateChanges: 0 };
     res.end(JSON.stringify({
       type: 'status', running: true, source: 'fake', width: enc.width, height: enc.height, maxFps: enc.fps, bitRate: enc.bitrate, encoderRestarts: enc.encoderRestarts, addresses: ADDRESSES,
+      // 실제 서버처럼 인트라 리프레시(프레임 수, 0 = IDR)를 말한다 — 차의 시트가 이 값으로 토글을 그린다.
+      intraRefresh: enc.intraRefresh ?? 0,
       // 실제 서버처럼: 비트레이트만 바꾸는 요청은 인코더를 다시 세우지 않고 받는다(DisplayVideoSource.reconfigure).
       bitrateLive: true, nominalBitRate: enc.nominal, bitrateChanges: enc.bitrateChanges,
       reports: reports.length, lastReport: last ? { id: last.id, receivedAt: last.receivedAt, remote: last.remote, summary: last.summary } : null,
@@ -203,8 +205,9 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: `bad encoder settings ${w}x${h} ${fps}fps ${bitrate}` }));
         return;
       }
+      const intraRefresh = n('intra_refresh') ?? (url.searchParams.has('intra_refresh') ? 0 : state.encoder.intraRefresh ?? 0);
       state.encoder = rebuilt
-        ? { width: w, height: h, fps, bitrate, nominal: bitrate, encoderRestarts: state.encoder.encoderRestarts + 1, bitrateChanges: state.encoder.bitrateChanges }
+        ? { width: w, height: h, fps, bitrate, nominal: bitrate, intraRefresh, encoderRestarts: state.encoder.encoderRestarts + 1, bitrateChanges: state.encoder.bitrateChanges }
         : { ...state.encoder, bitrate, bitrateChanges: state.encoder.bitrateChanges + (bitrate !== state.encoder.bitrate ? 1 : 0) };
       state.encoderPosts = (state.encoderPosts ?? 0) + 1;
     }

@@ -25,7 +25,9 @@
 // **한 벌이 아직 덮지 못하는 것:** `encoder.codec` 은 지금 전부 'avc' 다. HEVC·AV1 을 더하려면 여기에
 // 값을 늘리는 것만으로는 안 되고 폰 쪽 절반도 같이 열어야 한다 — `DisplayVideoSource.reconfigure` 가
 // 코덱을 받고, `H264Encoder` 자리에 그 코덱의 인코더가 서고, `/api/encoder` 가 그것을 통과시켜야 한다.
-// 그 자리를 이름으로 남겨 둔 것이고, 그날 이 주석이 할 일 목록이 된다.
+// 그 자리를 이름으로 남겨 둔 것이고, 그날 이 주석이 할 일 목록이 된다. 그날이 올 만한지는 프로브가 먼저
+// 답한다 — 차 쪽은 https 의 /diag(HEVC·AV1·VP9 의 prefer-hardware, diag.ts codecProbe), 폰 쪽은
+// /api/status.encoders(Encoders.java). 둘 다 O 여야 비로소 선택지다.
 import type { Renderer } from './renderer/types';
 import { H264Renderer, h264Supported } from './renderer/h264';
 import { WebCodecsRenderer, webcodecsSupported } from './renderer/webcodecs';

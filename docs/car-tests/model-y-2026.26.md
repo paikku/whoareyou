@@ -455,3 +455,8 @@ t=45~105: fps 30(유튜브 원본 fps), lag 1~2 ms, 드롭 0, rtt 11~15, 실제 
 ① 새 빌드로 1080p60 을 다시: `keyBytes` 가 100 KB 안팎으로 내려왔는지가 첫 질문이고, 그 뒤에 무너지는지가
 둘째다. 무너지면 이번에는 rtt 와 keyBytes 가 둘 다 낮은 채일 것이고, 그러면 남는 것은 차의 디코더다.
 ② 키프레임 직후 화질 펄스가 눈에 띄는지(10 초마다). 띄면 `qp_i_max=32` 쪽으로, 안 띄면 그대로.
+③ **(2026-09-18 재검토 뒤 빌드)** 차 쪽 규칙이 바뀌었다 — 하드웨어 경로는 밀린 프레임을 버리지 않고 푼다.
+`droppedFrames` 대신 `late` 가 찍히는지, `keyframeRequests` 가 GOP 당 한 번 미만인지. 그리고 화질 시트의
+**인트라 리프레시** 토글을 켠 1 분: `keys`·`keyBytes`. (verification-log 열린 질문 15)
+④ https `/diag` 를 한 번 더: HEVC·AV1·VP9 의 prefer-hardware 줄과 WebRTC 루프백 표(열린 질문 16·17). 집에서
+`/api/status.encoders` 로 폰 쪽 절반을 맞춰 본다.

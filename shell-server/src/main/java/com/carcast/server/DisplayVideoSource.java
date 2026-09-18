@@ -531,6 +531,9 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("encoderRestarts", encoderRestarts);
         m.put("encoder", encoder != null ? encoder.name() : null);
         m.put("encoderProfile", encoder != null ? encoder.profileNote() : null);
+        // What else this phone could encode (HEVC, AV1 …), hardware first. The car's diag page answers the
+        // decoding half; together they say whether a codec other than H.264 is even on the table. See Encoders.
+        m.put("encoders", Encoders.list());
         // What was asked for. The car compares this with what its path wants (paths.ts encoder.profile) and
         // asks for a change only when they differ — without this field it never asks (main.ts askForProfile
         // treats a missing profile as "the phone does not say", which is right for the clip source).
