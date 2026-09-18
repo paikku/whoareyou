@@ -20,6 +20,10 @@ test('/api/encoder 로 fps 를 바꾸면 인코더가 다시 뜨고 프레임이
   assert.equal(s1.maxFps, 60);
   assert.equal(s1.encoderRestarts, (s0.encoderRestarts ?? 0) + 1);
   assert.equal(s1.source, 'display');
+  // 2초 안의 재요청은 거부된다 — 재빌드 직후에 바로 묻는다. 프레임을 기다린 뒤에 물으면 그 기다림이 2 초를
+  // 넘겨 잠금이 풀려 있을 수 있다(에뮬레이터 run #137 에서 그렇게 깨졌다).
+  const tooSoon = await api('/api/encoder?fps=30', { method: 'POST' });
+  assert.equal(tooSoon.ok, false, `2 초 안의 재요청이 받아들여졌다: ${JSON.stringify(tooSoon)}`);
 
   // 새 인코더가 실제로 프레임을 낸다(화면을 흔들어야 나온다).
   const stop = await wiggle();
@@ -33,9 +37,6 @@ test('/api/encoder 로 fps 를 바꾸면 인코더가 다시 뜨고 프레임이
   } finally {
     stop();
   }
-  // 2초 안의 재요청은 거부된다.
-  const tooSoon = await api('/api/encoder?fps=30', { method: 'POST' });
-  assert.equal(tooSoon.ok, false);
   await sleep(2100);
   const back = await api(`/api/encoder?fps=${before.fps}`, { method: 'POST' });
   assert.equal(back.ok, true, JSON.stringify(back));
@@ -79,6 +80,9 @@ test('지연 측정 액티비티가 차 화면에 뜨고, 앱 히스토리에는
   const self = apps.find?.((a) => a.package === 'com.carcast');
   assert.ok(!self || self.lastUsed === undefined, 'CarCast 자신이 히스토리에 올랐다');
   // 탭하면 화면이 뒤집힌다 — 여기서는 주입이 실패하지 않는 것까지만 본다(밝기는 브라우저 쪽 몫).
+  // task 가 목록에 오른 것과 창이 입력을 받을 준비가 된 것은 다르다: 창이 서기 전의 주입은 거부되어 injectFailed 만
+  // 올린다(에뮬레이터 run #137, 앞 검사가 디스플레이 크기를 되돌린 직후). 잠깐 자리잡게 둔다.
+  await sleep(1000);
   const c = await control();
   try {
     const before = (await status()).injected;
