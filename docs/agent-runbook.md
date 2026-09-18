@@ -213,3 +213,30 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
 | `adb shell "... &"` 가 안 돌아옴 | stdin 까지 `/dev/null` 로 떼야 한다(`vphone.sh start_server`) |
 | 차 화면 버튼이 안 눌림 | 스테이지 위 UI 는 `data-ui` 를 달아야 한다. 안 그러면 `setPointerCapture` 가 클릭을 삼킨다 |
 | 실차에서만 나는 증상 | 차에서 디버깅하지 않는다. 💾 로 세션 리포트를 남기고, 그 `events` 를 집에서 재현한다 |
+| **CI 워크플로가 2 초 만에 러너 없이 실패, 로그 404** | GitHub Actions 쪽(결제 한도·러너)이다. 코드 탓이 아니니 아래 "컨테이너에서 APK 만들기"로 간다 |
+| Gradle 이 Maven Central 에서 `429 Too Many Requests` | 프록시가 제한에 걸린 것. `~/.gradle/init.d/central-mirror.gradle` 로 `repo.maven.apache.org` 를 `maven-central.storage-download.googleapis.com/maven2/` 로 바꿔 준다(아래) |
+| Kotlin `Daemon compilation failed: null` | 컨테이너에서 데몬이 죽는 것. `-Pkotlin.compiler.execution.strategy=in-process` |
+
+**컨테이너에서 APK 만들기 (CI 가 막혔을 때, 2026-09-18 실측):**
+
+```bash
+mkdir -p /opt/android-sdk/cmdline-tools && cd /opt/android-sdk/cmdline-tools \
+  && curl -sSL -o t.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+  && unzip -q t.zip && rm t.zip && mv cmdline-tools latest
+export ANDROID_HOME=/opt/android-sdk
+yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+echo "sdk.dir=/opt/android-sdk" > local.properties        # gitignore 됨
+mkdir -p ~/.gradle/init.d && cat > ~/.gradle/init.d/central-mirror.gradle <<'G'
+def mirror = { h -> h.withType(MavenArtifactRepository).configureEach { r ->
+  if (r.url.toString().startsWith('https://repo.maven.apache.org/maven2')) r.url = 'https://maven-central.storage-download.googleapis.com/maven2/' } }
+settingsEvaluated { s -> mirror(s.pluginManagement.repositories); mirror(s.dependencyResolutionManagement.repositories); mirror(s.buildscript.repositories) }
+allprojects { mirror(repositories); mirror(buildscript.repositories) }
+G
+./gradlew :core:test :mux:test :app:testDebugUnitTest :adb:testDebugUnitTest :shell-server:testDebugUnitTest -q -Pkotlin.compiler.execution.strategy=in-process
+./gradlew :app:assembleDebug -q -Pkotlin.compiler.execution.strategy=in-process
+cp app/build/outputs/apk/debug/app-debug.apk out/carcast-debug-$(git rev-parse --short HEAD).apk
+```
+
+**커밋한 뒤에 빌드한다** — 빌드 id(`/api/status.build`, 앱 화면의 `빌드 …`)가 빌드 시점의 HEAD 라서, 먼저 만들고
+커밋하면 APK 가 한 커밋 전의 이름을 단다. 서명은 저장소의 debug keystore 라 CI 가 만든 APK 위에 그대로 덮인다.

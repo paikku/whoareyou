@@ -123,7 +123,7 @@ docs/             implementation-proposal.md, dev-plan.md(이 문서), car-tests
 ### M4. scrcpy 포크: VD 영상을 앱으로 → 브라우저로 [세션 → 폰 → 차]
 - **구현됨, 폰 검증 완료(2026-09-05, 핫스팟 노트북에서 라이브 영상·유튜브 실행):** `shell-server`에 scrcpy v4.1의 `Workarounds, FakeContext, AndroidVersions, wrappers/*(ServiceManager, DisplayManager, WindowManager, ActivityManager, InputManager …), util/{Ln,Command,IO,Settings}, model/Size, display/DisplayInfo, video/VideoConstraints`와
   aidl `IDisplayWindowListener`, `IOnPrimaryClipChangedListener`, 스텁 `android.content.IContentProvider`를 **원본 패키지 그대로** 복사(Apache-2.0, `docs/LICENSES/scrcpy-LICENSE.txt`).
-  자체 코드: `DisplayCapture`(NewDisplayCapture의 플래그 그대로 TRUSTED VD 생성, IME 로컬), `H264Encoder`(SurfaceEncoder 설정: LATENCY 1, REPEAT 100ms, GOP 10s(차가 키프레임을 요청할 수 있게 된 뒤 2s 에서 늘림), CBR, Constrained Baseline 요청),
+  자체 코드: `DisplayCapture`(NewDisplayCapture의 플래그 그대로 TRUSTED VD 생성, IME 로컬), `H264Encoder`(SurfaceEncoder 설정: LATENCY 1, REPEAT 100ms, GOP 10s(차가 키프레임을 요청할 수 있게 된 뒤 2s 에서 늘림), CBR, 프로파일은 차의 경로가 정함(Baseline/High, 2026-09-18 부터 encoder.conf 에 저장), OPERATING_RATE 240 + 퀄컴 저지연 키(2026-09-18, encodeMs 14 → 8ms), I 프레임 QP 상한 28(IDR 크기 상한, 실차 #76), 비트레이트는 재빌드 없이 라이브 변경),
   `DisplayVideoSource`(core `VideoSource` 구현, `am start --display N`으로 앱 실행), core `EncodedH264Sink`(Annex-B → `Fmp4Writer` → `MediaHub`, 클립으로 단위 테스트).
   서버 옵션 `display=1280x720/160 bitrate=4000000 fps=30 decorations=false app=<pkg> source=clip`. `POST /api/app?name=`으로 실행 중 앱 전환, 웹 하단 바 ▶ 버튼.
   VD 생성 실패 시 자동으로 테스트 클립으로 대체(로그 `라이브 소스 실패`). 회전·크롭·리사이즈(OpenGL 경로)는 미이식 — 가로 고정 VD 전제.
