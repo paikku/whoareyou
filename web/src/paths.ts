@@ -1,9 +1,9 @@
 // 경로(path) 카탈로그 — "폰이 무엇으로 만들고, 차가 무엇으로 푸는가" 한 벌.
 //
 // 왜 이 파일이 생겼나: 기법 하나가 세 군데에 흩어져 있었다. 렌더러를 고르는 사슬(main.ts 의
-// pickRenderer), 폰에 요구할 인코더 프로파일(wantedProfile), 그리고 영상 소켓의 코덱 쿼리
-// (`?codec=mjpeg`). 여기에 사다리 천장까지 프리셋 쪽에 boolean 으로 박혀 있었다. 새 기법을 하나
-// 넣으려면 네 곳을 같이 고쳐야 했고, 그중 하나를 빠뜨리면 "고르면 화면이 멈추는 버튼"이 생긴다.
+// pickRenderer), 폰에 요구할 인코더 프로파일(wantedProfile), 그리고 프리셋 쪽에 boolean 으로 박힌
+// 사다리 천장. 새 기법을 하나 넣으려면 셋을 같이 고쳐야 했고, 그중 하나를 빠뜨리면 "고르면 화면이
+// 멈추는 버튼"이 생긴다.
 //
 // 그래서 한 벌을 한 줄로 적는다. **새 기법을 넣는 일 = 이 배열에 항목 하나 더하기.**
 //
@@ -11,18 +11,22 @@
 // H.264 인코더가 느린 구형 폰, 링크가 약한 자리 — 무엇이 맞는지는 그 사람의 조합이 정한다.
 // 자동 선택은 "아마 이게 제일 나을 것"이지 답이 아니므로, 고르는 길을 막지 않는다.
 //
+// 지금은 둘이다. <video>(MSE)와 낱장 그림(MJPEG)은 2026-09-18 에 뺐다 — MSE 는 지연이 10 배이고
+// 기어가 P 를 벗어나면 테슬라가 프레임 공급을 끊으며(실측 2026-09-14), MJPEG 는 폰 쪽 절반이
+// 애초에 없었다. 둘 다 "비상구"였는데, 소프트 디코더가 워커 WebGL 없이도 메인 스레드로 물러나는
+// 길을 가지고 있어(h264.ts fallBackToMainThread) 비상구는 그것 하나로 충분하다.
+//
 // **새 렌더러를 더할 때** 손댈 곳은 이 배열 하나다: `supported()` 와 `make()` 를 쓰고, 이 경로가 폰에
-// 요구하는 인코더와 소켓 쿼리를 적고, 재 본 천장이 있으면 적는다(없으면 `null` — 재지 않은 것을 지어내지
-// 않는다). 렌더러가 `onNeedKeyframe`·`onLuma` 를 가지면 main.ts 가 알아서 걸고, 없으면 그 기능이
-// (키프레임 재요청·지연 측정) 조용히 빠진다.
+// 요구하는 인코더를 적고, 재 본 천장이 있으면 적는다(없으면 `null` — 재지 않은 것을 지어내지 않는다).
+// 렌더러가 `onNeedKeyframe`·`onLuma` 를 가지면 main.ts 가 알아서 걸고, 없으면 그 기능이(키프레임
+// 재요청·지연 측정) 조용히 빠진다. 폰 쪽에 없는 것을 넣지 않는다 — 브라우저가 된다고 답해도 보내 줄
+// 사람이 없으면 그 칸은 빈 화면이다.
 //
 // **한 벌이 아직 덮지 못하는 것:** `encoder.codec` 은 지금 전부 'avc' 다. HEVC·AV1 을 더하려면 여기에
 // 값을 늘리는 것만으로는 안 되고 폰 쪽 절반도 같이 열어야 한다 — `DisplayVideoSource.reconfigure` 가
 // 코덱을 받고, `H264Encoder` 자리에 그 코덱의 인코더가 서고, `/api/encoder` 가 그것을 통과시켜야 한다.
 // 그 자리를 이름으로 남겨 둔 것이고, 그날 이 주석이 할 일 목록이 된다.
 import type { Renderer } from './renderer/types';
-import { MseRenderer, mseSupported } from './renderer/mse';
-import { MjpegRenderer } from './renderer/mjpeg';
 import { H264Renderer, h264Supported } from './renderer/h264';
 import { WebCodecsRenderer, webcodecsSupported } from './renderer/webcodecs';
 
@@ -50,12 +54,8 @@ export const presetById = (id: string): Preset | undefined => PRESETS.find((p) =
 
 // ── 경로 ─────────────────────────────────────────────────────────────────────────────────────
 
-/** 렌더러가 붙을 자리들. 경로마다 쓰는 것이 달라서(캔버스냐 <video> 냐) 한 벌로 넘긴다. */
+/** 렌더러가 붙을 자리. 둘 다 캔버스에 그린다(h264 는 WebGL2, webcodecs 는 2D). */
 export interface PathElements {
-  video: HTMLVideoElement;
-  /** mjpeg 가 쓰는 2D 캔버스. */
-  canvas: HTMLCanvasElement;
-  /** h264(WebGL2)·webcodecs(2D)가 쓰는 캔버스. */
   gl: HTMLCanvasElement;
 }
 
@@ -68,12 +68,10 @@ export interface Path {
   detail: string;
   /**
    * 이 경로가 폰에 요구하는 인코더 한 벌. 차가 접속하면 이대로 맞춰 달라고 한다.
-   * `profile`: Baseline 은 소프트 디코더(h264bsd)와 <video> 호환을 위한 제약이고, 하드웨어
+   * `profile`: Baseline 은 소프트 디코더(h264bsd)가 그것밖에 못 읽어서 있는 제약이고, 하드웨어
    * 디코더는 High 까지 읽는다(같은 화질에 비트를 덜 쓴다 — 링크가 약한 자리에서 이게 크다).
    */
   encoder: { codec: 'avc'; profile: 'baseline' | 'high' };
-  /** 영상 소켓에 붙일 쿼리. 폰이 아예 다른 것을 보내야 하는 경로(mjpeg)만 채운다. */
-  videoQuery: string;
   /**
    * 사다리 천장: 부담(`cost`)이 이 프리셋 이하인 것만 낸다. **null 이면 전부** — 재 보지 않은 경로에
    * 천장을 지어내지 않는다는 뜻이다. 무엇이 도는지는 그 사람의 차·링크가 정하고, 못 따라오면 자동
@@ -86,12 +84,6 @@ export interface Path {
   rank: number;
   /** 이 브라우저에서 쓸 수 있나. */
   supported(): boolean;
-  /**
-   * 폰 쪽 절반이 아직 없을 때 그 이유. 채워져 있으면 **시트에 내지 않는다** — 브라우저에서는 되는데
-   * 보내 줄 사람이 없는 길이고, 그런 칸은 누르면 빈 화면이 되기 때문이다. `?path=` 로 강제하는 것은
-   * 그대로 열어 둔다(폰 쪽을 만들 때 그 길로 확인한다).
-   */
-  unimplemented?: string;
   make(el: PathElements): Renderer;
 }
 
@@ -101,7 +93,6 @@ export const PATHS: Path[] = [
     label: '하드웨어 디코더',
     detail: '차의 전용 디코더가 푼다. 가장 빠르고(실차 실측 1.1ms) 화질도 좋다. https 주소에서만 열린다.',
     encoder: { codec: 'avc', profile: 'high' },
-    videoQuery: '',
     ceiling: null,
     needsSecureContext: true,
     rank: 40,
@@ -113,45 +104,12 @@ export const PATHS: Path[] = [
     label: '소프트 디코더',
     detail: '차 CPU 가 푼다(WASM). 어디서나 되지만 1080p60 은 무리다. 평문 주소의 기본.',
     encoder: { codec: 'avc', profile: 'baseline' },
-    videoQuery: '',
     // 차 CPU 로 720p 한 장에 10ms 였다(실측 2026-09-17). 60fps 예산이 16ms 이므로 1080p60 은 그 위다.
-    // 이것이 유일하게 근거 있는 천장이다 — 다른 경로에 천장을 두지 않은 이유는 아래에 적었다.
     ceiling: '900p60',
     needsSecureContext: false,
     rank: 30,
     supported: h264Supported,
     make: (el) => new H264Renderer(el.gl),
-  },
-  {
-    id: 'mse',
-    label: '<video> (MSE)',
-    detail: '브라우저에 통째로 맡긴다. 지연이 크고(80~140ms) 기어가 P 를 벗어나면 프레임 공급이 끊긴다. 위 둘이 안 될 때.',
-    encoder: { codec: 'avc', profile: 'baseline' },
-    videoQuery: '',
-    // 천장 없음: <video> 는 브라우저 자신의 디코더를 쓰므로 WASM 과 사정이 다르고, 얼마까지 감당하는지
-    // 우리가 잰 적이 없다. 재지 않은 것을 미리 깎지 않는다 — 못 따라오면 자동 내리기가 찾아 준다.
-    ceiling: null,
-    needsSecureContext: false,
-    rank: 20,
-    supported: mseSupported,
-    make: (el) => new MseRenderer(el.video),
-  },
-  {
-    id: 'mjpeg',
-    label: '낱장 그림 (MJPEG)',
-    detail: '장면을 그림 한 장씩 받는다. 느리고 거칠지만 H.264 디코더가 아예 없어도 뜬다. 최후의 수단.',
-    // 폰이 아직 못 보낸다: `/ws/video` 는 쿼리를 보지 않고 언제나 fMP4(H.264)를 흘린다
-    // (StreamSession.onWebSocket). 그래서 이 렌더러는 JPEG 인 줄 알고 받은 moof 를 못 읽고 빈 화면이
-    // 된다. 폰 쪽에 JPEG 인코더와 코덱 분기가 생기는 날 이 줄을 지운다.
-    unimplemented: '폰이 아직 이 형식을 보내지 못합니다',
-    encoder: { codec: 'avc', profile: 'baseline' },
-    videoQuery: '?codec=mjpeg',
-    // 천장 없음, 같은 이유로. 이 경로가 느린 것은 분명하지만 어디서 무너지는지는 재 본 적이 없다.
-    ceiling: null,
-    needsSecureContext: false,
-    rank: 10,
-    supported: () => true,
-    make: (el) => new MjpegRenderer(el.canvas),
   },
 ];
 
@@ -168,7 +126,10 @@ export function presetsFor(path: Path): Preset[] {
   return PRESETS.filter((p) => cost(p) <= max);
 }
 
-/** 되는 것 중 가장 좋은 것. 아무것도 안 되면 mjpeg — 그림이 없는 화면보다는 거친 그림이 낫다. */
+/**
+ * 되는 것 중 가장 좋은 것. 아무것도 안 되면 소프트 디코더 — 그쪽은 워커 WebGL 이 없어도 메인
+ * 스레드로 물러나는 길이 있어서(h264.ts), 그림이 아예 없는 화면보다는 그 길이 낫다.
+ */
 export function autoPath(): Path {
   const ok = PATHS.filter((p) => p.supported()).sort((a, b) => b.rank - a.rank);
   return ok[0] ?? PATHS[PATHS.length - 1]!;

@@ -20,10 +20,13 @@ test.afterAll(() => { proc?.kill(); });
 test('타임라인이 131초에서 시작해도 재생된다', async ({ page }) => {
   await page.goto(`http://100.99.9.9:${PORT}/`);
   await startPlayback(page);
-  // fps 는 지난 1 초 동안 화면에 올라간 장수다. 21 장째에 바로 읽으면 창이 아직 차지 않아(그리기는 디코드보다
-  // 한 vsync 뒤에 온다) 19 가 나온다 — 재생이 되느냐를 묻는 자리이니 창이 찬 뒤에 읽는다.
+  // 묻는 것은 "재생이 이어지느냐"다. 순간 fps(지난 1 초 창)는 읽는 순간이 프레임 사이 어디냐에 따라 ±1 이
+  // 흔들려서 30fps 클립이 부하 아래에서 정확히 20 을 찍고 `> 20` 에 걸리곤 했다(스위트 안에서 두 번).
+  // 2 초 동안 늘어난 장수로 본다 — 30fps 면 60 장이고, 40 은 스케줄링 요동을 넉넉히 남긴 문턱이다.
   await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 50, null, { timeout: 20_000 });
-  const s = await stats(page);
-  expect(s.fps).toBeGreaterThan(20);
-  expect(s.latencyMs).toBeLessThan(1000);
+  const a = await stats(page);
+  await new Promise((r) => setTimeout(r, 2000));
+  const b = await stats(page);
+  expect(b.framesDecoded - a.framesDecoded).toBeGreaterThan(40);
+  expect(b.latencyMs).toBeLessThan(1000);
 });

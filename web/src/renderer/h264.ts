@@ -240,7 +240,16 @@ export class H264Renderer implements Renderer {
     this.needKey = false;
   }
 
-  stats(): RendererStats { return { ...this.st, backlog: this.inFlight.length, offscreen: this.offscreen }; }
+  /**
+   * fps 는 지난 1 초 창의 장수인데, 창을 정리하는 곳이 그리는 순간뿐이면 그림이 멈춘 뒤에도 마지막 값이
+   * 그대로 남는다 — 멈춘 화면이 "1fps" 로 읽혔다(diag 의 정지 판정이 그것에 속았다). 읽을 때도 정리한다.
+   */
+  stats(): RendererStats {
+    const now = performance.now();
+    while (this.times.length && now - this.times[0]! > 1000) this.times.shift();
+    this.st.fps = this.times.length;
+    return { ...this.st, backlog: this.inFlight.length, offscreen: this.offscreen };
+  }
 
   destroy(): void {
     this.worker?.postMessage({ type: 'release' });

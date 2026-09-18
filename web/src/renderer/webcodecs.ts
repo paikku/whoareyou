@@ -228,7 +228,13 @@ export class WebCodecsRenderer implements Renderer {
     this.needKey = false;
   }
 
-  stats(): RendererStats { return { ...this.st, backlog: this.inFlight.length }; }
+  /** 읽을 때도 fps 창을 정리한다 — 그리는 순간에만 정리하면 멈춘 뒤에도 마지막 값이 남는다(h264.ts 와 같다). */
+  stats(): RendererStats {
+    const now = performance.now();
+    while (this.times.length && now - this.times[0]! > 1000) this.times.shift();
+    this.st.fps = this.times.length;
+    return { ...this.st, backlog: this.inFlight.length };
+  }
 
   destroy(): void {
     this.closeDecoder();

@@ -6,24 +6,6 @@ import { expect, test } from '@playwright/test';
 test.skip(!!process.env.NO_THROUGHPUT, '가상 폰에서는 디코드 처리량을 물을 수 없다');
 import { sleep, startPlayback, stats } from './helpers';
 
-// MSE 는 이제 기본이 아니다(드라이브 모드에서 <video> 가 멈추므로) — 손으로 골라 확인한다.
-test('MSE renderer decodes the live stream at >= 25 fps with < 300 ms lag', async ({ page }) => {
-  await page.goto('/?renderer=mse');
-  await expect(page.locator('#overlay')).toBeVisible();
-  await startPlayback(page);
-  await expect(page.locator('#overlay')).toBeHidden();
-
-  await page.waitForFunction(() => (window as any).__carcast.stats().framesDecoded > 10, null, { timeout: 20_000 });
-  await sleep(3000);
-  const s = await stats(page);
-  expect(s.renderer).toBe('mse');
-  expect(s.lastError).toBe('');
-  expect(s.fps).toBeGreaterThanOrEqual(25);
-  expect(s.latencyMs).toBeLessThan(300);
-  expect(s.videoWs.open).toBe(true);
-  expect(s.controlWs.open).toBe(true);
-});
-
 test('video keeps playing across a 10 s window (no stall)', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);
@@ -33,14 +15,6 @@ test('video keeps playing across a 10 s window (no stall)', async ({ page }) => 
   const b = await stats(page);
   // 30 fps for 10 s is 300 frames; accept some scheduling jitter.
   expect(b.framesDecoded - a.framesDecoded).toBeGreaterThan(250);
-});
-
-test('mjpeg renderer can be forced via ?renderer=mjpeg', async ({ page }) => {
-  await page.goto('/?renderer=mjpeg');
-  await startPlayback(page);
-  const s = await stats(page);
-  expect(s.renderer).toBe('mjpeg');
-  expect(s.controlWs.open || s.controlWs.connects > 0 || s.controlWs.failures >= 0).toBe(true);
 });
 
 // 기본 렌더러. 테슬라는 기어가 P 를 벗어나면 <video> 에 프레임 공급을 끊지만 캔버스는 그대로

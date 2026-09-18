@@ -90,18 +90,20 @@
 
 | spec | 확인한 것 | 가짜 폰 | JVM shell 서버(APK assets) |
 |---|---|---|---|
-| `diag.spec` | UA 표시, `isSecureContext=false`, MediaSource·`avc1.42E01E` 지원, WS 20회 중 ≥18 성공, 5초 프로브에서 >30 프레임, 에러 없음, 사설 주소 대조군이 `reachable`이 아님, 결과가 `POST /api/report`로 저장되고 `/api/reports`·`/api/status.lastReport`에 나타남 | ✅ | ✅ (loopback 오리진은 secure-context 검사만 생략) |
-| `stream.spec` | MSE 렌더러 fps ≥ 25, pts 대비 렌더 지연 < 300ms, 10초 무정지, `?renderer=mjpeg` 강제 | ✅ | ✅ |
+| `diag.spec` | UA 표시, `isSecureContext=false`, MediaSource·`avc1.42E01E` 지원, WS 20회 중 ≥18 성공, 5초 프로브에서 >30 프레임, 에러 없음, 사설 주소 대조군이 `reachable`이 아님, 결과가 `POST /api/report`로 저장되고 `/api/reports`·`/api/status.lastReport`에 나타남 | ✅ | ✅ (loopback 오리진은 secure-context 검사만 생략) **2026-09-18 부터 영상 프로브는 본 화면과 같은 경로(paths.ts 의 autoPath)로 잰다** — 요약의 `video` 줄이 `video h264 137f …` 처럼 무엇으로 쟀는지를 앞에 달고, 그 전 리포트의 `video` 줄은 MSE 값이라 그대로 견주면 안 된다. 같은 날 잡은 버그: 두 캔버스 렌더러의 `fps` 창이 그리는 순간에만 정리돼 **멈춘 뒤에도 마지막 값이 남았다**(정지 화면이 `1fps` 로 읽혀 diag 의 정지 판정이 속았다) — `stats()` 에서도 정리한다 |
+| `stream.spec` | 기본(캔버스) 경로가 첫 제스처 없이 그려지고 secure context 에 따라 webcodecs/h264 로 갈리는가, 10초 무정지(≥250 프레임). MSE·MJPEG 검사는 2026-09-18 에 그 경로들과 함께 뺐다 | ✅ | ✅ |
 | `input.spec` | 클릭 → 서버가 받은 정규화 좌표(레터박스 보정) 검증, 네비 바 → Android 키코드 | ✅ | skip(가짜 폰 전용 API) |
 | `reconnect.spec` | 핸드셰이크 거부 34% + 150ms 지연 + 5초마다 소켓 절단 하에서 15초 내 영상 복구 | ✅ | skip |
-| `paths.spec` | **경로(기법 한 벌)를 사람이 고르는 길**: 시트가 못 가는 것에 **이유를 적는가**(하드웨어 경로는 인증서가 없으면 갈 곳이 없고, **MJPEG 는 폰 쪽 절반이 아직 없다** — `/ws/video` 는 쿼리를 보지 않고 언제나 fMP4 를 흘린다), 고른 것이 이 차에 남는가, 고른 것과 **영상 소켓의 코덱 쿼리가 같이 바뀌는가**(한 벌이라는 것이 그 뜻이다), 그리고 **남은 선택을 이 브라우저가 못 쓰게 되면 조용히 자동으로 되돌아가는가**(없으면 펌웨어가 바뀐 날 검은 화면이다). `?path=` 는 반대로 되는지 묻지 않고 간다 — 진단용 | ✅ | skip(가짜 폰 전용 API) |
+| `paths.spec` | **경로(기법 한 벌)를 사람이 고르는 길**: 시트가 둘(하드웨어·소프트)을 내고 못 가는 것에 **이유를 적는가**(하드웨어 경로는 인증서가 없으면 갈 곳이 없다), 손으로 고른 것이 이 차에 남고 자동에서 빠지는가, **남은 선택을 이 브라우저가 못 쓰게 되면 조용히 자동으로 되돌아가는가**(없으면 펌웨어가 바뀐 날 검은 화면이다). `?path=` 는 반대로 되는지 묻지 않고 간다 — 진단용 | ✅ | skip(가짜 폰 전용 API) |
 | `quality.spec` | 화질 사다리가 **렌더러에 따라 갈리는가**: 평문(WASM)에서는 다섯 칸이고 `1080p60` 이 없다, 하드웨어(webcodecs)에서는 여섯 칸이다, 그리고 **하드웨어 전용 설정으로 도는 폰에 평문으로 들어오면 한 단계 내려 준다**(폰은 차가 고른 값을 파일로 기억하므로 실제로 생기는 조합이고, 그 증상은 멈춘 화면이라 자동 내리기가 손대지 못한다). 더해서 자동 내리기와 끝에서 끝까지 지연 측정 | ✅ | skip(가짜 폰 전용 API) |
 | `secure-context.spec` (webcodecs) | secure context 에서 렌더러가 **webcodecs 로 골라지고**, 프레임이 나오고, 폰 인코더가 High 로 올라가는가. 하드웨어가 없는 자리(이 컨테이너)에서는 `stats.hardware=false` 로 소프트웨어 WebCodecs 로 내려간다 — 그래도 lag 5.7ms(WASM 은 10ms) | skip(TLS 없음) | ✅ |
 | `secure-context.spec` | **자체서명 인증서를 넘긴 https 오리진이 secure context 인가**, 거기서 `VideoDecoder` 가 보이고 `isConfigSupported` 표가 채워져 리포트에 실리는가. 평문에서는 "못 물었다"를 말하고 https 주소를 안내하는가 | skip(TLS 없음) | ✅ (2026-09-17, Chrome 148) |
 
-결과(2026-09-17, `npm run e2e`): 가짜 폰 대상 세 프로필 합쳐 **108 통과 / 36 skip**, JVM으로 띄운 shell
-서버(`BASE_URL=http://127.0.0.1:3399`, APK의 assets 그대로) 대상 **9 통과 / 39 skip**(가짜 폰 전용 API 를
-쓰는 것들이 빠진다; 대신 `secure-context.spec` 네 건은 여기서만 돈다).
+결과(2026-09-18, `npm run e2e`, MSE·MJPEG 검사 6건을 뺀 뒤 150건): 가짜 폰 대상 세 프로필 합쳐 **113 통과 /
+36 skip / 1 실패** — 실패는 `pts-base` 의 순간 fps 문턱(`> 20` 에 20)이고, 그 자리에서 2초 프레임 증가량으로
+문턱을 바꿔 5/5 통과를 확인했다. JVM으로 띄운 shell 서버(`BASE_URL=http://127.0.0.1:3399`, APK의 assets
+그대로)에서는 `diag`·`secure-context`·`stream` **6 통과 / 1 skip**(가짜 폰 전용 API 를 쓰는 것들이 빠진다;
+대신 `secure-context.spec` 네 건은 여기서만 돈다).
 같은 서버 코드가 폰의 shell 프로세스에서 돌기 때문에, 폰에서 남는 미검증 요소는 프로세스 환경과 네트워크뿐이다(§3.3에서 확인).
 
 이 층에서 잡은 문제와 수정: 클립 루프 시 `tfdt`가 원래 pts로 남아 MSE 타임라인이 되감기던 10초 정지(재스탬프),

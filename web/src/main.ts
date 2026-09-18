@@ -6,8 +6,6 @@ import { TouchInput } from './input';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
-const video = $<HTMLVideoElement>('video');
-const canvas = $<HTMLCanvasElement>('mjpeg');
 const glCanvas = $<HTMLCanvasElement>('gl');
 const overlay = $('overlay');
 const overlayMsg = $('overlay-msg');
@@ -29,7 +27,7 @@ const storedPath = (): string | null => { try { return localStorage.getItem(PATH
 const chosen = pickPath(params.get('path') ?? params.get('renderer'), storedPath());
 const path: Path = chosen.path;
 
-let renderer = path.make({ video, canvas, gl: glCanvas });
+let renderer = path.make({ gl: glCanvas });
 renderer.attach(stage);
 // 오버레이에는 경로의 **이름**을 쓴다 — 여기를 읽는 사람은 운전자이고, `h264` 보다 "소프트 디코더" 가
 // 무엇이 다른지에 가깝다. 기계가 읽는 낱말(`renderer.name`)은 상태줄과 리포트에 그대로 남는다.
@@ -77,7 +75,7 @@ const note = (s: string) => {
 let packets = 0;
 let lastPacketAt = 0;
 let recoveries = 0;
-const videoWs = new ReconnectingWs(wsUrl(`/ws/video${path.videoQuery}`), {
+const videoWs = new ReconnectingWs(wsUrl('/ws/video'), {
   onOpen: () => { renderer.reset(); note(`video ws open #${videoWs.stats.connects}`); },
   // 왜 끊겼는지까지 남긴다. 1006 은 인사도 없이 끊긴 것(링크가 사라짐), 1000/1001 은 폰이
   // 제대로 닫은 것 — 리포트에서 "폰이 멎었나, 선이 끊겼나"를 가르는 데 이 한 글자가 쓰인다.
@@ -930,7 +928,7 @@ const PROBE_SLOT = 9; // 운전자의 손가락(0..)과 겹치지 않는 슬롯
 /** `onTouch` 는 테스트용 고리: 터치를 보낸 직후 불린다(가짜 폰은 화면을 못 뒤집으므로 테스트가 대신 밝기를 넣는다). */
 async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () => void } = {}): Promise<ProbeResult | null> {
   if (probeRunning) return null;
-  // 밝기를 읽으려면 렌더러가 픽셀을 직접 만져야 한다 — <video> 에 맡기는 경로는 그걸 못 낸다.
+  // 밝기를 읽으려면 렌더러가 픽셀을 직접 만져야 한다 — 그러지 않는 렌더러는 이 고리가 없다.
   if (!('onLuma' in renderer)) {
     notice(`지연 측정은 그림을 직접 그리는 경로에서만 됩니다 (지금: ${path.label})`, 5000);
     return null;
@@ -1028,8 +1026,6 @@ function secureUrl(): string | null {
  */
 interface Blocked { text: string; reachable: boolean }
 function blockedReason(p: Path): Blocked | null {
-  // 폰 쪽 절반이 없는 길이 먼저다: 브라우저가 된다고 답해도 보내 줄 사람이 없으면 빈 화면이다.
-  if (p.unimplemented) return { text: p.unimplemented, reachable: false };
   if (p.needsSecureContext && !isSecureContext) {
     return secureUrl()
       ? { text: 'https 주소로 옮겨서 엽니다', reachable: true }

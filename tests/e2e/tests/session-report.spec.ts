@@ -27,7 +27,7 @@ test('main page saves a session report with stats and events', async ({ page }) 
   // 첫 낱말은 그 세션이 쓴 렌더러다(secure context 면 webcodecs, 평문이면 h264; `?renderer=` 로 바꾼다) — 이름을 박아 두면
   // 기본값이 바뀔 때마다 여기가 깨진다. 계약은 "무엇으로 그렸는지가 맨 앞에 적힌다" 쪽이다.
   // 추이 한 칸은 표본이 1 분 모인 뒤에야 붙는다(perfTrend). 짧은 실행에서는 없는 것이 정상이다.
-  expect(mine.summary).toMatch(/^session (mse|mjpeg|h264|webcodecs) \d+fps lag \d+ms( rtt \d+ms)? frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+( 키프레임요청\d+)?( 끝까지\d+ms)?( 추이 \d+→\d+fps 적체\d+ \([\d.]+분\))?( \| 폰 .*)?$/);
+  expect(mine.summary).toMatch(/^session (h264|webcodecs) \d+fps lag \d+ms( rtt \d+ms)? frames \d+ packets \d+ ws↻0\/0 복구0 드롭\d+( 키프레임요청\d+)?( 끝까지\d+ms)?( 추이 \d+→\d+fps 적체\d+ \([\d.]+분\))?( \| 폰 .*)?$/);
   if (mine.summary.includes('| 폰 ')) {
     expect(mine.summary).toMatch(/화면(ON|OFF)/);
   }

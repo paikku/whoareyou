@@ -11,9 +11,7 @@
 </head>
 <body>
 <div id="stage">
-  <video id="video" playsinline muted></video>
-  <canvas id="mjpeg" hidden></canvas>
-  <!-- 소프트 H.264 렌더러의 출력면. 2D 와 WebGL 컨텍스트는 한 캔버스에 같이 못 붙어 따로 둔다. -->
+  <!-- 두 경로(소프트 h264 = WebGL2, 하드웨어 webcodecs = 2D)가 그리는 캔버스. paths.ts -->
   <canvas id="gl" hidden></canvas>
   <div id="overlay" class="overlay">
     <div class="overlay-card">

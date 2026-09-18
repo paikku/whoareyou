@@ -1,7 +1,8 @@
 // The diag page must reach "저장됨" even when the video path is dead: in the car (Model Y 2026.26)
-// the phone accepted /ws/video but no frame was ever presented, video.play() never settled, and the
-// page sat on "측정 중…" forever with nothing saved. Here the fake phone sends the init segment and
-// then goes silent; the page has to time out, say so in the report, and still post it.
+// the phone accepted /ws/video but no frame was ever presented, and the page sat on "측정 중…" forever
+// with nothing saved (that was the MSE probe; since 2026-09-18 the probe runs the same canvas path the
+// main page uses, and the contract is unchanged). Here the fake phone sends the init segment and then
+// goes silent; the page has to time out, say so in the report, and still post it.
 import { expect, test } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 
@@ -35,18 +36,21 @@ test('diag still saves a report when no video frame ever arrives', async ({ page
   const diag = await page.evaluate(() => (window as any).__diag);
   expect(diag.ws.ok).toBeGreaterThanOrEqual(18);
   expect(diag.video.frames).toBe(0);
-  expect(diag.video.error).toContain('play() never started');
-  expect(diag.video.state).toContain('paused=');
+  expect(diag.video.error).toContain('no frames decoded');
+  // 무엇으로 쟀는지가 리포트에 남는다 — 평문이라 소프트 디코더다.
+  expect(diag.video.path).toBe('h264');
+  expect(diag.video.state).toContain('path=h264');
   expect(diag.report.ok, JSON.stringify(diag.report)).toBe(true);
   await expect(page.locator('#report-result')).toContainText('저장됨');
+  await expect(page.locator('#summary')).toContainText('video h264 0f');
   await expect(page.locator('#summary')).toContainText('err=');
-  await expect(page.locator('#log')).toContainText('play() still pending');
+  await expect(page.locator('#log')).toContainText('video probe packets=1');
 });
 
 // Reports #7 and #8 from the car: the phone's encoder had gone idle, so a new client got the init
 // segment plus the cached last keyframe (stamped ~50 h into the stream) and nothing else. The one
-// frame we do have must be shown — the renderer has to seek to it, not leave currentTime at 0 with
-// the data parked 50 hours ahead — and the report must say the stream then froze.
+// frame we do have must be shown (a canvas renderer draws it as it arrives; the old MSE probe had to
+// seek to it), and the report must say the stream then froze.
 test('a lone cached keyframe from an idle phone is displayed and reported as a stall', async ({ page }) => {
   await page.goto(`http://100.99.9.9:${PORTS.freeze}/diag`);
   await page.waitForFunction(() => (window as any).__diag?.done === true, null, { timeout: 40_000 });
@@ -54,7 +58,7 @@ test('a lone cached keyframe from an idle phone is displayed and reported as a s
   expect(diag.video.packets).toBe(2);
   expect(diag.video.frames).toBeGreaterThanOrEqual(1);
   expect(diag.video.error).toContain('stalled');
-  expect(diag.video.state).toContain('t=1802'); // sought to the cached frame (then ran on into its tail), not left at 0
+  expect(diag.video.state).toContain('path=h264');
   expect(diag.video.packetTimes).toMatch(/^\d+,\d+ms$/);
   expect(diag.report.ok, JSON.stringify(diag.report)).toBe(true);
 });

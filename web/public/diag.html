@@ -33,7 +33,8 @@
 <section>
   <h2>영상 디코드</h2>
   <div id="video-result">대기 중</div>
-  <video id="video" playsinline muted width="320" height="180"></video>
+  <!-- 본 화면과 같은 경로(paths.ts)로 그린다. 렌더러가 프레임 크기로 키우므로 보이는 크기만 잡아 둔다. -->
+  <canvas id="gl" style="width:320px;height:180px;background:#000"></canvas>
 </section>
 <section>
   <h2>사설 주소 차단 확인 (대조군)</h2>
