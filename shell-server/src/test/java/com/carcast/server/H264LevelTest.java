@@ -7,9 +7,13 @@ import org.junit.Test;
 
 /**
  * The car's quality sheet decides the size and frame rate; this decides what the encoder is told to
- * promise. Both halves of that are worth pinning down, because getting it wrong is silent: an encoder that
- * rejects the level falls back to the vendor's profile (High), and a car decoding with WASM reads Baseline
- * only — the picture stops and the log says nothing but "encoder restarted".
+ * promise. Both halves are worth pinning down, because getting it wrong fails silently on an encoder that
+ * rejects the level: H264Encoder falls back to the vendor's profile (High), and a car decoding with WASM
+ * reads Baseline only — the picture stops and the log says nothing but "encoder restarted".
+ *
+ * The one encoder we have measured does not reject — `c2.qti.avc.encoder` overrode our 3.2 with the 4.2 the
+ * format needed (report #61). So this is a risk removed, not an observed bug fixed. Either way, asking for a
+ * level the stream exceeds is a claim that is simply false, and the SPS is what a decoder believes.
  *
  * Only constants and arithmetic here, so this runs on the JVM: the AVCLevel* values are compile-time
  * constants that javac inlines, and no android.jar class is ever loaded.

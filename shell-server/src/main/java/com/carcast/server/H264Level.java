@@ -10,10 +10,18 @@ import android.media.MediaCodecInfo;
  * per frame and 216000 per second, so 900p (5700 MBs) is already over the frame limit and 1080p30 (244800
  * MB/s) is over both. The car's quality sheet has been able to ask for those sizes all along.
  *
- * What went wrong when it did is worse than a rejected level. {@link H264Encoder#open} treats a rejected
+ * What that cost, on the one encoder we have measured, is nothing — and that is worth writing down rather
+ * than leaving the fix looking like a bug report. `c2.qti.avc.encoder` (S26U) **ignored** the level we asked
+ * for: at 1080p on 2026-09-17, with level 3.2 requested, the SPS came back `avc1.42C02A` — Baseline, level
+ * **4.2** (car-tests/model-y §6, report #61). The vendor picked the level the format needed and threw the
+ * wrong one away.
+ *
+ * The risk is what another encoder does with the same request. {@link H264Encoder#open} treats a rejected
  * configure as "the vendor did not like something" and falls back to the **vendor's own profile**, which on
  * every phone we have is High — and a car on the plain-HTTP path decodes with h264bsd (WASM), which reads
- * Baseline only. The picture would simply stop, with the log saying the encoder had been rebuilt.
+ * Baseline only. On an encoder that rejects rather than overrides, asking for 3.2 at 1080p would therefore
+ * stop the picture, with the log saying only that the encoder had been rebuilt. That is a bad way to find
+ * out, and there is no reason to ask for a level the stream exceeds in the first place.
  *
  * So the level is computed, not assumed. The numbers are Annex A, Table A-1: MaxFS is macroblocks per
  * frame, MaxMBPS macroblocks per second. We pick the lowest level that fits both, because the level is a
