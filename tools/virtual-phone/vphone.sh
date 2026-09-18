@@ -27,6 +27,9 @@ PHONE_LIKE_TIMEOUT="${PHONE_LIKE_TIMEOUT:-60000}"
 API="${API:-36}"
 AVD="${AVD:-carcast-vphone}"
 PORT="${PORT:-3333}"
+# 서버의 TLS listener(ServerMain.DEFAULT_HTTPS_PORT). 차 클라이언트 검사 중 secure-context.spec 이 여기로 온다 —
+# 포워딩이 없으면 그 검사는 ERR_CONNECTION_REFUSED 로 깨진다(emulator run #138).
+HTTPS_PORT="${HTTPS_PORT:-3443}"
 APK="${APK:-$root/app/build/outputs/apk/debug/app-debug.apk}"
 # google_apis(플레이스토어 아님) 이미지라야 adb root/shell 이 자유롭고, x86_64 라야 KVM 가속을 받는다.
 IMAGE="${IMAGE:-system-images;android-$API;google_apis;x86_64}"
@@ -140,6 +143,8 @@ start_server() {
     >/dev/null || die "서버 기동 명령이 돌아오지 않았다"
   adb forward --remove tcp:$PORT >/dev/null 2>&1 || true
   adb forward tcp:$PORT tcp:$PORT >/dev/null
+  adb forward --remove tcp:$HTTPS_PORT >/dev/null 2>&1 || true
+  adb forward tcp:$HTTPS_PORT tcp:$HTTPS_PORT >/dev/null
   local waited=0
   until curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/status" >/dev/null 2>&1; do
     sleep 1; waited=$((waited + 1))
@@ -185,7 +190,7 @@ cmd_up() {
     say "경고: 가상 디스플레이를 못 만들어 클립으로 대체됐다. 로그:"
     adb shell "cat $DEVICE_LOG" | tail -40 || true
   fi
-  say "준비됨 →  BASE_URL=http://127.0.0.1:$PORT"
+  say "준비됨 →  BASE_URL=http://127.0.0.1:$PORT (TLS: https://127.0.0.1:$HTTPS_PORT, 자체서명)"
 }
 
 # 아주 작은 JSON 필드 추출기(문자열/숫자/불리언). 테스트 쪽은 node 가 제대로 파싱하므로 여기서는 안내용으로만 쓴다.
@@ -213,6 +218,7 @@ cmd_down() {
   say "서버 종료(킬 스위치)"
   stop_server_quietly
   adb forward --remove tcp:$PORT >/dev/null 2>&1 || true
+  adb forward --remove tcp:$HTTPS_PORT >/dev/null 2>&1 || true
   if adb devices | grep -q "^emulator-.*device$"; then
     say "에뮬레이터 종료"
     adb emu kill >/dev/null 2>&1 || true
