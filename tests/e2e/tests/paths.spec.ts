@@ -27,8 +27,14 @@ test('시트가 경로를 전부 내고, 못 가는 것은 이유를 적는다',
   await expect(hw).toHaveClass(/away/);
   await expect(hw).toContainText('인증서');
 
-  // 갈 수 있는 것들은 설명 한 줄을 달고 있다(고르는 근거가 그것뿐이다).
-  await expect(page.locator('#path-grid .tile[data-path="mjpeg"]')).toContainText('H.264 디코더가 아예 없어도');
+  // 폰 쪽 절반이 없는 길은 브라우저가 된다고 답해도 내지 않는다 — `/ws/video` 는 쿼리를 보지 않고
+  // 언제나 fMP4 를 흘리므로, 이 칸을 누를 수 있게 두면 그게 곧 빈 화면이다.
+  const mjpeg = page.locator('#path-grid .tile[data-path="mjpeg"]');
+  await expect(mjpeg).toHaveClass(/away/);
+  await expect(mjpeg).toContainText('폰이 아직');
+
+  // 갈 수 있는 것은 설명 한 줄을 달고 있다(고르는 근거가 그것뿐이다).
+  await expect(page.locator('#path-grid .tile[data-path="mse"]')).toContainText('브라우저에 통째로 맡긴다');
 });
 
 test('고른 경로는 이 차에 남는다', async ({ page }) => {
@@ -36,24 +42,30 @@ test('고른 경로는 이 차에 남는다', async ({ page }) => {
   await page.waitForFunction(() => !!(window as any).__carcast, null, { timeout: 30_000 });
   expect((await stats(page) as any).pathAuto).toBe(true);
 
-  // 영상 소켓도 그 경로가 말하는 대로 열려야 한다 — 렌더러만 바꾸고 폰에는 H.264 를 계속 달라고 하면
-  // 화면이 빈다. "한 벌"이라는 것이 이 뜻이라, 고른 뒤 실제로 열린 소켓 주소로 확인한다.
-  // (그림까지는 못 본다: 가짜 폰은 `?codec=` 을 모르고 언제나 같은 H.264 클립을 보낸다.)
-  const sockets: string[] = [];
-  page.on('websocket', (ws) => sockets.push(ws.url()));
-
   await page.locator('#btn-quality').click();
   await Promise.all([
     page.waitForLoadState('load'),
-    page.locator('#path-grid .tile[data-path="mjpeg"]').click(),
+    page.locator('#path-grid .tile[data-path="mse"]').click(),
   ]);
 
   await page.waitForFunction(() => !!(window as any).__carcast, null, { timeout: 30_000 });
   const s = await stats(page) as any;
-  expect(s.path).toBe('mjpeg');
-  expect(s.renderer).toBe('mjpeg');
+  expect(s.path).toBe('mse');
+  expect(s.renderer).toBe('mse');
   expect(s.pathAuto).toBe(false);
-  expect(await page.evaluate((k) => localStorage.getItem(k), PATH_KEY)).toBe('mjpeg');
+  expect(await page.evaluate((k) => localStorage.getItem(k), PATH_KEY)).toBe('mse');
+});
+
+// 경로를 바꾸면 **영상 소켓도 같이** 바뀐다. 렌더러만 갈아끼우고 폰에는 계속 같은 것을 달라고 하면
+// 화면이 빈다 — "한 벌"이라는 말이 이 뜻이다. 폰이 아직 못 보내는 mjpeg 로도 이 절반은 성립해야
+// 하므로(그래야 폰 쪽을 만들 때 확인할 길이 있다) 주소로 강제해 소켓만 본다.
+test('경로를 바꾸면 영상 소켓의 코덱도 따라간다', async ({ page }) => {
+  const sockets: string[] = [];
+  page.on('websocket', (ws) => sockets.push(ws.url()));
+
+  await page.goto('/?path=mjpeg');
+  await page.waitForFunction(() => !!(window as any).__carcast, null, { timeout: 30_000 });
+  expect((await stats(page)).renderer).toBe('mjpeg');
 
   await expect.poll(() => sockets.filter((u) => u.includes('/ws/video')), { timeout: 15_000 })
     .toEqual([expect.stringContaining('/ws/video?codec=mjpeg')]);

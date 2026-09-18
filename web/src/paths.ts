@@ -86,6 +86,12 @@ export interface Path {
   rank: number;
   /** 이 브라우저에서 쓸 수 있나. */
   supported(): boolean;
+  /**
+   * 폰 쪽 절반이 아직 없을 때 그 이유. 채워져 있으면 **시트에 내지 않는다** — 브라우저에서는 되는데
+   * 보내 줄 사람이 없는 길이고, 그런 칸은 누르면 빈 화면이 되기 때문이다. `?path=` 로 강제하는 것은
+   * 그대로 열어 둔다(폰 쪽을 만들 때 그 길로 확인한다).
+   */
+  unimplemented?: string;
   make(el: PathElements): Renderer;
 }
 
@@ -134,6 +140,10 @@ export const PATHS: Path[] = [
     id: 'mjpeg',
     label: '낱장 그림 (MJPEG)',
     detail: '장면을 그림 한 장씩 받는다. 느리고 거칠지만 H.264 디코더가 아예 없어도 뜬다. 최후의 수단.',
+    // 폰이 아직 못 보낸다: `/ws/video` 는 쿼리를 보지 않고 언제나 fMP4(H.264)를 흘린다
+    // (StreamSession.onWebSocket). 그래서 이 렌더러는 JPEG 인 줄 알고 받은 moof 를 못 읽고 빈 화면이
+    // 된다. 폰 쪽에 JPEG 인코더와 코덱 분기가 생기는 날 이 줄을 지운다.
+    unimplemented: '폰이 아직 이 형식을 보내지 못합니다',
     encoder: { codec: 'avc', profile: 'baseline' },
     videoQuery: '?codec=mjpeg',
     // 천장 없음, 같은 이유로. 이 경로가 느린 것은 분명하지만 어디서 무너지는지는 재 본 적이 없다.

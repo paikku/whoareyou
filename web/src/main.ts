@@ -1028,6 +1028,8 @@ function secureUrl(): string | null {
  */
 interface Blocked { text: string; reachable: boolean }
 function blockedReason(p: Path): Blocked | null {
+  // 폰 쪽 절반이 없는 길이 먼저다: 브라우저가 된다고 답해도 보내 줄 사람이 없으면 빈 화면이다.
+  if (p.unimplemented) return { text: p.unimplemented, reachable: false };
   if (p.needsSecureContext && !isSecureContext) {
     return secureUrl()
       ? { text: 'https 주소로 옮겨서 엽니다', reachable: true }
