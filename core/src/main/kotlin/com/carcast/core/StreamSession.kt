@@ -5,6 +5,7 @@ import com.carcast.core.media.ControlMessage
 import com.carcast.core.media.MediaHub
 import com.carcast.core.media.VideoSource
 import com.carcast.core.net.HttpServer
+import com.carcast.core.net.SelfSignedCert
 import com.carcast.core.net.WebSocketConnection
 import java.io.File
 import java.io.IOException
@@ -30,9 +31,32 @@ class StreamSession(
     private val videoSource: VideoSource? = null,
     /** Build sha of the bundled web files; lets the car cache them (HttpServer.serveStatic). Null: no caching. */
     private val staticVersion: String? = null,
+    /**
+     * A second listener for the same pages over TLS (0: off). It is a measuring instrument, not a feature:
+     * the certificate is self-signed, so the car shows a warning that has to be clicked through, and the one
+     * thing that buys is a **secure context** — the only place `VideoDecoder` (WebCodecs) can be asked about
+     * at all. /diag reports what it finds there. See [com.carcast.core.net.SelfSignedCert].
+     */
+    private val httpsPort: Int = 0,
+    /** Where the self-signed certificate is kept so the car is not asked to trust a new one every start. */
+    private val tlsKeystore: File? = null,
+    /**
+     * A certificate somebody's CA already signed (PEM chain + key), preferred over the self-signed one.
+     * This is what a car that will not let anyone click through a warning needs — see [startTls].
+     */
+    private val tlsCert: File? = null,
+    private val tlsKey: File? = null,
 ) {
     val reports = ReportStore(reportDir)
     private var http: HttpServer? = null
+    private var https: HttpServer? = null
+    /** SHA-256 of the certificate the car is being asked to accept; null when TLS is off. */
+    @Volatile private var tlsFingerprint: String? = null
+    /** What that certificate is, and where the car should go: see [startTls] and /api/status. */
+    @Volatile private var tlsSubject: String? = null
+    @Volatile private var tlsTrusted = false
+    @Volatile private var tlsHost: String? = null
+    @Volatile private var tlsNotAfter: String? = null
     private val videoHub = MediaHub()
     private val audioHub = MediaHub()
     private var clip: ClipSource? = null
@@ -107,7 +131,9 @@ class StreamSession(
         http = server
         running = true
         event("HTTP 서버 시작 ($process): 0.0.0.0:$port" + if (reports.size > 0) ", 저장된 진단 ${reports.size}건" else "")
-        videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개 가득, 다음 키프레임까지 버림") }
+        startTls()
+        videoHub.onClientStalled = { remote, queued -> event("video 클라이언트 $remote 가 안 읽음: 큐 $queued 개, 다음 키프레임까지 버림") }
+        videoHub.onNeedKeyframe = { requestKeyframe() }
         videoHub.onClientDropped = { remote -> event("video 클라이언트 $remote 를 놓아줌: init 세그먼트를 받지 못함 — 재접속을 기다린다") }
         val live = videoSource
         if (live != null) {
@@ -126,6 +152,89 @@ class StreamSession(
         } else startClip()
     }
 
+    /**
+     * PEM 한 덩어리(체인 + 키)를 받아 확인하고, 파일로 남기고, listener 를 다시 세운다.
+     *
+     * 순서가 중요하다: **먼저 세워 보고** 되는 것만 저장한다. 망가진 PEM 을 파일로 남겨 두면 다음
+     * 기동에서 차가 열 페이지 자체가 없어진다.
+     */
+    private fun installTls(pem: String): String {
+        val cert = tlsCert
+        val key = tlsKey
+        if (cert == null || key == null) return Json.obj(mapOf("ok" to false, "error" to "no writable certificate path"))
+        val (chainPem, keyPem) = SelfSignedCert.splitPem(pem)
+        if (chainPem.isBlank() || keyPem.isBlank()) {
+            return Json.obj(mapOf("ok" to false, "error" to "need a certificate chain and a private key in one PEM body"))
+        }
+        return try {
+            // 먼저 세워 본다: 이게 던지면 아무것도 저장하지 않는다.
+            val tls = SelfSignedCert.fromPem(chainPem, keyPem)
+            cert.parentFile?.mkdirs()
+            cert.writeText(chainPem)
+            key.writeText(keyPem)
+            runCatching { key.setReadable(false, false); key.setReadable(true, true) }
+            https?.stop()
+            https = null
+            startTls()
+            event("인증서 교체: ${tls.subject} (${tls.notAfter} 까지)")
+            // 포트까지 같이 준다: 이걸 부르는 쪽(앱)은 "차가 열 주소"를 한 줄로 보여 주려는 것이고,
+            // 호스트만으로는 그 줄을 만들 수 없다.
+            Json.obj(mapOf(
+                "ok" to true, "subject" to tls.subject, "notAfter" to tls.notAfter,
+                "host" to tlsHost, "port" to httpsPort, "trusted" to tlsTrusted,
+            ))
+        } catch (e: Exception) {
+            Json.obj(mapOf("ok" to false, "error" to (e.message ?: e.toString())))
+        }
+    }
+
+    /**
+     * The TLS listener, if one was asked for. Never fatal: a phone whose security provider will not make an
+     * EC key, or a keystore that cannot be written, must cost the driver a diagnostic — not the picture.
+     */
+    private fun startTls() {
+        if (httpsPort <= 0) return
+        try {
+            val tls = tlsCredentials()
+            val server = HttpServer(assets, httpsPort, ::onWebSocket, ::onApi, staticVersion, ssl = tls.sslContext)
+            server.start()
+            https = server
+            tlsFingerprint = tls.fingerprint
+            tlsSubject = tls.subject
+            tlsTrusted = !tls.selfSigned
+            tlsHost = tls.hostFor(SelfSignedCert.CAR_ADDRESS)
+            tlsNotAfter = tls.notAfter
+            event(
+                if (tlsTrusted) "HTTPS 서버 시작: 0.0.0.0:$httpsPort — ${tls.subject}, 차는 https://${tlsHost}:$httpsPort 를 경고 없이 연다"
+                else "HTTPS 서버 시작: 0.0.0.0:$httpsPort — 자체서명이라 차가 경고를 넘겨야 한다 (인증서 ${tls.fingerprint.take(17)}…)"
+            )
+        } catch (e: Throwable) {
+            event("HTTPS 서버 실패 (${e.message ?: e}) — 평문은 그대로 돈다")
+            Log.w(TAG, "TLS listener failed", e)
+        }
+    }
+
+    /**
+     * Which certificate to serve, best first.
+     *
+     * 1. Files the host pointed at (`tls_cert=`/`tls_key=`), 2. a pair bundled in the APK under `tls/`,
+     * 3. one we sign ourselves. The first two are for a car that cannot click through a warning: this Model Y
+     * (2026-09-17) showed the **non-overridable** interstitial for a self-signed certificate — no "Advanced",
+     * no way in — so on that car only a publicly trusted certificate reaches a secure context at all.
+     */
+    private fun tlsCredentials(): SelfSignedCert.Tls {
+        val fromFiles = tlsCert?.takeIf { it.canRead() } to tlsKey?.takeIf { it.canRead() }
+        if (fromFiles.first != null && fromFiles.second != null) {
+            return SelfSignedCert.fromPem(fromFiles.first!!.readText(), fromFiles.second!!.readText())
+        }
+        if (assets.exists(TLS_CERT_ASSET) && assets.exists(TLS_KEY_ASSET)) {
+            val cert = assets.open(TLS_CERT_ASSET)!!.use { it.readBytes().toString(Charsets.US_ASCII) }
+            val key = assets.open(TLS_KEY_ASSET)!!.use { it.readBytes().toString(Charsets.US_ASCII) }
+            return SelfSignedCert.fromPem(cert, key)
+        }
+        return SelfSignedCert.load(tlsKeystore, localAddresses())
+    }
+
     private fun startClip() {
         if (assets.exists("clips/$TEST_CLIP")) {
             clip = ClipSource(assets, "clips/$TEST_CLIP", videoHub).also { it.start() }
@@ -139,6 +248,7 @@ class StreamSession(
         if (!running) return
         if (liveSourceRunning) { runCatching { videoSource?.stop() }; liveSourceRunning = false }
         clip?.stop(); clip = null
+        https?.stop(); https = null
         videoHub.closeAll()
         audioHub.closeAll()
         for (c in controlClients) c.close()
@@ -198,6 +308,19 @@ class StreamSession(
             if (!remote.startsWith("127.")) Json.obj(mapOf("ok" to false, "error" to "loopback only"))
             else { event("종료 요청 ($remote)"); Thread({ Thread.sleep(200); onStopRequest() }, "stop").apply { isDaemon = true }.start(); Json.obj(mapOf("ok" to true)) }
         }
+        /**
+         * 갱신한 인증서를 심는다. 몸통은 PEM 을 이어 붙인 것(체인 + 키) 하나이고, 성공하면 파일로 남긴
+         * 뒤 TLS listener 를 새 인증서로 다시 세운다 — 서버를 죽이지 않는다.
+         *
+         * **loopback 전용.** 이 서버의 인증서를 바꾸는 일은 곧 "차가 무엇을 믿고 열 것인가"를 바꾸는
+         * 일이라, 핫스팟에 붙은 누구도(차 포함) 건드리지 못한다. 킬 스위치와 같은 규칙이다.
+         *
+         * 이게 있어야 90일마다 APK 를 다시 빌드하지 않는다(tools/tls/issue.sh).
+         */
+        path == "/api/tls" && method == "POST" -> {
+            if (!remote.startsWith("127.")) Json.obj(mapOf("ok" to false, "error" to "loopback only"))
+            else installTls(String(body, Charsets.UTF_8))
+        }
         path == "/api/report" && method == "POST" -> {
             val r = reports.add(String(body, Charsets.UTF_8), remote)
             if (r == null) Json.obj(mapOf("ok" to false, "error" to "body is not a JSON object"))
@@ -217,6 +340,24 @@ class StreamSession(
         private set
     @Volatile private var lastKeyframeRequestAt = 0L
 
+    /**
+     * Ask the source for an IDR. Two callers: the car (it dropped frames or its decoder stalled) and the hub
+     * (it dropped frames that had gone stale in front of a socket). Both mean the same thing — somebody is
+     * waiting for the next keyframe and the GOP is ten seconds — and both can repeat, so the rate limit is
+     * shared: a car in trouble must not be able to turn the stream into all keyframes.
+     *
+     * No lock: the hub calls this from the encoder's output thread, which is holding EncodedH264Sink's
+     * monitor, and a lock taken in that order is a lock ordering to maintain forever. Two callers slipping
+     * through the gap at once cost one extra IDR, which is what the gap is there to bound anyway.
+     */
+    private fun requestKeyframe() {
+        val now = System.currentTimeMillis()
+        if (now - lastKeyframeRequestAt < KEYFRAME_REQUEST_MIN_GAP_MS) return
+        lastKeyframeRequestAt = now
+        keyframeRequests++
+        if (liveSourceRunning) videoSource?.requestKeyframe()
+    }
+
     private fun onControl(conn: WebSocketConnection, data: ByteArray) {
         if (data.isEmpty()) return
         controlPackets++
@@ -227,15 +368,7 @@ class StreamSession(
             is ControlMessage.Ping -> { conn.offer(data); return }
             // The car dropped frames or its decoder stalled: an IDR now beats waiting out the GOP or reconnecting.
             // Rate-limited so a car in trouble cannot turn the stream into all keyframes.
-            is ControlMessage.Keyframe -> {
-                val now = System.currentTimeMillis()
-                if (now - lastKeyframeRequestAt >= KEYFRAME_REQUEST_MIN_GAP_MS) {
-                    lastKeyframeRequestAt = now
-                    keyframeRequests++
-                    if (liveSourceRunning) videoSource?.requestKeyframe()
-                }
-                return
-            }
+            is ControlMessage.Keyframe -> { requestKeyframe(); return }
             else -> {}
         }
         val handler = controlHandler ?: return
@@ -251,6 +384,17 @@ class StreamSession(
             "running" to running,
             "process" to process,
             "port" to port,
+            // What the car has to open to be in a secure context, and the certificate it will be asked to
+            // accept. Absent means no TLS listener — and then a "WebCodecs X" in a report means nothing.
+            "httpsPort" to (httpsPort.takeIf { https != null } ?: 0),
+            "tlsFingerprint" to tlsFingerprint,
+            "tlsSubject" to tlsSubject,
+            // True when a public CA signed it: then the car opens tlsHost with no interstitial at all, which
+            // matters because this Model Y's interstitial has no way through.
+            "tlsTrusted" to tlsTrusted,
+            "tlsHost" to tlsHost,
+            // 90일짜리 인증서를 쓰면 이 날짜가 곧 "차에서 갑자기 경고가 뜨는 날"이다.
+            "tlsNotAfter" to tlsNotAfter,
             "videoClients" to videoHub.clientCount,
             "videoClientStats" to videoHub.clientStats(),
             "controlClients" to controlClients.size,
@@ -269,6 +413,7 @@ class StreamSession(
             "accepting" to (http?.accepting ?: false),
             "lastAcceptAgoMs" to http?.lastAcceptAt?.takeIf { it > 0 }?.let { System.currentTimeMillis() - it },
             "videoDropped" to videoHub.dropped,
+            "videoStaleDropped" to videoHub.staleDropped,
             "reports" to reports.size,
             "lastReport" to reports.last?.let { mapOf("id" to it.id, "receivedAt" to it.receivedAt, "remote" to it.remote, "summary" to it.summary) },
         )
@@ -293,6 +438,9 @@ class StreamSession(
         /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
         private const val ACCEPT_LOG_EVERY = 100L
         const val TEST_CLIP = "test-720p30.cmp4"
+        /** A trusted certificate bundled with the build (not in git — see tools/tls/README.md). */
+        const val TLS_CERT_ASSET = "tls/cert.pem"
+        const val TLS_KEY_ASSET = "tls/key.pem"
         /** Two keyframe requests closer than this collapse into one; an IDR is dozens of P-frames' worth of bytes. */
         const val KEYFRAME_REQUEST_MIN_GAP_MS = 500L
         /** Accepted values of `/api/app`'s `restart` query parameter; anything else falls back to [DEFAULT_RESTART]. */

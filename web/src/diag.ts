@@ -2,7 +2,14 @@
 // Everything measured here is also POSTed back to the phone (/api/report), so the car visit is
 // "open the page, wait for 저장됨", and the numbers are read later from a laptop or the app.
 import { parseMediaPacket } from './protocol';
-import { H264_MIME, AAC_MIME, MseRenderer, mseSupported } from './renderer/mse';
+import { autoPath } from './paths';
+
+// 브라우저가 무엇을 읽을 수 있다고 답하는지의 기록. 우리가 MSE 로 그리지는 않지만(2026-09-18 에 뺐다)
+// 펌웨어가 바뀔 때 "무엇이 생기고 없어졌나"를 보는 데는 여전히 값이 있다 — 표에만 남긴다.
+const H264_MIME = 'video/mp4; codecs="avc1.42E01E"';
+const AAC_MIME = 'audio/mp4; codecs="mp4a.40.2"';
+const mseSupported = (mime: string = H264_MIME): boolean =>
+  typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(mime);
 import { wsUrl } from './transport/ws';
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -18,10 +25,26 @@ interface Report {
   env: Record<string, string | boolean | number>;
   api: Record<string, boolean>;
   ws?: { ok: number; avg: number };
-  /** `state` is the <video> element at the end of the probe (paused/readyState/currentTime/buffered), for stalls. */
-  video?: { packets: number; frames: number; fps: number; latencyMs: number; error: string; state: string; packetTimes: string };
+  /**
+   * 본 화면이 실제로 쓸 경로(paths.ts 의 autoPath)로 5 초를 풀어 본 결과. `path` 가 무엇으로 쟀는지이고,
+   * `state` 는 그 렌더러가 마지막에 말한 것(hardware/backlog/error) — 멈췄을 때 어디서 멈췄는지를 본다.
+   */
+  video?: { path: string; packets: number; frames: number; fps: number; latencyMs: number; error: string; state: string; packetTimes: string };
   /** Control group: the car must fail to reach the phone's real (private) addresses. */
   addresses?: Record<string, 'reachable' | 'blocked' | 'skipped'>;
+  /**
+   * The one question plain http cannot ask: does this browser have a hardware decoder we could drive?
+   * `secure` is what the page found where it is now; on http `videoDecoder` is always false and means
+   * "could not ask", which is why `isSecureContext` travels with it.
+   */
+  secure?: {
+    isSecureContext: boolean;
+    videoDecoder: boolean;
+    /** codec + hardwareAcceleration → 'supported' | 'unsupported' | an error string. */
+    configs: Record<string, string>;
+    /** Where the same page can be reopened in a secure context (the phone's TLS listener), if there is one. */
+    httpsUrl: string;
+  };
   summary: string;
   log: string;
 }
@@ -85,6 +108,87 @@ row(api, 'Fullscreen API', typeof document.documentElement.requestFullscreen ===
 row(api, 'Pointer Events', typeof (window as any).PointerEvent !== 'undefined', report.api);
 row(api, 'createImageBitmap', typeof createImageBitmap === 'function', report.api);
 
+/**
+ * WebCodecs, asked where it can actually answer.
+ *
+ * `VideoDecoder` is `[SecureContext]` in the WebCodecs IDL, so on `http://100.99.9.9:3333` it is absent no
+ * matter what the browser can do — the X in the API table above says "not asked", not "not there". The phone
+ * also serves the same pages over TLS with a self-signed certificate (`/api/status.httpsPort`); past the
+ * car's warning that origin is secure, and then this table means something. What we want to learn there:
+ * whether a decoder exists at all, and whether it will give us a **hardware** one — that is what would take
+ * the car's software decoder (and the Baseline-only limit it puts on the phone's encoder) out of the picture.
+ */
+async function codecProbe(): Promise<void> {
+  const table = $('codec');
+  const note = $('codec-note');
+  const VD = (window as any).VideoDecoder;
+  const present = typeof VD === 'function';
+  const secure: NonNullable<Report['secure']> = {
+    isSecureContext,
+    videoDecoder: present,
+    configs: {},
+    httpsUrl: '',
+  };
+
+  row(table, 'secure context', isSecureContext);
+  row(table, 'VideoDecoder', present);
+
+  if (present) {
+    // 42C01F: exactly what the phone's encoder sends today (Constrained Baseline 3.1). 640028: High 4.0 —
+    // if that one decodes in hardware, the encoder could stop being held down to Baseline for the sake of
+    // the car's WASM decoder, which is worth a chunk of bitrate at the same picture.
+    for (const [label, codec] of [['우리 스트림 (Baseline)', 'avc1.42C01F'], ['High 4.0', 'avc1.640028']] as const) {
+      for (const hw of ['no-preference', 'prefer-hardware'] as const) {
+        const key = `${label} / ${hw}`;
+        try {
+          const res = await VD.isConfigSupported({
+            codec, codedWidth: 1280, codedHeight: 720, optimizeForLatency: true, hardwareAcceleration: hw,
+          });
+          secure.configs[key] = res?.supported ? 'supported' : 'unsupported';
+          row(table, key, !!res?.supported);
+        } catch (e) {
+          secure.configs[key] = String(e);
+          row(table, key, String(e));
+        }
+      }
+    }
+  }
+
+  // Where to go to ask properly. The phone knows its own TLS port; if it has none, say so plainly rather
+  // than leaving a reader to wonder whether the X above was an answer.
+  if (!isSecureContext) {
+    let httpsPort = 0;
+    let trusted = false;
+    let host = '';
+    try {
+      const st = await (await fetch('/api/status')).json();
+      httpsPort = Number(st.httpsPort) || 0;
+      trusted = st.tlsTrusted === true;
+      host = typeof st.tlsHost === 'string' ? st.tlsHost : '';
+    } catch { /* the note below still says what this X means */ }
+    if (httpsPort) {
+      // 신뢰받는 인증서가 있으면 그 이름으로 가야 한다 — 주소(100.99.9.9)로 가면 이름이 안 맞아 도로 경고다.
+      // 그리고 이 차의 경고는 넘길 수가 없다(2026-09-17: 고급 버튼이 없는 NET::ERR_CERT_AUTHORITY_INVALID).
+      secure.httpsUrl = `https://${trusted && host ? host : location.hostname}:${httpsPort}/diag.html`;
+      note.innerHTML = `평문 http 라 <b>물어볼 수 없었습니다</b> — 위의 X 는 "없다"가 아니라 "못 물었다"입니다. ` +
+        `<a class="link" href="${secure.httpsUrl}">${secure.httpsUrl}</a> 를 열어 주세요` +
+        (trusted && host
+          ? ' — 공개 CA 가 서명한 인증서라 <b>경고 없이</b> 열립니다. 안 열리면 그것은 차가 그 이름을 해석하지 못한다는 뜻입니다(DNS).'
+          : ' (자체서명이라 경고가 뜹니다. 넘길 수 없으면 거기서 멈추고 그대로 기록하세요.)');
+    } else {
+      note.textContent = '평문 http 라 물어볼 수 없었고, 폰에 TLS listener 도 없습니다 (https_port=0). 위의 X 는 답이 아닙니다.';
+    }
+  } else if (!present) {
+    note.textContent = 'secure context 인데도 VideoDecoder 가 없습니다 — 이 브라우저에는 WebCodecs 가 없다는 뜻입니다.';
+  } else {
+    note.textContent = 'secure context 에서 물었습니다. 이 표가 곧 답입니다.';
+  }
+
+  report.secure = secure;
+  (window as any).__diag.secure = secure;
+  log(`codec probe secure=${isSecureContext} videoDecoder=${present}`);
+}
+
 // WebSocket: 20 sequential handshakes, count successes. Tesla intermittently fails these.
 async function wsProbe(): Promise<void> {
   const nEl = $('ws-n');
@@ -122,23 +226,24 @@ const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 /** Resolves to true when `p` settles first, false when the timeout wins. */
 const within = (p: Promise<unknown>, ms: number) => Promise.race([p.then(() => true, () => true), sleep(ms).then(() => false)]);
 
-function videoState(v: HTMLVideoElement): string {
-  const b = v.buffered;
-  const buf = b.length ? `${b.start(0).toFixed(2)}-${b.end(b.length - 1).toFixed(2)}` : 'none';
-  return `paused=${v.paused} ready=${v.readyState} t=${v.currentTime.toFixed(2)} buffered=${buf}${v.error ? ` mediaError=${v.error.code}` : ''}`;
-}
-
 async function videoProbe(): Promise<void> {
   const out = $('video-result');
-  const video = document.getElementById('video') as HTMLVideoElement;
-  const empty = (error: string) => ({ packets: 0, frames: 0, fps: 0, latencyMs: 0, error, state: videoState(video), packetTimes: '' });
-  if (!mseSupported()) {
-    out.textContent = 'MSE 미지원'; out.className = 'bad';
-    report.video = empty('MSE unsupported');
+  // 본 화면과 같은 규칙으로 고른다: 이 페이지가 잰 숫자가 곧 본 화면이 낼 숫자여야 리포트가 뜻이 있다.
+  // https 면 하드웨어 디코더, 평문이면 소프트 디코더 — 어느 쪽인지는 `path` 로 리포트에 남는다.
+  const path = autoPath();
+  const canvas = document.getElementById('gl') as HTMLCanvasElement;
+  const r = path.make({ gl: canvas });
+  const rendererState = (): string => {
+    const st = r.stats();
+    return `path=${path.id}${st.hardware !== undefined ? ` hardware=${st.hardware}` : ''}${st.backlog !== undefined ? ` backlog=${st.backlog}` : ''}`;
+  };
+  const empty = (error: string) => ({ path: path.id, packets: 0, frames: 0, fps: 0, latencyMs: 0, error, state: rendererState(), packetTimes: '' });
+  if (!path.supported()) {
+    out.textContent = `${path.label} 미지원`; out.className = 'bad';
+    report.video = empty(`${path.id} unsupported`);
     (window as any).__diag.video = report.video;
     return;
   }
-  const r = new MseRenderer(video);
   r.attach(document.body);
   let packets = 0;
   // When each packet arrived (ms since the probe started), first few + last: "2 packets" from the
@@ -167,23 +272,23 @@ async function videoProbe(): Promise<void> {
     error = 'video ws: closed before open';
     log(error);
   } else {
-    // play() resolves only once playback actually starts, so a stream that never decodes would
-    // hang here. Give it a moment, then measure regardless — a pending play() is itself the finding.
-    const playing = await within(r.resume(), VIDEO_PLAY_MS);
-    if (!playing) log(`video play() still pending after ${VIDEO_PLAY_MS}ms, measuring anyway`);
+    // 캔버스 경로는 resume() 이 할 일이 없지만, 첫 제스처가 필요한 렌더러가 다시 생겨도 이 자리가
+    // 그것을 기다린다 — 끝나지 않으면 그것도 하나의 결과이므로 재는 것은 그대로 한다.
+    const resumed = await within(r.resume(), VIDEO_PLAY_MS);
+    if (!resumed) log(`renderer resume() still pending after ${VIDEO_PLAY_MS}ms, measuring anyway`);
     await sleep(VIDEO_MEASURE_MS);
   }
   const s = r.stats();
-  const state = videoState(video);
+  const state = rendererState();
   const packetTimes = packets ? `${firstArrivals.join(',')}${packets > 5 ? `…last=${lastArrival}` : ''}ms` : '';
   ws.close();
   if (!error) error = s.lastError;
-  if (!error && s.framesDecoded === 0) error = packets ? 'no frames decoded (play() never started)' : 'no packets received';
+  if (!error && s.framesDecoded === 0) error = packets ? 'no frames decoded' : 'no packets received';
   else if (!error && s.fps === 0) error = 'stalled: frames stopped before the end of the probe';
   out.textContent = `패킷 ${packets}, 디코드 ${s.framesDecoded}프레임, ${s.fps}fps, lag ${Math.round(s.latencyMs)}ms${error ? `, err: ${error}` : ''}`;
   out.className = s.framesDecoded > 0 && !error ? 'ok' : 'bad';
   log(`video probe packets=${packets} at ${packetTimes || '-'} frames=${s.framesDecoded} fps=${s.fps} ${state}${error ? ` err=${error}` : ''}`);
-  report.video = { packets, frames: s.framesDecoded, fps: s.fps, latencyMs: Math.round(s.latencyMs), error, state, packetTimes };
+  report.video = { path: path.id, packets, frames: s.framesDecoded, fps: s.fps, latencyMs: Math.round(s.latencyMs), error, state, packetTimes };
   (window as any).__diag.video = report.video;
   r.destroy();
 }
@@ -193,6 +298,14 @@ async function videoProbe(): Promise<void> {
 // we want to know. Cross-origin, so use no-cors: an opaque response means "reachable", a network
 // error means "blocked" (DNS/route/policy). Same-origin address = the one we came in on, skip it.
 async function addressProbe(): Promise<void> {
+  // https 페이지에서 http 주소로 fetch 하면 혼합 콘텐츠로 **브라우저가** 막는다 — 그러면 모든 주소가
+  // "blocked" 로 나와서 "차가 사설 주소를 막는다"처럼 보이지만 아무것도 잰 것이 없다. 이 대조군은
+  // 평문 페이지에서만 뜻이 있다.
+  if (isSecureContext && location.protocol === 'https:') {
+    $('addr-result').textContent = 'https 페이지에서는 재지 않는다 (혼합 콘텐츠를 브라우저가 막는다) — 평문 /diag 의 값을 보라';
+    log('address probe skipped on https (mixed content)');
+    return;
+  }
   const out = $('addr-result');
   let addresses: string[] = [];
   try {
@@ -231,11 +344,13 @@ function summarize(): string {
   return [
     uaLabel(navigator.userAgent),
     `${innerWidth}x${innerHeight}@${devicePixelRatio}`,
-    `mse=${report.api[`MSE ${H264_MIME}`] ? 'O' : 'X'}`,
     w ? `ws ${w.ok}/20 ${w.avg}ms` : 'ws -',
-    v ? `video ${v.frames}f ${v.fps}fps lag ${v.latencyMs}ms${v.error ? ` err=${v.error}` : ''}` : 'video -',
+    // 무엇으로 쟀는지가 없는 lag 숫자는 비교할 수 없다 (2026-09-18 이전 리포트의 video 줄은 MSE 였다).
+    v ? `video ${v.path} ${v.frames}f ${v.fps}fps lag ${v.latencyMs}ms${v.error ? ` err=${v.error}` : ''}` : 'video -',
     `private-ip blocked=${blocked} reachable=${reachable}`,
-  ].join(', ');
+    // Reading a report later, "WebCodecs X" is worthless without knowing where it was asked.
+    report.secure ? `secure=${report.secure.isSecureContext ? 'O' : 'X'} webcodecs=${report.secure.videoDecoder ? 'O' : 'X'}` : '',
+  ].filter(Boolean).join(', ');
 }
 
 let submitted = false;
@@ -274,6 +389,7 @@ async function step(name: string, fn: () => Promise<void>): Promise<void> {
     log(`watchdog: ${WATCHDOG_MS / 1000}초 안에 안 끝남, 지금까지 결과 저장`);
     submit().then(() => { (window as any).__diag.done = true; });
   }, WATCHDOG_MS);
+  await step('codec probe', codecProbe);
   await step('ws probe', wsProbe);
   await step('video probe', videoProbe);
   await step('address probe', addressProbe);

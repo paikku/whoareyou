@@ -45,6 +45,8 @@
 | — | **13 바이트 터치(차의 시계)·MOVE 묶음(kind 5)·ping(kind 6)·키프레임 요청(kind 4) 이 One UI 8 에서 주입·응답된다** | ✅ **실차 (2026-09-17, report #59)**: `injected 18, injectFailed 0, controlErrors 0`, ping 왕복 5~11ms. 이 세션은 탭만 있었고 드래그가 없어 **묶음(batches)은 0** — 플링 세기가 고른지는 ⏳(다음 방문에서 스크롤·플링을 해 보고 리포트의 `touch.batches` 와 체감을 함께 적는다). 키프레임 요청은 드롭이 없어 한 번도 안 나갔다(`keyframeRequests 0`) | C | `InputInjector`, `StreamSession.onControl` |
 | — | 워커 WebGL 이 안 되는 브라우저에서 메인 스레드로 물러나 그림이 나온다 (`fallBackToMainThread`) | ⏳ 차에서는 필요 없었다(위). 코드 경로만 있고 실측된 브라우저는 아직 없다 | — | `renderer/h264.ts` |
 | — | **런타임 인코더 재설정** (`POST /api/encoder?width=&height=&fps=&bitrate=`): 앱은 그대로, 인코더만 교체, 크기가 바뀌면 VD 도 `resize` | ✅ **실차 확인 (2026-09-17 10:00 UTC, 빌드 `bb52071`, report #61)**: 720p60 → 900p30 → 900p60 → 1080p30 네 번 모두 앱(유튜브)을 유지한 채 이어짐, 1080p 에서도 CBR+Baseline 수락(`avc1.42C02A`). 영상이 도는 동안의 60fps·1080p 적체는 ⏳(측정 화면은 정지 화면이라 못 봤다). A+ `09-encoder` 는 CI 가 막혀 미실시 | C | car-tests/model-y §6 |
+| — | **차가 하드웨어 H.264 디코더로 실제 스트림을 푼다** (`WebCodecsRenderer`, https 오리진) | ✅ **실차 확인 (2026-09-18, Model Y 2026.26, 웹 `3c64af4`, report #70)**: `renderer webcodecs`, `hardware true`, **디코드 지연 1.1ms** — 같은 차의 WASM(h264) 11ms(#68) 대비 10배. 인코더도 **High 4.2**(`avc1.64002A`)로 올라갔다(§7 까지는 Baseline 강제). 2.5분 동안 `videoWs` 재접속 0·실패 0 | C | car-tests/model-y §8 |
+| — | **자동 내리기가 실제로 그 차의 천장을 찾아 준다** (`maybeStepDown`) | ✅ **실차 확인 (2026-09-18, report #70)**: 1080p60(12Mbps)을 고른 뒤 55초 만에 decode stall 2회·349 드롭 → **110.1s 에 스스로 900p60 으로 내려갔고** 그 뒤 32~39fps·lag 1~2ms·드롭 0·적체 0 으로 안정. 폰은 결백(`videoStaleDropped 0`, 클라이언트 큐 0) | C | car-tests/model-y §8 |
 | — | **끝에서 끝까지 지연 측정** (차가 `LatencyProbeActivity` 를 띄우고 터치 → 가운데 밝기 뒤집힘까지) | ✅ **실차 (report #61)**: 720p30 **43ms**, 720p60 **37ms**, 900p30 46, 900p60 45, 1080p30 48 (각 10 회 중앙값). 60fps 가 6~9ms 를 벌고 해상도는 3~5ms 만 더한다. 측정 뒤 감시자가 "폰이 가져감"을 잘못 띄운 것은 다음 빌드에서 고침(`transient`) | C | car-tests/model-y §6 |
 
 **설계에 반영된 결론:** 가정 1의 조건 때문에 HTTP/WS 서버는 앱이 아니라 shell 프로세스에서 돈다
@@ -75,6 +77,10 @@
 | `app` | `BulkControlTest` | 일괄 끄기의 **순서**(서버 → 세션)를 가짜 loopback 서버로 확인 — 킬 스위치가 그 서버로 가는 요청이라 세션을 먼저 내리면 끌 방법이 사라진다. 핫스팟은 건드리지 않는다. 두 번 누르면 두 번째는 거절 |
 | `app` | `CarCastWidgetTest` | 위젯 스위치: 끄기는 VPN 동의를 기다리지 않고, 켜기는 동의 없이 시작하지 않는다. 세션만 살고 서버가 죽은 상태를 "켜짐"으로 보이지 않는다 (상태를 가진 쪽이 바뀔 때마다 다시 그려 주는 것은 `StreamService`·`CarVpnService` 의 몫) |
 | `core` | `ExtraApiTest` | 호스트가 더한 `/api` 경로가 요청을 받고 그 답이 서빙된다. null 을 주면 코어 경로로 넘어간다 — 호스트 경로가 `/api/status` 를 가려 버리면 차가 멈춘다 |
+| `core` | `SelfSignedCertTest` | 손으로 쓴 X.509(DER)가 **진짜 파서에 통과하는가**: `CertificateFactory` 파싱, 자기 서명 검증, SAN 에 `100.99.9.9`·loopback·핫스팟 주소, extKeyUsage serverAuth, CA 아님. 그리고 재기동 후 같은 인증서(차가 매번 다시 경고를 넘지 않게), 깨진 키스토어는 교체(페이지를 잃지 않게), 마지막으로 **진짜 TLS 핸드셰이크로 `/api/status` 가 나오는가** |
+| `core` | `StaleFrameTest` | 영상 소켓 앞의 큐가 **지연 예산**이라는 계약: 4장을 넘으면 P프레임을 버리고(다음 키프레임까지) 소스에 IDR 을 부탁한다, 키프레임은 언제나 보낸다(그것이 복구를 끝내는 것), 따라오는 손님은 한 장도 안 잃는다. 예전 계약(64장 = 2초를 쌓아 두었다가 전부 늦게 배달)이 리포트 #27 의 모양이었다 |
+| `shell-server` | `H264LevelTest` | 크기·fps 에 맞는 H.264 레벨을 고르는가(Annex A Table A-1). 예전에는 Baseline 을 요청할 때 레벨이 **3.2 로 고정**돼 있었는데, 차가 고를 수 있는 여섯 칸 중 넷이 그것을 넘는다(900p·1080p). **다만 S26U 에서 사고는 나지 않았다** — `c2.qti.avc.encoder` 는 그 요청을 무시하고 스스로 4.2 를 골랐다(report #61, 1080p 에서 SPS `avc1.42C02A`). **거부하는** 인코더에서는 `configure` 가 실패하고 벤더 기본값(High)으로 물러나며, 평문 경로의 WASM 디코더는 High 를 못 읽는다 — 그래서 이것은 **관측된 버그의 수정이 아니라 기기 의존 위험의 제거**다 |
+| `app` | `CertInstallTest` | 만료된 인증서를 **폰 위에서** 갈아끼우는 길(`CertInstall`): 두 파일로 주는 출처(local-ip.sh)와 한 덩어리로 주는 출처를 둘 다 다루고, PEM 이 아닌 것은 **서버에 닿기 전에** 멈추고, 개인키를 평문(http)으로 받지 않고, 서버의 거부 사유를 지어내지 않고 그대로 옮긴다. 마지막 한 건은 진짜 소켓으로 loopback 에 POST. **자동 갱신의 판단**(`renewalDue`, 순수 함수): 멀쩡하면 손대지 않고, 14일 안이면 갱신, 자체서명이면 갱신(이 차는 경고를 넘지 못한다), 하루 한 번만, listener 가 없거나 상태를 못 읽으면 아무것도 안 함 |
 | `core` | `ReportStoreTest`, `JsonObjectCheckTest` | 보고서 메모리 보관(최대 50), 디렉터리 저장 후 재기동 시 복원·id 이어감, JSON 객체 구조 검사(중첩·문자열 속 괄호·꼬리 텍스트), 이스케이프 복원 |
 - 먹서 산출물은 ffmpeg(static 7.0.2)로 디코드 검증: 240프레임 정상 디코드.
 
@@ -84,12 +90,20 @@
 
 | spec | 확인한 것 | 가짜 폰 | JVM shell 서버(APK assets) |
 |---|---|---|---|
-| `diag.spec` | UA 표시, `isSecureContext=false`, MediaSource·`avc1.42E01E` 지원, WS 20회 중 ≥18 성공, 5초 프로브에서 >30 프레임, 에러 없음, 사설 주소 대조군이 `reachable`이 아님, 결과가 `POST /api/report`로 저장되고 `/api/reports`·`/api/status.lastReport`에 나타남 | ✅ | ✅ (loopback 오리진은 secure-context 검사만 생략) |
-| `stream.spec` | MSE 렌더러 fps ≥ 25, pts 대비 렌더 지연 < 300ms, 10초 무정지, `?renderer=mjpeg` 강제 | ✅ | ✅ |
+| `diag.spec` | UA 표시, `isSecureContext=false`, MediaSource·`avc1.42E01E` 지원, WS 20회 중 ≥18 성공, 5초 프로브에서 >30 프레임, 에러 없음, 사설 주소 대조군이 `reachable`이 아님, 결과가 `POST /api/report`로 저장되고 `/api/reports`·`/api/status.lastReport`에 나타남 | ✅ | ✅ (loopback 오리진은 secure-context 검사만 생략) **2026-09-18 부터 영상 프로브는 본 화면과 같은 경로(paths.ts 의 autoPath)로 잰다** — 요약의 `video` 줄이 `video h264 137f …` 처럼 무엇으로 쟀는지를 앞에 달고, 그 전 리포트의 `video` 줄은 MSE 값이라 그대로 견주면 안 된다. 같은 날 잡은 버그: 두 캔버스 렌더러의 `fps` 창이 그리는 순간에만 정리돼 **멈춘 뒤에도 마지막 값이 남았다**(정지 화면이 `1fps` 로 읽혀 diag 의 정지 판정이 속았다) — `stats()` 에서도 정리한다 |
+| `stream.spec` | 기본(캔버스) 경로가 첫 제스처 없이 그려지고 secure context 에 따라 webcodecs/h264 로 갈리는가, 10초 무정지(≥250 프레임). MSE·MJPEG 검사는 2026-09-18 에 그 경로들과 함께 뺐다 | ✅ | ✅ |
 | `input.spec` | 클릭 → 서버가 받은 정규화 좌표(레터박스 보정) 검증, 네비 바 → Android 키코드 | ✅ | skip(가짜 폰 전용 API) |
 | `reconnect.spec` | 핸드셰이크 거부 34% + 150ms 지연 + 5초마다 소켓 절단 하에서 15초 내 영상 복구 | ✅ | skip |
+| `paths.spec` | **경로(기법 한 벌)를 사람이 고르는 길**: 시트가 둘(하드웨어·소프트)을 내고 못 가는 것에 **이유를 적는가**(하드웨어 경로는 인증서가 없으면 갈 곳이 없다), 손으로 고른 것이 이 차에 남고 자동에서 빠지는가, **남은 선택을 이 브라우저가 못 쓰게 되면 조용히 자동으로 되돌아가는가**(없으면 펌웨어가 바뀐 날 검은 화면이다). `?path=` 는 반대로 되는지 묻지 않고 간다 — 진단용 | ✅ | skip(가짜 폰 전용 API) |
+| `quality.spec` | 화질 사다리가 **렌더러에 따라 갈리는가**: 평문(WASM)에서는 다섯 칸이고 `1080p60` 이 없다, 하드웨어(webcodecs)에서는 여섯 칸이다, 그리고 **하드웨어 전용 설정으로 도는 폰에 평문으로 들어오면 한 단계 내려 준다**(폰은 차가 고른 값을 파일로 기억하므로 실제로 생기는 조합이고, 그 증상은 멈춘 화면이라 자동 내리기가 손대지 못한다). 더해서 자동 내리기와 끝에서 끝까지 지연 측정 | ✅ | skip(가짜 폰 전용 API) |
+| `secure-context.spec` (webcodecs) | secure context 에서 렌더러가 **webcodecs 로 골라지고**, 프레임이 나오고, 폰 인코더가 High 로 올라가는가. 하드웨어가 없는 자리(이 컨테이너)에서는 `stats.hardware=false` 로 소프트웨어 WebCodecs 로 내려간다 — 그래도 lag 5.7ms(WASM 은 10ms) | skip(TLS 없음) | ✅ |
+| `secure-context.spec` | **자체서명 인증서를 넘긴 https 오리진이 secure context 인가**, 거기서 `VideoDecoder` 가 보이고 `isConfigSupported` 표가 채워져 리포트에 실리는가. 평문에서는 "못 물었다"를 말하고 https 주소를 안내하는가 | skip(TLS 없음) | ✅ (2026-09-17, Chrome 148) |
 
-결과: 가짜 폰 대상 **14/14**, JVM으로 띄운 shell 서버(`./gradlew :core:run`, APK의 assets 그대로) 대상 **8/14 통과, 6 skip**.
+결과(2026-09-18, `npm run e2e`, MSE·MJPEG 검사 6건을 뺀 뒤 150건): 가짜 폰 대상 세 프로필 합쳐 **113 통과 /
+36 skip / 1 실패** — 실패는 `pts-base` 의 순간 fps 문턱(`> 20` 에 20)이고, 그 자리에서 2초 프레임 증가량으로
+문턱을 바꿔 5/5 통과를 확인했다. JVM으로 띄운 shell 서버(`BASE_URL=http://127.0.0.1:3399`, APK의 assets
+그대로)에서는 `diag`·`secure-context`·`stream` **6 통과 / 1 skip**(가짜 폰 전용 API 를 쓰는 것들이 빠진다;
+대신 `secure-context.spec` 네 건은 여기서만 돈다).
 같은 서버 코드가 폰의 shell 프로세스에서 돌기 때문에, 폰에서 남는 미검증 요소는 프로세스 환경과 네트워크뿐이다(§3.3에서 확인).
 
 이 층에서 잡은 문제와 수정: 클립 루프 시 `tfdt`가 원래 pts로 남아 MSE 타임라인이 되감기던 10초 정지(재스탬프),
@@ -444,6 +458,78 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
 6. M7 📵: SurfaceControl 경로(`fdc2350`)가 S26U에서 되는지. M6: `output` 캡처를 서버에 넣고 차 스피커로.
 7. M4-b 같은 앱을 폰과 차에서: 기본(`restart=never`)이 폰의 유튜브를 **재생 위치째** 차로 옮기는지(2026-09-17에 `auto`에서 되돌림), "새로 열기"(`always`)가 종료 후 새로 띄우는지, 폰 런처가 앱을 가져갈 때 `appOnPhone`이 5초 안에 true가 되는지, 사용자 조작 없이 앱이 폰으로 돌아가는 경로가 있는지,
    그리고 One UI 8의 `am stack list` 출력이 `TaskList` 파서와 맞는지(안 맞으면 `appDisplay`가 항상 null). 절차: testing-guide §B "M4-b".
+10. **차 브라우저에 WebCodecs 가 있는가 (C) — HTTPS 착수 전의 유일한 질문:** 2026-09-17 에 재는 도구를
+   달았다. 폰이 자기 주소(`100.99.9.9`·핫스팟·loopback)로 **자체서명 인증서**를 만들어 `:3443` 에
+   같은 페이지를 TLS 로도 서빙하고(`/api/status.httpsPort`·`tlsFingerprint`), `/diag` 가 그 자리에서
+   `isSecureContext`·`VideoDecoder`·`isConfigSupported`(Baseline/High × no-preference/prefer-hardware)를
+   재서 리포트에 싣는다.
+   - **여태의 `WebCodecs X` 는 답이 아니었다.** `VideoDecoder` 는 명세상 `[SecureContext]` 라 평문
+     오리진에는 객체 자체가 없다 — "차에 없다"가 아니라 "물어볼 수 없었다"이다(prior-art §5.4 정정).
+   - A 층에서 확인된 것(Chrome 148, 차와 같은 엔진): 인증서 오류를 넘긴 https 오리진은 **secure
+     context 이고**, 거기서 `VideoDecoder` 가 보이며 Baseline·High 가 `no-preference` 로 `supported`,
+     `prefer-hardware` 는 이 컨테이너(GPU 없음)에서 `unsupported` — 즉 **프로브가 하드웨어와
+     소프트웨어를 실제로 가른다.**
+   - **① 은 실차에서 답이 나왔다 — ❌ 넘길 수 없다 (2026-09-17, Model Y 2026.26).** 자체서명으로
+     `https://100.99.9.9:3443` 을 열면 `NET::ERR_CERT_AUTHORITY_INVALID` 가 뜨는데 **"고급" 버튼이 없고**
+     본문이 *"웹사이트가 Chromium이 처리할 수 없는 암호화된 사용자 인증 정보를 전송하였으므로 지금은
+     100.99.9.9에 방문할 수 없습니다"* — 크로미엄이 **우회를 막았을 때**(`SSLErrorOverrideAllowed=false`
+     정책으로 보인다) 쓰는 문구다. 즉 **이 차에서 자체서명은 영영 secure context 에 못 간다.**
+     다만 같은 화면이 알려 주는 것이 하나 더 있다: 차가 생 IP 로 **https 를 열고 TLS 핸드셰이크를 해서
+     우리 손으로 쓴 인증서를 파싱까지 했다**(불평한 것은 발급자뿐이다). 프로토콜 쪽은 멀쩡하다.
+   - **그래서 공개 CA 로 갈아탔다(같은 날).** 도메인을 사지 않고도 된다: `local-ip.sh` 가 `*.local-ip.sh`
+     의 Let's Encrypt 와일드카드 인증서와 키를 **공개**하고, 그 DNS 가 이름에 적힌 주소를 돌려준다
+     (`100-99-9-9.local-ip.sh` → `100.99.9.9`). 그 쌍을 APK 에 실으면(`assets/tls/`, git 에는 없다 —
+     tools/tls/README.md) 서버가 자체서명 대신 그것을 쓰고 `/api/status.tlsHost` 가 주소를 알려 준다.
+     A 층 확인(Chrome 148, **인증서 오류를 무시하지 않는 브라우저**): `https://100-99-9-9.local-ip.sh:3444/diag.html`
+     이 **경고 없이 200 으로 열리고** secure context, `VideoDecoder` 보임. curl 의 시스템 CA 검증도 통과
+     (`ssl_verify_result=0`).
+   - **② ③ ④ ⑤ 모두 답이 나왔다 — ✅ 전부 (2026-09-17, report #67).** 차가
+     `https://100-99-9-9.local-ip.sh:3443/diag.html` 을 **경고 없이** 열었고(= 그 이름을 해석했다;
+     이 통신사에서 DNS64/NAT64 사망은 없다), `isSecureContext true`, `VideoDecoder` 있음,
+     **Baseline·High 4.0 둘 다 `prefer-hardware` 로 supported**. 즉 **이 차에는 하드웨어 H.264
+     디코더가 있고 High 까지 읽는다.** 자세히: car-tests/model-y §7.
+   - **그래서 바뀌는 것:** ① 차의 WASM 디코더(Baseline 전용) 때문에 인코더를 Baseline 에 묶어 둘 이유가
+     없어졌다(`/api/encoder?profile=high`), ② 해상도·fps 의 천장이 차 CPU 가 아니게 된다,
+     ③ **HTTPS 가 진단 도구가 아니라 제품 요구사항이 된다** — 평문에서는 그 디코더에 닿지 못한다.
+     남은 일은 우리 도메인·우리 키(tools/tls/README.md 아래쪽, `tools/tls/issue.sh`).
+   - 판정: `isSecureContext O` 인데 `VideoDecoder X` → **테슬라 빌드에 WebCodecs 가 없다. 진짜 인증서
+     작업은 무의미하니 접고 WebRTC(평문에서도 되는 `RTCPeerConnection`, 실차 O)를 본다.** 둘 다 O 면
+     그때 비로소 "경고 없이 열리게 하는 법"(공개 도메인 + 진짜 인증서)이 할 일이 된다.
+   - 그 앞에 붙는 별도 확인: **공개 도메인 하나가 차에서 우리 주소로 해석되는가**(평문으로 먼저).
+     안 되면 인증서를 사도 못 쓴다 — Castla issue #51 의 DNS64/NAT64 사망(prior-art §4).
+8. **폰 안쪽 지연 예산이 실제로 어디로 가는가 (B → C):** 2026-09-17 에 계측을 달았다(`FrameTiming`,
+   `/api/status.timing`). 지금까지 아는 것은 끝에서 끝 43ms(720p30, report #61), 컨트롤 왕복 5~11ms,
+   차의 디코드→그리기 9.5~13ms 뿐이고, **그 사이 25ms 는 한 덩어리**였다. 새 두 수치가 그것을 가른다:
+   - `timing.encodeMs` — 서피스가 그 그림을 만든 시각(`BufferInfo.presentationTimeUs`, CLOCK_MONOTONIC)에서
+     인코더가 바이트를 돌려줄 때까지. **가정: 벤더 인코더가 출력에 pts 를 다시 찍지 않는다.** 아니면
+     `skipped` 가 는다(조용히 틀리지 않게 만든 장치). 에뮬레이터에서 이 가정이 서는지는 `emulator` 워크플로의
+     `04-input` 이 본다.
+   - `timing.touchToFrameMs` — 터치를 주입한 순간부터 다음 프레임의 pts 까지. 안드로이드의 입력→앱→합성.
+     화면이 안 바뀌는 탭은 다음 아무 프레임에나 붙으므로 500ms 넘는 표본은 버린다. 거친 수치다.
+   읽는 법: 둘의 합이 25ms 를 설명하면 다음 손잡이는 인코더 쪽(또는 가상 디스플레이의 리프레시)이고,
+   설명하지 못하면 남는 곳은 링크와 큐다. **다음 실기기(B)·실차(C) 방문에서 💾 리포트의 이 두 줄을 적는다.**
+9. **송신 큐 정책(2026-09-17)이 실제 주행에서 무엇을 바꾸는가 (C):** 영상 소켓 앞에 4장까지만 쌓고 넘으면
+   버린다(`MediaHub.MAX_QUEUED_FRAMES`, `/api/status.videoStaleDropped`). 예전에는 64장까지 쌓였고 —
+   30fps 에서 2.1초 — 링크가 한 번 멈칫하면 **프레임을 잃는 대신 전부 늦게** 배달했다. 차는 그것을 볼 수
+   없다(자기 적체는 0, `30fps dropped 0`). 리포트 #27(`lag 144ms`, 나머지는 멀쩡, 사용자는 불만)이 그 모양.
+   확인할 것: 주행 중 `videoStaleDropped` 가 0 이상으로 오르는 구간이 있는지, 그때 화면이 **끊기는지(새 정책)**
+   아니면 **밀리는지(옛 정책)**, 그리고 `keyframeRequests` 가 그만큼 따라 오르는지.
+11. **1080p60 이 실제로 이 차에서 도는가 (C): 답 나옴 — ❌ 이 차·이 링크에서는 못 버틴다 (2026-09-18,
+   report #70).** 55.5s 에 고르자 decode stall 2회·349 프레임 드롭·lag 1→164ms, **110.1s 에 자동 내리기가
+   스스로 900p60 으로 내렸고** 거기서는 32~39fps·lag 1~2ms·드롭 0 으로 안정. 자세히: car-tests/model-y §8.
+   - **사다리는 그대로 둔다.** 한 대의 차·한 번의 핫스팟에서 나온 수치로 모든 사용자의 천장을 깎는 것은
+     과적합이다. 링크 품질도 차의 부하도 사람마다 다르고, 자동 내리기가 이미 각자의 환경에서 그 경계를
+     찾아 준다 — #70 이 그 동작의 실측 기록이다. 1080p60 은 "눌러 보고 자기 차에서 되는지 확인하는 칸"이다.
+   - **남은 미지수: 링크인가 디코더인가.** 폰은 결백했고(`videoStaleDropped 0`, 클라이언트 큐 0,
+     `encodeMs` p50 11.4ms) 차 쪽 드롭과 함께 **rtt 가 7 → 45·49·64·69ms 로 뛰었다** — 12Mbps 가 핫스팟을
+     눌렀다는 신호다. 가르는 실험 하나: **1080p60 을 8Mbps 로.** 안정되면 링크였고, 그래도 무너지면 디코더다.
+   - 폰 쪽 위험은 따로 잡아 뒀다: 큰 프리셋에서 Baseline 요청이 거부되지 않는가(`H264LevelTest`, 그리고
+     실기기에서 `tests/device/09-encoder` 의 "큰 프리셋에서도 Baseline 요청이 살아남는다"). 다만 S26U 는
+     거부하지 않고 **무시**했다(report #61) — 관측된 버그가 아니라 기기 의존 위험이다.
+12. **하드웨어 경로의 끝에서 끝까지 지연 (C):** #70 은 `latencyProbe: null` 이라 글래스 투 글래스 값이
+   아직 없다. 디코드만 11ms → 1.1ms 로 줄었으니 §6 의 표(720p30 43ms, 720p60 37ms …)가 통째로 다시
+   그려질 수 있다. 다음 방문에서 화질 시트의 **"끝에서 끝까지 지연 측정 (10회)"** 를 같은 프리셋으로
+   한 번 누르면 된다(30초).
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
 ---

@@ -28,11 +28,27 @@ open class MediaHub {
     @Volatile var onClientAttached: () -> Unit = {}
     /** Called the first time a client's queue is full and a frame is dropped (once per client). */
     @Volatile var onClientStalled: (remote: String, queued: Int) -> Unit = { _, _ -> }
+    /**
+     * Called when frames were dropped for being stale: the source should emit an IDR so the car can start
+     * again straight away instead of waiting out the GOP. The caller rate-limits.
+     */
+    @Volatile var onNeedKeyframe: () -> Unit = {}
     /** Called when a client was dropped because it could not take the init segment. */
     @Volatile var onClientDropped: (remote: String) -> Unit = {}
 
     /** How many clients we let go of because they would not take an init segment. For /api/status. */
     @Volatile var dropped = 0L
+        private set
+
+    /**
+     * How many times the stream was cut for a client that had fallen behind: the frame was dropped for being
+     * stale (or the socket would not take it) and everything up to the next keyframe goes with it. One per
+     * outage, not per frame — the frames skipped afterwards are waiting for the keyframe that ends it.
+     *
+     * Unlike [dropped] this is not a fault: it is the hub choosing a fresh picture over a complete one. It
+     * climbing during a drive is the link (or the car) not keeping up with the current preset.
+     */
+    @Volatile var staleDropped = 0L
         private set
 
     /**
@@ -79,18 +95,46 @@ open class MediaHub {
         }
     }
 
+    /**
+     * One encoded frame to every client that can still use it.
+     *
+     * The queue in front of a socket is a latency budget, not a safety net. It used to be the connection's
+     * whole capacity (64 frames — over two seconds at 30fps), and nothing was dropped until it was full, so a
+     * link that hiccuped did not lose frames: it delivered them all, late. That is the worst outcome of the
+     * three. The car sees no backlog of its own (it decodes what arrives as it arrives), its stats read
+     * `30fps, dropped 0`, and the only thing wrong is the one thing nobody was measuring — the picture is a
+     * second behind the finger. Report #27 (`lag 144ms`, everything else healthy, user still unhappy) is what
+     * that looks like from the driver's seat.
+     *
+     * So P-frames are dropped once [MAX_QUEUED_FRAMES] are already waiting: those frames are stale by the time
+     * the socket could send them, and a stale frame is pure latency. Dropping one means the ones after it
+     * reference a picture the car does not have, so we stop until the next keyframe — the car's own renderer
+     * has used exactly this rule since the backlog threshold went to 8 — and ask the source for one now, or
+     * the GOP (10 s) decides when the picture comes back. A keyframe itself is always offered: it is what ends
+     * the outage, and the connection's own bound still catches a socket that has truly stopped reading.
+     */
     open fun onFrame(packet: ByteArray, keyframe: Boolean) {
         if (keyframe) lastKey = packet
+        var stale = false
         for (c in clients) {
             if (c.waitingForKey && !keyframe) continue
+            if (!keyframe && c.conn.queuedFrames >= MAX_QUEUED_FRAMES) {
+                c.waitingForKey = true
+                stale = true
+                staleDropped++
+                if (c.dropped++ == 0L) onClientStalled(c.conn.remote, c.conn.queuedFrames)
+                continue
+            }
             if (c.conn.offer(packet)) {
                 c.waitingForKey = false
                 c.sent++
             } else {
                 c.waitingForKey = true
+                stale = true
                 if (c.dropped++ == 0L) onClientStalled(c.conn.remote, c.conn.queuedFrames)
             }
         }
+        if (stale) onNeedKeyframe()
     }
 
     fun closeAll() {
@@ -99,6 +143,14 @@ open class MediaHub {
     }
 
     companion object {
+        /**
+         * How many frames may wait in front of one socket before the next one is dropped instead of queued.
+         * Four is ~130 ms at 30fps and ~65 ms at 60 — a hiccup's worth of slack, and the ceiling on how stale
+         * the picture can get. The connection's own queue (64) stays as the hard backstop for what must not be
+         * dropped (the init segment); this is the video policy on top of it.
+         */
+        const val MAX_QUEUED_FRAMES = 4
+
         const val TYPE_INIT: Byte = 0
         const val TYPE_FRAME: Byte = 1
         const val TYPE_KEY: Byte = 2

@@ -13,7 +13,10 @@ test('화질 시트에서 고르면 폰 인코더 설정이 바뀌고 터치 좌
   await page.evaluate(() => fetch('/api/reset'));
   await page.locator('#btn-quality').click();
   await expect(page.locator('#quality')).toBeVisible();
+  // 평문 경로(WASM 디코더)의 사다리는 다섯 칸이다. 1080p60 은 하드웨어 디코더에서만 나온다 —
+  // 여기 보이면 "고르면 화면이 멈추는 버튼"이 하나 있는 것이다.
   await expect(page.locator('#quality-grid .tile')).toHaveCount(5);
+  await expect(page.locator('#quality-grid .tile[data-preset="1080p60"]')).toHaveCount(0);
   await page.locator('#quality-grid .tile[data-preset="900p30"]').click();
   await expect(page.locator('#stats')).toContainText('선명하게');
   const st = await statusOf(page);
@@ -76,4 +79,48 @@ test('지연 측정은 터치를 보내고 밝기가 뒤집힐 때까지를 재�
   const reports = await page.evaluate(async () => (await fetch('/api/reports')).json());
   expect(reports[0].summary).toMatch(/끝까지\d+ms/);
   expect(reports[0].report.stats.latencyProbe.samples.length).toBe(3);
+});
+
+// 하드웨어 디코더가 있는 차에서는 사다리가 한 칸 길어진다.
+//
+// 1080p60 이 여기에만 있는 이유: WASM 디코더(h264bsd)는 차 CPU 로 한 장씩 풀고 720p 한 장에 10ms 였다
+// (실측 2026-09-17). 60fps 예산이 16ms 이므로 1080p 는 그 위이고, 골라 봐야 폰은 순순히 그 설정으로
+// 갈아끼운 뒤 차가 못 따라온다. 실차 report #67 에서 하드웨어 디코더가 확인됐으므로 그쪽에만 낸다.
+test('하드웨어 디코더로 열면 사다리에 1080p60 이 생긴다', async ({ page }) => {
+  await page.goto('/?renderer=webcodecs');
+  await page.waitForFunction(() => !!(window as any).__carcast, null, { timeout: 30_000 });
+  const s = await stats(page);
+  expect(s.renderer).toBe('webcodecs');
+  expect((s as any).presets).toEqual(['720p30', '720p60', '900p30', '900p60', '1080p30', '1080p60']);
+
+  await page.locator('#btn-quality').click();
+  await expect(page.locator('#quality-grid .tile')).toHaveCount(6);
+  await expect(page.locator('#quality-grid .tile[data-preset="1080p60"]')).toBeVisible();
+});
+
+// 폰은 차가 고른 값을 파일로 기억한다(encoder.conf). 그래서 "지금 경로의 천장 위 설정으로 도는 폰에
+// 들어오는" 조합이 실제로 생긴다 — 북마크가 https 와 http 로 둘 있거나, 시트에서 경로를 바꾸기만 해도
+// 그렇게 된다. 그 조합의 증상은 그냥 멈춘 화면이고, 자동 내리기는 손대지 못한다(프레임이 안 풀리니
+// 적체도 드롭도 자라지 않는다).
+test('경로의 천장 위 설정으로 도는 폰에 들어오면 한 단계 내려 준다', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => fetch('/api/reset'));
+  // 지난번 https 방문에서 고른 값이 폰에 남아 있는 상태를 만든다.
+  await page.evaluate(() => fetch('/api/encoder?width=1920&height=1080&fps=60&bitrate=12000000', { method: 'POST' }));
+  expect((await statusOf(page)).maxFps).toBe(60);
+
+  await page.goto('/'); // 평문 북마크로 다시 들어온다: WASM 경로
+  await startPlayback(page);
+  expect((await stats(page)).renderer).toBe('h264');
+
+  // 이 렌더러가 풀 수 있는 것 중 가장 무거운 칸으로 간다(900p60). 더 내릴 일이 있으면 그 다음은
+  // 자동 내리기의 몫이다 — 여기서 재는 것은 성능이 아니라 능력이다.
+  await expect.poll(async () => (await statusOf(page)).width).toBe(1600);
+  const st = await statusOf(page);
+  expect(st.height).toBe(900);
+  expect(st.maxFps).toBe(60);
+  expect((await stats(page) as any).presetGuarded).toBe(true);
+  await expect(page.locator('#stats')).toContainText('감당하지 못합니다');
+  // 성능 판단이 아니라 능력 판단이므로 자동 내리기 횟수에는 넣지 않는다.
+  expect((await stats(page) as any).autoStepDowns).toBe(0);
 });

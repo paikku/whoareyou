@@ -83,8 +83,19 @@
 2. **화면 분할·별도 화면을 원하면 shell은 선택이 아니라 필수다.** 미러링 진영은 그 기능이 아예 없다.
 3. **가상 IP(VpnService) 경로는 2024-06 이후 앱 uid에서 죽었고, 아무도 복구하지 못했다.** 유저스페이스 TCP 릴레이까지 만들어 봤지만
    Castla는 쓰지 않는다. 우리가 shell uid로 이 규칙을 면제받는 것이 현재로선 가장 깨끗한 해답이다.
-4. **WebCodecs가 평문 http에서 쓰인다.** Castla는 `http://<ip>:8192`에서 WebCodecs를 1순위로 쓴다 —
-   우리 제안서의 "WebCodecs는 secure context가 필요하니 HTTPS 이후"라는 가정은 **재검토 대상**이다.
+4. ~~**WebCodecs가 평문 http에서 쓰인다.**~~ **틀렸다 — 2026-09-17 재조사.** Castla 가 `http://<ip>:8192` 에서
+   WebCodecs 를 1순위로 **고르는** 것은 맞지만, 그 자리에서 **쓰일 수가 없다.** W3C WebCodecs 명세의 IDL 이
+   `[Exposed=(Window,DedicatedWorker), SecureContext] interface VideoDecoder` 라서 평문 오리진에서는
+   `window.VideoDecoder` 가 아예 없다. 즉 Castla 의 선택 코드는 차에서 조용히 MSE 로 내려가고 있을 것이다
+   (그들이 그 사실을 아는지는 모른다 — 폴백이 잘 도니 화면은 나온다).
+   **우리 쪽 실측도 같은 말을 한다:** 차의 `/diag` 가 http 에서 `WebCodecs X`, `RTCPeerConnection O`,
+   `AudioContext O` 를 보고했다(car-tests/model-y §2). 크로미엄은 `RTCPeerConnection` 은 secure context 로
+   묶지 않았고(묶은 것은 `getUserMedia`), `VideoDecoder` 는 묶었다 — 우리가 본 그대로다.
+   → **하드웨어 디코드로 가는 길은 둘뿐이다:** (a) 진짜 인증서로 HTTPS 를 서빙해 secure context 를 얻고
+   WebCodecs 를 쓰거나, (b) secure context 없이도 되는 **WebRTC** 로 가거나. (a) 는 TeslaMirror 가
+   `https://TSL6.com` 으로 실제로 하고 있는 일이고(§2), 위험은 Castla issue #51 의 실측이다 —
+   IPv6 전용 통신사에서 **호스트명이 DNS64 로 합성돼 NAT64 로 새어 나간다**(`192-0-0-8.sslip.io` 실패).
+   그래서 (a) 를 시작하기 전에 차에서 **공개 도메인 한 개가 우리 주소로 실제로 열리는지**부터 본다.
 
 ## 6. 우리가 가져올 것 (우선순위)
 

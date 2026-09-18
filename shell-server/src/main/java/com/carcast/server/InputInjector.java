@@ -58,6 +58,8 @@ final class InputInjector {
     }
     private volatile long injected;
     private volatile long failed;
+    /** Set once the live source exists: every touch is stamped so the next frame can be timed against it. */
+    private volatile FrameTiming timing;
 
     InputInjector(java.util.function.IntSupplier width, java.util.function.IntSupplier height, java.util.function.IntSupplier displayId) {
         this.width = width;
@@ -69,6 +71,10 @@ final class InputInjector {
             props[i] = p;
             coords[i] = new MotionEvent.PointerCoords();
         }
+    }
+
+    void timing(FrameTiming t) {
+        timing = t;
     }
 
     long injected() {
@@ -132,6 +138,9 @@ final class InputInjector {
 
     void handle(ControlMessage msg) {
         boolean ok;
+        // Taken before the injection, not after: the binder call into Android is part of what we are timing.
+        long atNs = System.nanoTime();
+        boolean isTouch = msg instanceof ControlMessage.Touch || msg instanceof ControlMessage.TouchBatch;
         if (msg instanceof ControlMessage.Touch) {
             ok = touch((ControlMessage.Touch) msg);
         } else if (msg instanceof ControlMessage.TouchBatch) {
@@ -146,6 +155,10 @@ final class InputInjector {
         }
         if (ok) {
             injected++;
+            FrameTiming t = timing;
+            if (isTouch && t != null) {
+                t.onInject(atNs);
+            }
         } else {
             failed++;
         }

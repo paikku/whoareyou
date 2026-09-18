@@ -21,6 +21,7 @@ import com.carcast.adb.AdbLink
 import com.carcast.adb.AdbPairingService
 import com.carcast.adb.AdbPrefs
 import com.carcast.service.BulkControl
+import com.carcast.service.CertInstall
 import com.carcast.service.HotspotState
 import com.carcast.service.NetDiag
 import com.carcast.service.SelfTest
@@ -39,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var selfTest: Button
     private lateinit var netDiag: Button
     private lateinit var shareReports: Button
+    private lateinit var certInstall: Button
     private lateinit var pair: Button
     private lateinit var logScroll: android.widget.ScrollView
     private var lastLog = ""
@@ -75,6 +77,8 @@ class MainActivity : AppCompatActivity() {
         netDiag.setOnClickListener { shareDiagnostics() }
         shareReports = findViewById(R.id.share_reports)
         shareReports.setOnClickListener { shareCarReports() }
+        certInstall = findViewById(R.id.cert_install)
+        certInstall.setOnClickListener { certDialog() }
         pair = findViewById(R.id.pair)
         pair.setOnClickListener { startPairing() }
         manual = findViewById(R.id.manual)
@@ -310,6 +314,67 @@ class MainActivity : AppCompatActivity() {
         }.apply { isDaemon = true }.start()
     }
 
+    /**
+     * 인증서를 받아 심는다 — PC 없이.
+     *
+     * 공개 CA 인증서는 90일이면 만료되고, 만료되는 날 차가 보여 주는 것은 넘길 수 없는 경고다. 그날
+     * 운전자가 들고 있는 것은 폰뿐이라, 지금까지의 유일한 길(PC 에서 adb push, 또는 APK 재빌드)은
+     * 차 안에서는 길이 아니었다. 서버의 창구(`POST /api/tls`)는 loopback 전용이므로 — 차가 무엇을 믿고
+     * 열지를 바꾸는 일이다 — 부를 수 있는 것은 폰 위에서 도는 이 앱뿐이다.
+     *
+     * 주소는 기억해 둔다. 우리 도메인으로 발급받는 쪽이 제품 경로이고, 그때 이 화면에서 매번 같은 주소를
+     * 다시 입력하게 만들 이유가 없다. 같은 주소로 **자동 갱신**도 돈다(`CertInstall.autoRenew`, 세션이
+     * 서버 상태를 읽을 때마다 물어보고 하루 한 번만 움직인다) — 이 버튼은 그것을 지금 당장 시키는 손잡이다.
+     */
+    private fun certDialog() {
+        val prefs = getSharedPreferences(CertInstall.PREFS, MODE_PRIVATE)
+        val saved = prefs.getString(CertInstall.PREF_SOURCE, null) ?: CertInstall.LOCAL_IP_SH
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val hint = TextView(this).apply { text = getString(R.string.cert_install_hint) }
+        val now = TextView(this).apply {
+            text = tlsLine(StreamService.shellStatus)?.let { "지금: $it" } ?: "지금: 서버 응답 없음"
+            setPadding(0, pad / 2, 0, 0)
+        }
+        val field = android.widget.EditText(this).apply {
+            setText(saved)
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        for (v in listOf(hint, now, field)) box.addView(v)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.cert_install_title)
+            .setView(box)
+            .setPositiveButton(R.string.cert_install_go) { _, _ ->
+                val source = field.text.toString().trim()
+                prefs.edit().putString(CertInstall.PREF_SOURCE, source).apply()
+                runCertInstall(source)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /** 받는 것도 심는 것도 네트워크다: 메인 스레드에서 하지 않는다. 진행과 결과는 화면의 로그로 나간다. */
+    private fun runCertInstall(source: String) {
+        certInstall.isEnabled = false
+        Thread {
+            if (CertInstall.isPublicKeySource(source)) {
+                StreamService.log("주의: $source 는 개인키까지 공개된 진단용 인증서입니다 — 누구나 같은 이름으로 서버를 세울 수 있습니다")
+            }
+            val outcome = runCatching { CertInstall.install(source, StreamService::log) }
+                .getOrElse { CertInstall.Outcome(false, "실패: $it") }
+            StreamService.log("인증서: ${outcome.message}")
+            runOnUiThread {
+                certInstall.isEnabled = true
+                if (!isFinishing) {
+                    android.widget.Toast.makeText(this, outcome.message, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
     /** 공유용 캐시 파일 하나. 매번 덮어써서 쌓이지 않는다(FileProvider 경로: res/xml/shared_files.xml). */
     private fun writeSharedFile(body: String): File {
         val dir = File(cacheDir, "shared").apply { mkdirs() }
@@ -332,6 +397,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** One line about the newest report the car sent, from the /api/status JSON the service polls. */
+    /**
+     * 차가 열어야 할 **빠른 주소**. 공개 CA 가 서명한 인증서를 서버가 쓰고 있을 때만 있다 —
+     * 자체서명은 이 차에서 경고를 넘을 수 없고(2026-09-17 실측), 경고를 넘지 못하면 secure context 도,
+     * 하드웨어 디코더도 없다. 없으면 null 이고 화면에는 평문 주소만 남는다.
+     */
+    private fun fastUrl(statusJson: String?): String? {
+        val st = runCatching { JSONObject(statusJson ?: return null) }.getOrNull() ?: return null
+        if (!st.optBoolean("tlsTrusted")) return null
+        val host = st.optString("tlsHost").ifBlank { return null }
+        val port = st.optInt("httpsPort").takeIf { it > 0 } ?: return null
+        return "https://$host:$port/"
+    }
+
+    /** 무슨 인증서로, 언제까지. 90일짜리를 쓰면 이 날짜가 곧 "차에서 갑자기 경고가 뜨는 날"이다. */
+    private fun tlsLine(statusJson: String?): String? {
+        val st = runCatching { JSONObject(statusJson ?: return null) }.getOrNull() ?: return null
+        if (st.optInt("httpsPort") <= 0) return null
+        val subject = st.optString("tlsSubject").ifBlank { "?" }
+        val until = st.optString("tlsNotAfter").take(10).ifBlank { "?" }
+        return if (st.optBoolean("tlsTrusted")) "$subject, $until 까지" else "자체서명 ($subject) — 이 차는 경고를 넘지 못한다"
+    }
+
     private fun lastReportLine(statusJson: String?): String {
         val st = runCatching { JSONObject(statusJson ?: return "-") }.getOrNull() ?: return "-"
         val n = st.optInt("reports", 0)
@@ -464,8 +551,12 @@ class MainActivity : AppCompatActivity() {
                 ).append('\n')
                 if (!onWifi() && prefs.tcpPort == 0) append("※ ").append(getString(R.string.wifi_hint)).append('\n')
                 append("핫스팟: ").append(hotspotLine(st)).append('\n')
+                // 차가 하드웨어 디코더에 닿으려면 https 여야 한다(VideoDecoder 는 secure context 전용). 그래서
+                // 신뢰받는 인증서가 있으면 **그 주소를 먼저** 보여 준다 — 차의 북마크는 한 번 정해지면 그대로다.
+                fastUrl(st)?.let { append("URL(빠름·하드웨어 디코더): ").append(it).append("\n") }
                 append("URL: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/\n")
                 append("진단: http://").append(Config.TUN_ADDRESS).append(':').append(Config.HTTP_PORT).append("/diag\n")
+                tlsLine(st)?.let { append("인증서: ").append(it).append('\n') }
                 append("차에서 보낸 진단: ").append(lastReportLine(st)).append('\n')
                 append("인터페이스:\n")
                 for (i in SelfTest.interfaces()) append("  ").append(i.name).append(' ').append(i.address).append('\n')

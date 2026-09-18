@@ -24,3 +24,4 @@ out/
 
 # playwright 를 저장소 루트에서 잘못 띄웠을 때 남는 것
 /test-results/
+app/src/main/assets/tls/

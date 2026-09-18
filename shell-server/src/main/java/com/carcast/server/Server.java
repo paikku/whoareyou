@@ -130,6 +130,9 @@ public final class Server {
         if (source != null) {
             try {
                 injectorTmp = new InputInjector(source::width, source::height, source::displayId);
+                // Touches are stamped into the same ledger the encoder reports into, so "how long did Android
+                // take to answer this touch" and "how long did the encoder take" are two numbers, not one.
+                injectorTmp.timing(source.timing());
             } catch (Throwable t) {
                 System.out.println("carcast-server: input injector unavailable: " + t);
             }
@@ -225,8 +228,10 @@ public final class Server {
             if ("/api/hotspot".equals(path)) {
                 return Hotspot.route(method);
             }
-            // The encoder at runtime: GET says what it is, POST ?width=&height=&fps=&bitrate= rebuilds it (the display
-            // and the app stay). The car's quality picker and its automatic step-down both come through here.
+            // The encoder at runtime: GET says what it is, POST ?width=&height=&fps=&bitrate=&profile= rebuilds it
+            // (the display and the app stay). The car's quality picker and its automatic step-down both come through
+            // here, and a car whose renderer is WebCodecs asks for profile=high — Baseline only exists for the WASM
+            // decoder, and High is the same picture for fewer bits.
             if ("/api/encoder".equals(path)) {
                 if (source == null) {
                     return "{\"ok\":false,\"error\":\"no display source\"}";
@@ -237,7 +242,7 @@ public final class Server {
                 try {
                     Map<String, Object> info = source.reconfigure(
                             intOrNull(query.get("width")), intOrNull(query.get("height")),
-                            intOrNull(query.get("fps")), intOrNull(query.get("bitrate")));
+                            intOrNull(query.get("fps")), intOrNull(query.get("bitrate")), query.get("profile"));
                     Map<String, Object> out = new LinkedHashMap<>();
                     out.put("ok", true);
                     out.putAll(info);

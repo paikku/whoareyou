@@ -52,11 +52,19 @@ public final class DisplayVideoSource implements VideoSource {
     /** Current encoder parameters; {@link #reconfigure} changes them at runtime. */
     private volatile int bitRate;
     private volatile int maxFps;
-    private final boolean constrainedBaseline;
+    /**
+     * Baseline is a concession to the car's WASM decoder (h264bsd reads Baseline only). A car with WebCodecs
+     * does not need it — 2026-09-17 실차 report #67: High 4.0 also decodes, in hardware — and High is worth
+     * roughly a fifth of the bitrate at the same picture, so the car can ask for it (`/api/encoder?profile=`).
+     * Volatile because {@link #reconfigure} changes it while the encoder thread reads it.
+     */
+    private volatile boolean constrainedBaseline;
     private final String bitrateMode;
     private final int intraRefresh;
     private H264Encoder encoder;
     private EncodedH264Sink sink;
+    /** Where the milliseconds go on this side of the link; survives encoder rebuilds. */
+    private final FrameTiming timing = new FrameTiming();
     /** The encoder's output, bound to the sink once; every encoder built here reports into it. */
     private H264Encoder.Output output;
     private volatile int encoderRestarts;
@@ -88,6 +96,11 @@ public final class DisplayVideoSource implements VideoSource {
         this.intraRefresh = intraRefresh;
     }
 
+    /** The input injector stamps its touches here, so a touch can be timed against the frame that answered it. */
+    public FrameTiming timing() {
+        return timing;
+    }
+
     @Override
     public void start(@NotNull MediaHub hub) {
         Workarounds.apply();
@@ -101,6 +114,9 @@ public final class DisplayVideoSource implements VideoSource {
 
             @Override
             public void onFrame(byte[] annexB, long ptsUs, boolean keyframe) {
+                // First, before the muxing below is charged to the encoder: this runs on the encoder's output
+                // thread, right after dequeueOutputBuffer, which is the moment the measurement needs.
+                timing.onEncodedFrame(ptsUs);
                 s.onFrame(annexB, ptsUs, keyframe);
             }
         };
@@ -129,14 +145,22 @@ public final class DisplayVideoSource implements VideoSource {
      * Null arguments keep the current value. Returns the same map as {@link #encoderInfo()}.
      */
     public synchronized Map<String, Object> reconfigure(Integer width, Integer height, Integer fps, Integer bitrate) throws Exception {
+        return reconfigure(width, height, fps, bitrate, null);
+    }
+
+    /** As above, plus the profile: "baseline" (the WASM decoder's limit) or "high" (a car with WebCodecs). */
+    public synchronized Map<String, Object> reconfigure(Integer width, Integer height, Integer fps, Integer bitrate,
+                                                        String profile) throws Exception {
         int w = width != null ? width : display.width;
         int h = height != null ? height : display.height;
         int f = fps != null ? fps : maxFps;
         int b = bitrate != null ? bitrate : bitRate;
+        boolean baseline = profile == null ? constrainedBaseline : !"high".equalsIgnoreCase(profile);
         EncoderSettings.validate(w, h, f, b);
-        if (w == display.width && h == display.height && f == maxFps && b == bitRate) {
+        if (w == display.width && h == display.height && f == maxFps && b == bitRate && baseline == constrainedBaseline) {
             return encoderInfo();
         }
+        constrainedBaseline = baseline;
         long now = System.currentTimeMillis();
         if (now - lastEncoderRestartAt < RECONFIGURE_MIN_GAP_MS) {
             throw new IllegalStateException("encoder was rebuilt " + (now - lastEncoderRestartAt) + " ms ago; wait");
@@ -186,6 +210,7 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("encoderRestarts", encoderRestarts);
         m.put("encoder", encoder != null ? encoder.name() : null);
         m.put("encoderProfile", encoder != null ? encoder.profileNote() : null);
+        m.put("profile", constrainedBaseline ? "baseline" : "high");
         m.put("codec", sink != null ? sink.getCodec() : null);
         m.put("encoderRestarts", encoderRestarts);
         return m;
@@ -425,6 +450,8 @@ public final class DisplayVideoSource implements VideoSource {
         // is the only place the encoder's actual profile shows up — and it decides whether a JS decoder
         // (Baseline only) can be a fallback for the car's Drive mode, where <video> is paused for us.
         m.put("codec", sink != null ? sink.getCodec() : null);
+        // The phone-side latency budget, split (FrameTiming): what the car cannot see from where it sits.
+        m.put("timing", timing.info());
         m.put("frames", sink != null ? sink.getFrames() : 0);
         m.put("keyframes", sink != null ? sink.getKeyframes() : 0);
         m.put("app", lastApp);

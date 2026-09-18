@@ -1,16 +1,11 @@
 // Car-side client entry. Thin by design: decode, draw, forward input. All UI logic lives on the phone.
 import { KEYCODE, KeyAction, MediaType, TouchAction, encodeKey, encodeKeyframeRequest, encodePing, encodeText, encodeTouch, parseMediaPacket, parsePingEcho, touchClock } from './protocol';
 import { ReconnectingWs, wsUrl } from './transport/ws';
-import { MseRenderer, mseSupported } from './renderer/mse';
-import { MjpegRenderer } from './renderer/mjpeg';
-import { H264Renderer, h264Supported } from './renderer/h264';
-import type { Renderer } from './renderer/types';
+import { PATHS, PRESETS, cost, pickPath, presetsFor, type Path, type Preset } from './paths';
 import { TouchInput } from './input';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
-const video = $<HTMLVideoElement>('video');
-const canvas = $<HTMLCanvasElement>('mjpeg');
 const glCanvas = $<HTMLCanvasElement>('gl');
 const overlay = $('overlay');
 const overlayMsg = $('overlay-msg');
@@ -18,32 +13,27 @@ const statsEl = $('stats');
 const kbd = $<HTMLInputElement>('kbd');
 
 const params = new URLSearchParams(location.search);
-const forced = params.get('renderer');
 
 /**
- * 기본은 h264(캔버스)다.
+ * 어느 경로로 갈 것인가 — 한 벌의 정의는 전부 `paths.ts` 에 있다(폰의 인코더, 소켓 쿼리, 렌더러,
+ * 사다리 천장). 여기서는 고르기만 한다.
  *
- * <video> 는 기어가 P 를 벗어나는 순간 프레임 공급이 끊긴다(실측 2026-09-14, docs/drive-check).
- * 차는 대부분의 시간을 D 로 보내므로, 그때만 갈아타는 것은 두 경로를 유지하면서 정작 대부분의
- * 시간에는 쓰지도 않는 쪽을 기본으로 두는 셈이다. 게다가 갈아타려면 MSE 로도 읽히게 Baseline 을
- * 유지해야 해서 화질 이득도 없고, 전환을 감지하는 데 스톨 두 번(4~6 초)이 든다.
- *
- * 그래서 처음부터 D 에서 쓰는 그 경로로 간다. 실측으로 30fps·6ms 이고, MSE(80~140ms)보다 오히려
- * 지연이 낮다 — 버퍼를 쌓지 않기 때문이다. MSE 는 `?renderer=mse` 로 남겨 둔다.
+ * 세 갈래다: 주소의 `?path=`(옛 이름 `?renderer=`, 진단용이라 되는지 묻지 않는다) → 사람이 시트에서
+ * 고른 것(되는 것으로만) → 자동. 자동은 rank 순이고, 지금 1순위는 하드웨어 디코더다 — `VideoDecoder`
+ * 가 `[SecureContext]` 라 평문에서는 저절로 빠지므로 https 로 열었을 때만 그 길로 간다.
  */
-function pickRenderer(): Renderer {
-  if (forced === 'mse') return new MseRenderer(video);
-  if (forced === 'mjpeg') return new MjpegRenderer(canvas);
-  if (forced === 'h264' || h264Supported()) return new H264Renderer(glCanvas);
-  // 워커나 WebGL2 가 없는 브라우저: 주차 중에라도 보이도록 <video> 로 물러난다.
-  return mseSupported() ? new MseRenderer(video) : new MjpegRenderer(canvas);
-}
+const PATH_KEY = 'carcast.path';
+const storedPath = (): string | null => { try { return localStorage.getItem(PATH_KEY); } catch { return null; } };
+const chosen = pickPath(params.get('path') ?? params.get('renderer'), storedPath());
+const path: Path = chosen.path;
 
-let renderer = pickRenderer();
+let renderer = path.make({ gl: glCanvas });
 renderer.attach(stage);
+// 오버레이에는 경로의 **이름**을 쓴다 — 여기를 읽는 사람은 운전자이고, `h264` 보다 "소프트 디코더" 가
+// 무엇이 다른지에 가깝다. 기계가 읽는 낱말(`renderer.name`)은 상태줄과 리포트에 그대로 남는다.
 overlayMsg.textContent = renderer.needsGesture
-  ? `화면을 터치하면 시작합니다 (${renderer.name})`
-  : `연결하는 중… (${renderer.name})`;
+  ? `화면을 터치하면 시작합니다 (${path.label})`
+  : `연결하는 중… (${path.label})`;
 
 let touchRef: TouchInput | null = null;
 /**
@@ -85,7 +75,7 @@ const note = (s: string) => {
 let packets = 0;
 let lastPacketAt = 0;
 let recoveries = 0;
-const videoWs = new ReconnectingWs(wsUrl(`/ws/video${renderer.name === 'mjpeg' ? '?codec=mjpeg' : ''}`), {
+const videoWs = new ReconnectingWs(wsUrl('/ws/video'), {
   onOpen: () => { renderer.reset(); note(`video ws open #${videoWs.stats.connects}`); },
   // 왜 끊겼는지까지 남긴다. 1006 은 인사도 없이 끊긴 것(링크가 사라짐), 1000/1001 은 폰이
   // 제대로 닫은 것 — 리포트에서 "폰이 멎었나, 선이 끊겼나"를 가르는 데 이 한 글자가 쓰인다.
@@ -117,7 +107,9 @@ function requestKeyframe(why: string): boolean {
   note(`keyframe request (${why})`);
   return control.send(encodeKeyframeRequest());
 }
-if (renderer instanceof H264Renderer) renderer.onNeedKeyframe = () => { requestKeyframe('dropped frames'); };
+if ('onNeedKeyframe' in renderer) {
+  renderer.onNeedKeyframe = () => { requestKeyframe('dropped frames'); };
+}
 
 // Decode-stall watchdog. Packets keep arriving but nothing gets presented for 2 s: the pipeline is
 // wedged. First ask the phone for a keyframe — a decoder that lost its reference recovers on the next
@@ -568,6 +560,11 @@ async function pollStatus(): Promise<void> {
     // 화질을 바꾸면 그림의 크기가 바뀐다(/api/encoder). 터치 좌표는 그 크기 기준이므로 여기서도 맞춘다.
     if (st.width && st.height) touch.setVideoSize(st.width, st.height);
     renderQuality();
+    renderPaths();
+    // 하드웨어 디코더로 붙었으면 Baseline 에 머물 이유가 없다 — 한 번만 올려 달라고 한다.
+    void askForProfile();
+    // 반대쪽: 하드웨어가 없는데 폰이 하드웨어 전용 설정을 기억하고 있으면 내린다.
+    void guardPreset();
     const now = st.appOnPhone === true;
     if (now !== appOnPhone) {
       appOnPhone = now;
@@ -734,19 +731,19 @@ setInterval(() => {
 // ── 화질 (인코더 설정) ─────────────────────────────────────────────────────────────────────────
 //
 // 폰의 인코더를 차에서 바꾼다(POST /api/encoder): 크기·fps·비트레이트. 폰은 앱을 그대로 둔 채 인코더만
-// 갈아끼우고 선택을 기억한다. 무엇이 맞는지는 이 차의 디코더가 정한다 — 실측(2026-09-17)에서 720p 한 장에
-// 10ms 였으니 60fps(예산 16ms)와 900p 는 해 볼 만하고, 1080p 60 은 아닐 것이다. 그래서 자동 모드는
-// **내리기만** 한다: 적체나 드롭이 두 샘플 연속 보이면 한 단계 아래로. 올리는 것은 사람이 고른다.
-interface Preset { id: string; label: string; width: number; height: number; fps: number; bitrate: number }
-const PRESETS: Preset[] = [
-  { id: '720p30', label: '기본 · 720p 30fps', width: 1280, height: 720, fps: 30, bitrate: 4_000_000 },
-  { id: '720p60', label: '부드럽게 · 720p 60fps', width: 1280, height: 720, fps: 60, bitrate: 6_000_000 },
-  { id: '900p30', label: '선명하게 · 900p 30fps', width: 1600, height: 900, fps: 30, bitrate: 6_000_000 },
-  { id: '900p60', label: '선명하고 부드럽게 · 900p 60fps', width: 1600, height: 900, fps: 60, bitrate: 8_000_000 },
-  { id: '1080p30', label: '최대 · 1080p 30fps', width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
-];
-/** 부담 순서(가로×세로×fps). 자동 모드가 한 단계 내릴 때 이 순서를 따른다. */
-const byCost = [...PRESETS].sort((a, b) => a.width * a.height * a.fps - b.width * b.height * b.fps);
+// 갈아끼우고 선택을 기억한다.
+//
+// 어디까지 고를 수 있는지는 **지금 경로가** 정한다(`paths.ts` 의 `ceiling`). 감당 못 할 칸을 보여 주는
+// 것은 "고르면 화면이 멈추는 버튼"을 놓는 것과 같기 때문이다 — 골라도 안 되는 게 아니라, 폰은 순순히
+// 그 설정으로 갈아끼우고 차가 못 따라올 뿐이라 증상이 "그냥 멈춤"이다.
+//
+// 자동 모드는 **내리기만** 한다: 적체나 드롭이 두 샘플 연속 보이면 한 단계 아래로. 올리는 것은 사람이
+// 고른다(차에서 오르내림이 반복되는 것보다 낮은 데 머무는 편이 낫다). 천장을 미리 깎지 않는 이유도
+// 같다 — 무엇이 도는지는 그 사람의 차·링크가 정하고, 이 내리기가 그 경계를 대신 찾아 준다.
+/** 이 경로가 실제로 낼 수 있는 프리셋만. 천장은 경로가 들고 있다(paths.ts). */
+const available = (): Preset[] => presetsFor(path);
+/** 부담 순서로 세운 사다리. 자동 모드가 한 단계 내릴 때 이 순서를 따른다. */
+const ladder = (): Preset[] => [...available()].sort((a, b) => cost(a) - cost(b));
 const qualityPanel = $('quality');
 const qualityGrid = $('quality-grid');
 const qualityNow = $('quality-now');
@@ -768,12 +765,36 @@ function currentPreset(): Preset | null {
   return PRESETS.find((p) => p.width === st.width && p.height === st.height && p.fps === st.maxFps) ?? null;
 }
 
+/** 이 경로가 폰에 요구하는 프로파일. 왜 그것인지는 `paths.ts` 의 `encoder` 에 적혀 있다. */
+const wantedProfile = (): 'high' | 'baseline' => path.encoder.profile;
+
+/**
+ * 폰의 인코더를 이 경로에 맞춘다. 지금 맞출 것은 프로파일 하나다 — 하드웨어 디코더로 붙었는데 폰이
+ * 아직 Baseline 을 내보내고 있으면 한 번 올린다(인코더가 새로 서므로 차는 init + 키프레임을 다시 받고,
+ * 그건 렌더러가 이미 처리하는 길이다). 코덱이 늘어나면 같이 보낼 자리도 여기다.
+ */
+let profileAsked = false;
+async function askForProfile(): Promise<void> {
+  if (profileAsked) return;
+  const want = wantedProfile();
+  // 폰이 프로파일을 말해 주지 않으면(클립 소스·가짜 폰) 건드리지 않는다. 볼 수 없는 어긋남을 고치겠다고
+  // 요청을 보내면 인코더만 한 번 더 세우는 셈이다.
+  if (typeof lastStatus?.profile !== 'string' || lastStatus.profile === want) return;
+  profileAsked = true;
+  try {
+    const r = await (await fetch(`/api/encoder?profile=${want}`, { method: 'POST' })).json();
+    note(r.ok ? `encoder profile → ${r.profile} (${r.codec ?? '?'})` : `profile=${want} 거부: ${r.error ?? '?'}`);
+  } catch (e) {
+    note(`profile=${want} 실패: ${String(e)}`);
+  }
+}
+
 let applyingPreset = false;
 async function applyPreset(p: Preset, why: string): Promise<boolean> {
   if (applyingPreset) return false;
   applyingPreset = true;
   try {
-    const q = `width=${p.width}&height=${p.height}&fps=${p.fps}&bitrate=${p.bitrate}`;
+    const q = `width=${p.width}&height=${p.height}&fps=${p.fps}&bitrate=${p.bitrate}&profile=${wantedProfile()}`;
     const r = await (await fetch(`/api/encoder?${q}`, { method: 'POST' })).json();
     if (!r.ok) { notice(`화질 변경 실패: ${r.error ?? '?'}`, 6000); note(`encoder ${p.id} (${why}) failed: ${r.error}`); return false; }
     note(`encoder ${p.id} (${why}): ${r.width}x${r.height} ${r.fps}fps ${Math.round(r.bitrate / 1000)}k`);
@@ -801,7 +822,7 @@ function renderQuality(): void {
 }
 
 function openQuality(): void {
-  qualityGrid.replaceChildren(...PRESETS.map((p) => {
+  qualityGrid.replaceChildren(...available().map((p) => {
     const el = document.createElement('button');
     el.className = 'tile';
     el.dataset.preset = p.id;
@@ -812,6 +833,7 @@ function openQuality(): void {
   closeSheet(); // 홈·최근앱 위에 얹지 않는다
   qualityPanel.hidden = false;
   renderQuality();
+  renderPaths();
 }
 $('btn-quality').addEventListener('click', openQuality);
 $('quality-close').addEventListener('click', () => { qualityPanel.hidden = true; });
@@ -833,15 +855,53 @@ function maybeStepDown(sample: PerfSample): void {
 async function stepDown(why: string): Promise<boolean> {
   if (Date.now() - lastStepDownAt < 60_000) return false;
   const cur = currentPreset();
-  if (!cur) return false;
-  const i = byCost.indexOf(cur);
-  if (i <= 0) return false;
+  const next = cur && below(cur);
+  if (!next) return false;
   lastStepDownAt = Date.now();
   badSamples = 0;
   autoStepDowns++;
-  const ok = await applyPreset(byCost[i - 1]!, `auto: ${why}`);
-  if (ok) notice(`차가 못 따라와 화질을 내렸습니다: ${byCost[i - 1]!.label}`, 8000);
+  const ok = await applyPreset(next, `auto: ${why}`);
+  if (ok) notice(`차가 못 따라와 화질을 내렸습니다: ${next.label}`, 8000);
   return ok;
+}
+
+/**
+ * 지금 설정보다 한 단계 가벼우면서 **이 경로가 낼 수 있는** 프리셋, 없으면 null.
+ *
+ * 사다리 안에 있으면 그 바로 아래이고, 사다리 밖이면(천장 위의 설정을 만난 경우) 부담이 더 작은 것 중
+ * 가장 위다. 인덱스 대신 부담으로 재는 이유가 그것이다.
+ */
+function below(cur: Preset): Preset | null {
+  const lighter = ladder().filter((p) => cost(p) < cost(cur));
+  return lighter[lighter.length - 1] ?? null;
+}
+
+/**
+ * 폰이 **이 경로의 천장 위** 설정으로 돌고 있으면 한 단계 내린다.
+ *
+ * 폰은 차가 고른 값을 파일로 기억한다(encoder.conf, 서버를 다시 띄워도 남는다). 그래서 하드웨어
+ * 경로에서 1080p60 을 골라 둔 폰에 소프트 디코더로 들어오면 — 북마크 하나만 달라도, 시트에서 경로를
+ * 바꾸기만 해도 그렇게 된다 — 그 스트림을 못 푸는 쪽이 받는다. 증상은 "화면이 멈춤"이고, 자동 내리기는
+ * 손대지 못한다: 프레임이 아예 안 풀리니 적체도 드롭도 자라지 않는다. 그래서 이것은 성능 판단이 아니라
+ * 능력 판단이고, 자동 모드 여부와 무관하게 한 번 바로잡는다.
+ *
+ * 아는 것은 사다리뿐이다: PC 에서 손으로 띄운 별난 크기(프리셋 아님)는 손대지 않는다 — 그건 누군가
+ * 일부러 그렇게 둔 것이고, 그 의도를 이쪽에서 추측하는 것보다 그대로 두는 편이 낫다.
+ */
+let guardedPreset = false;
+async function guardPreset(): Promise<void> {
+  if (guardedPreset || applyingPreset) return;
+  const cur = currentPreset();
+  if (!cur || available().includes(cur)) return;
+  const next = below(cur);
+  if (!next) return;
+  guardedPreset = true;
+  note(`preset ${cur.id} is above the ${path.id} path's ceiling — stepping down`);
+  if (await applyPreset(next, `guard: ${path.label}의 천장 위`)) {
+    notice(`${cur.label} 는 이 경로(${path.label})가 감당하지 못합니다 — ${next.label} 로 내렸습니다`, 8000);
+  } else {
+    guardedPreset = false;
+  }
 }
 
 // ── 끝에서 끝까지 지연 측정 ────────────────────────────────────────────────────────────────────
@@ -857,7 +917,9 @@ let lastLuma = -1;
 let lastLumaAt = 0;
 /** 테스트가 밝기를 손으로 넣는 동안(feedLuma) 디코더의 밝기는 무시한다 — 가짜 폰의 클립이 덮어쓰면 측정이 어긋난다. */
 let lumaFed = false;
-if (renderer instanceof H264Renderer) renderer.onLuma = (l, at) => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
+if ('onLuma' in renderer) {
+  renderer.onLuma = (l, at) => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PROBE_ACTIVITY = 'com.carcast/.ui.LatencyProbeActivity';
@@ -866,7 +928,11 @@ const PROBE_SLOT = 9; // 운전자의 손가락(0..)과 겹치지 않는 슬롯
 /** `onTouch` 는 테스트용 고리: 터치를 보낸 직후 불린다(가짜 폰은 화면을 못 뒤집으므로 테스트가 대신 밝기를 넣는다). */
 async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () => void } = {}): Promise<ProbeResult | null> {
   if (probeRunning) return null;
-  if (!(renderer instanceof H264Renderer)) { notice('지연 측정은 h264 렌더러에서만 됩니다', 5000); return null; }
+  // 밝기를 읽으려면 렌더러가 픽셀을 직접 만져야 한다 — 그러지 않는 렌더러는 이 고리가 없다.
+  if (!('onLuma' in renderer)) {
+    notice(`지연 측정은 그림을 직접 그리는 경로에서만 됩니다 (지금: ${path.label})`, 5000);
+    return null;
+  }
   probeRunning = true;
   qualityProbe.disabled = true;
   qualityResult.textContent = '측정 중…';
@@ -931,6 +997,79 @@ function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
 }
 qualityProbe.addEventListener('click', () => { void runProbe(); });
 
+// ── 경로 고르기 ───────────────────────────────────────────────────────────────────────────────
+//
+// 차도 폰도 세대가 다르다. 하드웨어 디코더가 없는 구형 차, 인코더가 느린 구형 폰, 링크가 약한 자리 —
+// 무엇이 맞는지는 그 사람의 조합이 정한다. 자동 선택은 "아마 이게 제일 나을 것"이지 답이 아니므로
+// 고르는 길을 열어 둔다. 고른 것은 이 차에 남는다(localStorage).
+//
+// 한 가지 특이한 경우: 하드웨어 경로는 secure context 에서만 존재하므로, 평문으로 열려 있는 상태에서
+// 그것을 고르면 **주소를 옮겨야** 한다. 폰이 공개 CA 인증서를 들고 있을 때만 갈 곳이 있고, 자체서명일
+// 때는 그 길이 막다른 길이다(이 차의 인증서 경고는 넘을 수 없다 — 실측 2026-09-17). 그래서 그럴 때는
+// 고르게 하지 않고 이유를 적는다.
+const pathGrid = $('path-grid');
+const pathNote = $('path-note');
+
+/** 폰이 신뢰받는 인증서를 들고 있을 때 차가 열 https 주소, 없으면 null. */
+function secureUrl(): string | null {
+  const st = lastStatus;
+  if (!st?.tlsTrusted || !st?.tlsHost || !st?.httpsPort) return null;
+  return `https://${st.tlsHost}:${st.httpsPort}/`;
+}
+
+/**
+ * 지금 여기서 그 경로로 갈 수 있는가. 갈 수 있으면 null, 아니면 **왜**와 **눌러도 되는지**.
+ *
+ * `reachable` 이 둘을 가른다: 주소를 옮기면 되는 것은 눌러야 하고("https 로 옮겨서 엽니다"), 이 자리에서
+ * 방법이 없는 것은 회색으로 둔다. 그래도 이유는 적는다 — "그냥 없음"으로 보이면 운전자가 할 수 있는
+ * 일이 없지만, "인증서가 없어서"는 고칠 수 있는 말이다(앱의 인증서 버튼).
+ */
+interface Blocked { text: string; reachable: boolean }
+function blockedReason(p: Path): Blocked | null {
+  if (p.needsSecureContext && !isSecureContext) {
+    return secureUrl()
+      ? { text: 'https 주소로 옮겨서 엽니다', reachable: true }
+      : { text: '폰에 공개 CA 인증서가 없어 갈 수 없습니다', reachable: false };
+  }
+  return p.supported() ? null : { text: '이 브라우저에 없습니다', reachable: false };
+}
+
+function choosePath(p: Path | null): void {
+  try { localStorage.setItem(PATH_KEY, p?.id ?? ''); } catch { /* 저장소 없음 */ }
+  if (p?.needsSecureContext && !isSecureContext) {
+    const url = secureUrl();
+    if (!url) { notice('폰에 공개 CA 인증서가 없어 그 경로로 갈 수 없습니다', 6000); return; }
+    location.href = `${url}?path=${p.id}`;
+    return;
+  }
+  // 렌더러를 중간에 갈아끼우려면 소켓·디코더·터치 좌표계를 한꺼번에 다시 세워야 한다. 다시 읽는 편이
+  // 짧고, 차에서 한 번 더 기다리는 2 초가 반쯤 갈아끼운 상태보다 낫다.
+  location.reload();
+}
+
+function renderPaths(): void {
+  if (qualityPanel.hidden) return;
+  pathNote.textContent = `지금: ${path.label} (${chosen.why})`;
+  pathGrid.replaceChildren(...[null, ...PATHS].map((p) => {
+    const el = document.createElement('button');
+    el.className = 'tile';
+    el.dataset.path = p?.id ?? 'auto';
+    const blocked = p ? blockedReason(p) : null;
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = p ? p.label : '자동';
+    const why = document.createElement('span');
+    why.className = 'where';
+    why.textContent = blocked?.text ?? (p ? p.detail : '되는 것 중 가장 좋은 것을 고릅니다');
+    el.append(name, why);
+    // 지금 쓰는 것에 표시. '자동' 은 자동으로 골라졌을 때만.
+    el.classList.toggle('held', p ? (!chosen.auto && p.id === path.id) : chosen.auto);
+    if (blocked && !blocked.reachable) el.classList.add('away');
+    else el.addEventListener('click', () => choosePath(p));
+    return el;
+  }));
+}
+
 /** 초반과 최근을 견준다. 처음부터 느린 것과 **점점** 느려지는 것은 다른 문제다. */
 function perfTrend(): { early: number; recent: number; backlog: number } | null {
   if (perf.length < 6) return null; // 1 분은 모여야 견줄 값이 된다
@@ -943,6 +1082,10 @@ function perfTrend(): { early: number; recent: number; backlog: number } | null 
 // Stats line + a hook for the Playwright tests.
 const stats = () => ({
   renderer: renderer.name,
+  /** 지금 경로와 그것을 어떻게 고르게 됐는지. 리포트만 보고도 "무엇으로 푼 세션인가"가 읽힌다. */
+  path: path.id,
+  pathAuto: chosen.auto,
+  pathWhy: chosen.why,
   state: stateName,
   activePointers: touch.activePointers,
   ...renderer.stats(),
@@ -959,6 +1102,12 @@ const stats = () => ({
   touch: { ...touch.stats },
   latencyProbe,
   autoStepDowns,
+  // 이 렌더러가 고를 수 있는 사다리, 그리고 못 푸는 설정을 만나 내렸는지. 리포트에 실려서, 차가
+  // 어느 경로로 열렸고 무엇까지 고를 수 있었는지가 나중에도 읽힌다.
+  presets: available().map((p) => p.id),
+  presetGuarded: guardedPreset,
+  /** 이 차에서 고를 수 있었던 경로들. 안 되는 것이 왜 안 됐는지까지 남는다. */
+  pathsHere: PATHS.map((p) => ({ id: p.id, blocked: blockedReason(p)?.text ?? null })),
   encoder: lastStatus ? { width: lastStatus.width, height: lastStatus.height, fps: lastStatus.maxFps, bitrate: lastStatus.bitRate } : null,
 });
 (window as any).__carcast = {
@@ -967,6 +1116,7 @@ const stats = () => ({
   requestKeyframe: () => requestKeyframe('test'),
   // 화질·지연 측정을 테스트에서 몰기 위한 고리. feedLuma 는 디코더 대신 밝기를 넣어 준다(가짜 폰은 그림을 못 뒤집는다).
   applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
+  choosePath: (id: string | null) => choosePath(id ? (PATHS.find((x) => x.id === id) ?? null) : null),
   stepDown: (why = 'test') => stepDown(why),
   runProbe: (opts: { trials?: number; launch?: boolean; onTouch?: () => void }) => runProbe(opts),
   feedLuma: (l: number) => { lumaFed = true; lastLuma = l; lastLumaAt = performance.now(); },

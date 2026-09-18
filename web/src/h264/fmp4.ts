@@ -75,6 +75,41 @@ export function mdatNals(fragment: Uint8Array, lengthSize: number): Uint8Array[]
   return out;
 }
 
+/**
+ * avcC 박스의 내용(configurationVersion 부터 끝까지) 그대로.
+ *
+ * WebCodecs 의 `VideoDecoder.configure({ description })` 가 원하는 것이 바로 이 바이트다 —
+ * 그걸 주면 mdat 안의 길이 접두사 샘플을 **변환 없이** 그대로 먹일 수 있다(avc 포맷). NAL 로 풀어
+ * Annex-B 로 다시 감싸는 것은 WASM 디코더(h264bsd) 때문에 하는 일이고, 하드웨어 디코더에는 낭비다.
+ */
+export function avcCBox(init: Uint8Array): Uint8Array<ArrayBuffer> | null {
+  const at = indexOfTag(init, 'avcC');
+  if (at < 0) return null;
+  // 태그 앞 4 바이트가 박스 크기(자기 자신 포함).
+  const sizeAt = at - 4;
+  if (sizeAt < 0) return null;
+  const size = (init[sizeAt]! << 24 >>> 0) + (init[sizeAt + 1]! << 16) + (init[sizeAt + 2]! << 8) + init[sizeAt + 3]!;
+  const start = at + 4;
+  const end = sizeAt + size;
+  if (size < 8 || end > init.length || end <= start) return null;
+  return init.slice(start, end) as Uint8Array<ArrayBuffer>;
+}
+
+/** `avc1.PPCCLL` — WebCodecs 와 MSE 가 쓰는 코덱 문자열. SPS 가 말하는 그대로다. */
+export function codecString(cfg: AvcConfig): string {
+  const sps = cfg.sps[0];
+  // profile_idc, constraint flags, level_idc 는 SPS 의 첫 세 바이트(NAL 헤더 다음).
+  const constraints = sps && sps.length > 2 ? sps[2]! : 0;
+  const hex = (n: number) => n.toString(16).padStart(2, '0');
+  return `avc1.${hex(cfg.profileIdc)}${hex(constraints)}${hex(cfg.levelIdc)}`;
+}
+
+/** moof+mdat 조각의 mdat 내용 그대로 (길이 접두사 샘플). WebCodecs 에 그대로 넣는다. */
+export function mdatBytes(fragment: Uint8Array): Uint8Array<ArrayBuffer> | null {
+  const mdat = findTopLevelBox(fragment, 'mdat');
+  return mdat ? (mdat.slice() as Uint8Array<ArrayBuffer>) : null;
+}
+
 /** NAL 하나를 Annex-B 한 덩어리로 (h264bsd 는 시작 코드를 보고 NAL 경계를 잡는다). */
 export function toAnnexB(nal: Uint8Array): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(new ArrayBuffer(4 + nal.length));

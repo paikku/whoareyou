@@ -214,6 +214,14 @@
         android:layout_marginTop="4dp"
         android:text="@string/share_reports" />
 
+    <Button
+        android:id="@+id/cert_install"
+        style="?attr/materialButtonOutlinedStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/cert_install" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
