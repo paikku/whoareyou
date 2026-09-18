@@ -923,7 +923,9 @@ function below(cur: Preset): Preset | null {
 //
 // 규칙은 `abr.ts` 에, 여기는 신호를 모아 넣고 답을 폰에 보내는 배선이다. 폰이 비트레이트를 재빌드 없이
 // 받는다고 말할 때만(`bitrateLive`) 움직인다 — 옛 서버는 한 걸음마다 인코더를 새로 세우므로 차라리 안
-// 하는 편이 낫다. 자동 화질이 꺼져 있으면 이것도 쉰다: 사람이 고른 것은 사람의 것이다.
+// 하는 편이 낫다. 화질 시트의 "자동" 토글과는 **무관하다**: 그 토글은 사다리(해상도·fps, 곧 사람이 고른
+// 칸)를 다스리고, 이것은 그 칸 안에서 비트만 움직인다. 처음에는 토글에 묶었더니 실차에서 토글이 꺼진 채
+// 5 분을 돌아 한 번도 움직이지 못했다(report #75, `abr.active false`).
 const abr = new AbrController();
 /** 왜 쉬는지. 비어 있으면 (폰이 되는 한) 살아 있다. */
 let abrDisabled = '';
@@ -932,7 +934,7 @@ let abrManual = false;
 let abrDropped = 0;
 let abrBusy = false;
 let abrSentAt = 0;
-const abrActive = (): boolean => !abrDisabled && autoQuality && lastStatus?.bitrateLive === true && abr.nominal > 0;
+const abrActive = (): boolean => !abrDisabled && lastStatus?.bitrateLive === true && abr.nominal > 0;
 
 /**
  * 폰의 상태를 제어기에 맞춘다. 공칭값은 폰이 말하는 `nominalBitRate`(마지막 재빌드가 요청받은 값 — 차가 프리셋을

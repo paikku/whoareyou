@@ -150,8 +150,9 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
 
 - **두 층이 순서대로 움직인다.** 먼저 **적응 비트레이트**(`web/src/abr.ts`, 배선은 `main.ts` "적응 비트레이트"):
   차가 rtt(2 초 ping)와 버린 프레임을 보고 비트레이트만 재빌드 없이 내린다(`POST /api/encoder?bitrate=` →
-  `rebuilt:false`). 그 다음이 **사다리**(`maybeStepDown`): abr 이 바닥(공칭의 40%)에 닿은 뒤에도 나쁜 표본이
-  이어질 때만 해상도·fps 를 한 칸 내린다. 비트가 먼저, 화소는 나중 — 실차 #70 에서 1080p60 을 무너뜨린 것은
+  `rebuilt:false`). 화질 시트의 "자동" 토글과 무관하게 늘 돈다(토글은 사다리만). 그 다음이 **사다리**
+  (`maybeStepDown`, 토글이 켜져 있을 때만): abr 이 바닥(공칭의 40%)에 닿은 뒤에도 나쁜 표본이 이어질 때만
+  해상도·fps 를 한 칸 내린다. 비트가 먼저, 화소는 나중 — 실차 #70 에서 1080p60 을 무너뜨린 것은
   디코더가 아니라 링크였다(car-tests/model-y §9)
 - **폰 쪽 계측은 `/api/status.timing`** (`FrameTiming`): `encodeMs` 는 합성 → 인코더 출력, `touchToFrameMs` 는
   터치 → 다음 프레임. 인코더 손잡이(`H264Encoder.format` 의 저지연 키·`KEY_OPERATING_RATE`)를 만졌으면 **차 없이**
