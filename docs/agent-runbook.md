@@ -161,8 +161,8 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   `targetKbps`(abr 목표), 그리고 `rttMs`·`dropped`·`backlog`. rtt 가 뛰면서 `keyBytes` 가 크면 IDR 버스트,
   backlog 가 8 을 넘으면 디코더. 이벤트에는 `abr ↓/↑`, `keyframe request (…, 백오프 …)`, `init segment avc1.…` 가 남는다
 - **손잡이 (전부 `POST /api/encoder`, 크기·fps·프로파일·인트라 리프레시는 재빌드, 비트레이트만은 즉시):**
-  `?bitrate=` · `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, 저장됨, 기본 0) ·
-  `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
+  `?bitrate=` · `?qp_i_max=28`(I 프레임 QP 상한 = IDR 크기 상한, 기본 28, 0 이면 벤더 기본; 실차 #76 이 그 이유) ·
+  `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, 저장됨, 기본 0) · `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
 - 검사: A `quality.spec`("링크가 막히면…"), A+ `09-encoder`("비트레이트만 바꾸면…", "인트라 리프레시를 켰다 끌 수 있다")
 - **폰의 소켓 큐(`videoClientStats.queued`)가 0 이라고 링크가 멀쩡한 것은 아니다.** 커널 송신 버퍼가 그 앞에 있다.
   64 KB 로 줄여 두었지만(`StreamSession.VIDEO_SEND_BUFFER_BYTES`) 링크가 막혔는지는 차의 rtt 가 먼저 안다

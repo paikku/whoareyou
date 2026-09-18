@@ -62,6 +62,8 @@ public final class DisplayVideoSource implements VideoSource {
     private final String bitrateMode;
     /** Intra-refresh period in frames (0 off). Changed by {@link #reconfigure}; needs a rebuild. */
     private volatile int intraRefresh;
+    /** Largest QP for I-frames, i.e. the IDR size cap (0 vendor's choice). Changed by {@link #reconfigure}; needs a rebuild. */
+    private volatile int qpIMax;
     /**
      * The bitrate the last *rebuild* was asked for — what the car's preset says, and what encoder.conf keeps.
      * {@link #bitRate} can sit below it while the car's adaptive controller has cut it live; that cut is
@@ -86,7 +88,7 @@ public final class DisplayVideoSource implements VideoSource {
     private Thread appWatcher;
 
     public DisplayVideoSource(int width, int height, int dpi, boolean systemDecorations, int bitRate, int maxFps,
-                              boolean constrainedBaseline, String bitrateMode, int intraRefresh) {
+                              boolean constrainedBaseline, String bitrateMode, int intraRefresh, int qpIMax) {
         // What the car chose last time (/api/encoder) outlives the server; the command line only supplies defaults.
         EncoderSettings saved = EncoderSettings.load();
         if (saved != null) {
@@ -104,6 +106,9 @@ public final class DisplayVideoSource implements VideoSource {
             if (saved.intraRefresh != null) {
                 intraRefresh = saved.intraRefresh;
             }
+            if (saved.qpIMax != null) {
+                qpIMax = saved.qpIMax;
+            }
         }
         this.display = new DisplayCapture(width, height, dpi, systemDecorations);
         this.bitRate = bitRate;
@@ -112,6 +117,7 @@ public final class DisplayVideoSource implements VideoSource {
         this.constrainedBaseline = constrainedBaseline;
         this.bitrateMode = bitrateMode;
         this.intraRefresh = intraRefresh;
+        this.qpIMax = qpIMax;
     }
 
     /** The input injector stamps its touches here, so a touch can be timed against the frame that answered it. */
@@ -138,7 +144,7 @@ public final class DisplayVideoSource implements VideoSource {
                 s.onFrame(annexB, ptsUs, keyframe);
             }
         };
-        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, constrainedBaseline, bitrateMode, intraRefresh, output);
+        encoder = new H264Encoder(display.width, display.height, bitRate, maxFps, constrainedBaseline, bitrateMode, intraRefresh, qpIMax, output);
         try {
             Surface surface = encoder.open();
             display.start(surface);
@@ -184,17 +190,26 @@ public final class DisplayVideoSource implements VideoSource {
      */
     public synchronized Map<String, Object> reconfigure(Integer width, Integer height, Integer fps, Integer bitrate,
                                                         String profile, Integer intraRefreshFrames) throws Exception {
+        return reconfigure(width, height, fps, bitrate, profile, intraRefreshFrames, null);
+    }
+
+    /** As above, plus the I-frame QP cap (0 = vendor's choice; see {@link H264Encoder}). */
+    public synchronized Map<String, Object> reconfigure(Integer width, Integer height, Integer fps, Integer bitrate,
+                                                        String profile, Integer intraRefreshFrames, Integer qpIMaxWanted) throws Exception {
         int w = width != null ? width : display.width;
         int h = height != null ? height : display.height;
         int f = fps != null ? fps : maxFps;
         boolean baseline = profile == null ? constrainedBaseline : !"high".equalsIgnoreCase(profile);
         int refresh = intraRefreshFrames != null ? intraRefreshFrames : intraRefresh;
-        boolean rebuild = w != display.width || h != display.height || f != maxFps || baseline != constrainedBaseline || refresh != intraRefresh;
+        int qp = qpIMaxWanted != null ? qpIMaxWanted : qpIMax;
+        boolean rebuild = w != display.width || h != display.height || f != maxFps || baseline != constrainedBaseline
+                || refresh != intraRefresh || qp != qpIMax;
         // A rebuild is asked for the preset's bitrate (the nominal one) unless the request names a bitrate;
         // a bitrate-only request moves the live value and leaves the nominal alone.
         int b = bitrate != null ? bitrate : rebuild ? nominalBitRate : bitRate;
         EncoderSettings.validate(w, h, f, b);
         EncoderSettings.validateIntraRefresh(refresh);
+        EncoderSettings.validateQpIMax(qp);
         if (!rebuild) {
             if (b == bitRate) {
                 return encoderInfo();
@@ -222,8 +237,10 @@ public final class DisplayVideoSource implements VideoSource {
         }
         constrainedBaseline = baseline;
         intraRefresh = refresh;
+        qpIMax = qp;
         Log.INSTANCE.i(TAG, "encoder reconfigure: " + display.width + "x" + display.height + " " + maxFps + "fps " + bitRate / 1000 + "k → "
-                + w + "x" + h + " " + f + "fps " + b / 1000 + "k " + (baseline ? "baseline" : "high") + (refresh > 0 ? " intra_refresh=" + refresh : ""));
+                + w + "x" + h + " " + f + "fps " + b / 1000 + "k " + (baseline ? "baseline" : "high") + (refresh > 0 ? " intra_refresh=" + refresh : "")
+                + (qp > 0 ? " qp_i_max=" + qp : ""));
         H264Encoder old = encoder;
         encoder = null;
         display.detachSurface();
@@ -236,7 +253,7 @@ public final class DisplayVideoSource implements VideoSource {
         maxFps = f;
         bitRate = b;
         nominalBitRate = b;
-        H264Encoder fresh = new H264Encoder(w, h, b, f, constrainedBaseline, bitrateMode, intraRefresh, output);
+        H264Encoder fresh = new H264Encoder(w, h, b, f, constrainedBaseline, bitrateMode, intraRefresh, qpIMax, output);
         try {
             Surface surface = fresh.open();
             display.start(surface);
@@ -248,7 +265,7 @@ public final class DisplayVideoSource implements VideoSource {
         encoder = fresh;
         encoderRestarts++;
         lastEncoderRestartAt = now;
-        new EncoderSettings(w, h, f, b, constrainedBaseline, intraRefresh).save();
+        new EncoderSettings(w, h, f, b, constrainedBaseline, intraRefresh, qpIMax).save();
         Map<String, Object> m = encoderInfo();
         m.put("rebuilt", true);
         return m;
@@ -270,6 +287,7 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("profile", constrainedBaseline ? "baseline" : "high");
         m.put("codec", sink != null ? sink.getCodec() : null);
         m.put("intraRefresh", intraRefresh);
+        m.put("qpIMax", qpIMax);
         m.put("nominalBitRate", nominalBitRate);
         m.put("bitrateChanges", bitrateChanges);
         // The car reads this before it starts moving the bitrate on its own: an older server would rebuild
@@ -509,6 +527,7 @@ public final class DisplayVideoSource implements VideoSource {
         m.put("bitrateChanges", bitrateChanges);
         m.put("bitrateLive", true);
         m.put("intraRefresh", intraRefresh);
+        m.put("qpIMax", qpIMax);
         m.put("encoderRestarts", encoderRestarts);
         m.put("encoder", encoder != null ? encoder.name() : null);
         m.put("encoderProfile", encoder != null ? encoder.profileNote() : null);

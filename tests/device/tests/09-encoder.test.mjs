@@ -203,3 +203,23 @@ test('/api/encoder 로 인트라 리프레시를 켰다 끌 수 있다', async (
   const bad = await api('/api/encoder?intra_refresh=100000', { method: 'POST' });
   assert.equal(bad.ok, false);
 });
+
+// I-프레임 QP 상한(IDR 크기 상한). 실차 #76 에서 차가 부탁한 IDR 이 1080p 에서 550~575 KB 였고 그것이 멈춤의
+// 증폭기였다. 기본값이 켜져 있으니(Server.DEFAULT_QP_I_MAX) 여기서는 상태에 실리는지, 바꾸면 재빌드되는지,
+// 0 으로 끄고 되돌릴 수 있는지만 본다 — IDR 이 실제로 작아지는지는 실차 perf 의 keyBytes 가 답한다.
+test('/api/encoder 로 I-프레임 QP 상한을 바꾸고 끌 수 있다', async (t) => {
+  const s0 = await status();
+  if (s0.source !== 'display') { t.skip('가상 디스플레이가 없다'); return; }
+  assert.equal(typeof s0.qpIMax, 'number', '상태에 qpIMax 가 없다');
+  await sleep(2100);
+  const r = await api('/api/encoder?qp_i_max=0', { method: 'POST' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.rebuilt, s0.qpIMax !== 0);
+  assert.equal(r.qpIMax, 0);
+  await sleep(2100);
+  const back = await api(`/api/encoder?qp_i_max=${s0.qpIMax}`, { method: 'POST' });
+  assert.equal(back.ok, true, JSON.stringify(back));
+  assert.equal(back.qpIMax, s0.qpIMax);
+  const bad = await api('/api/encoder?qp_i_max=99', { method: 'POST' });
+  assert.equal(bad.ok, false);
+});

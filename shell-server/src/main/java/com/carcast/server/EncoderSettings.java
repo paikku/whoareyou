@@ -32,14 +32,17 @@ final class EncoderSettings {
     final Boolean constrainedBaseline;
     /** Intra-refresh period in frames, 0 off; null when the file does not say. */
     final Integer intraRefresh;
+    /** Largest QP for I-frames (caps the IDR size), 0 vendor's choice; null when the file does not say. */
+    final Integer qpIMax;
 
-    EncoderSettings(int width, int height, int fps, int bitRate, Boolean constrainedBaseline, Integer intraRefresh) {
+    EncoderSettings(int width, int height, int fps, int bitRate, Boolean constrainedBaseline, Integer intraRefresh, Integer qpIMax) {
         this.width = width;
         this.height = height;
         this.fps = fps;
         this.bitRate = bitRate;
         this.constrainedBaseline = constrainedBaseline;
         this.intraRefresh = intraRefresh;
+        this.qpIMax = qpIMax;
     }
 
     /** Bounds the car may ask for. The JS decoder on the car is the real limit; these only stop nonsense. */
@@ -52,6 +55,13 @@ final class EncoderSettings {
         }
         if (bitRate < 200_000 || bitRate > 50_000_000) {
             throw new IllegalArgumentException("bitrate must be 200k..50M: " + bitRate);
+        }
+    }
+
+    /** H.264 QP is 0..51; 0 here means "do not ask". */
+    static void validateQpIMax(int qp) {
+        if (qp < 0 || qp > 51) {
+            throw new IllegalArgumentException("qp_i_max must be 0..51: " + qp);
         }
     }
 
@@ -83,11 +93,15 @@ final class EncoderSettings {
             String profile = kv.get("profile");
             Boolean baseline = profile == null ? null : !"high".equalsIgnoreCase(profile);
             Integer refresh = kv.containsKey("intra_refresh") ? Integer.valueOf(kv.get("intra_refresh")) : null;
+            Integer qp = kv.containsKey("qp_i_max") ? Integer.valueOf(kv.get("qp_i_max")) : null;
             EncoderSettings s = new EncoderSettings(Integer.parseInt(kv.get("width")), Integer.parseInt(kv.get("height")),
-                    Integer.parseInt(kv.get("fps")), Integer.parseInt(kv.get("bitrate")), baseline, refresh);
+                    Integer.parseInt(kv.get("fps")), Integer.parseInt(kv.get("bitrate")), baseline, refresh, qp);
             validate(s.width, s.height, s.fps, s.bitRate);
             if (refresh != null) {
                 validateIntraRefresh(refresh);
+            }
+            if (qp != null) {
+                validateQpIMax(qp);
             }
             return s;
         } catch (Exception e) {
@@ -113,6 +127,9 @@ final class EncoderSettings {
             }
             if (intraRefresh != null) {
                 sb.append("intra_refresh=").append(intraRefresh).append('\n');
+            }
+            if (qpIMax != null) {
+                sb.append("qp_i_max=").append(qpIMax).append('\n');
             }
             Files.write(tmp.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
             Files.move(tmp.toPath(), FILE.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);

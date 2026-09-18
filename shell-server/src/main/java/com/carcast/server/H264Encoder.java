@@ -58,6 +58,16 @@ final class H264Encoder {
     private final String bitrateMode;
     /** Intra-refresh period in frames (0: off): spread the I-macroblocks over this many frames instead of one IDR. */
     private final int intraRefresh;
+    /**
+     * Largest QP the encoder may spend on an I-frame (0: vendor's choice), i.e. a floor on how *coarse* an IDR
+     * is and therefore a cap on its size. Why: on the S26U an IDR at 1080p came out at 260 KB on the 10 s GOP and
+     * **550~575 KB when the car asked for one** — while the target bitrate was being cut to 6.7 Mbps (report #76).
+     * Rate control does not shrink a requested IDR with the target; each one was 0.4 s of link and a half-second
+     * of dropped P-frames on the car, and the car asked for the next one before that one had landed. Bounding
+     * the QP bounds the bytes: the first picture after a keyframe is a little coarser and the P-frames sharpen
+     * it within a few frames, which is invisible next to a stalled screen. See docs/car-tests/model-y §11.
+     */
+    private final int qpIMax;
     private final Output output;
     private MediaCodec codec;
     private Surface inputSurface;
@@ -69,7 +79,7 @@ final class H264Encoder {
     private volatile String profileNote = "";
 
     H264Encoder(int width, int height, int bitRate, int maxFps, boolean constrainedBaseline, String bitrateMode, int intraRefresh,
-                Output output) {
+                int qpIMax, Output output) {
         this.width = width;
         this.height = height;
         this.bitRate = bitRate;
@@ -77,6 +87,7 @@ final class H264Encoder {
         this.constrainedBaseline = constrainedBaseline;
         this.bitrateMode = bitrateMode == null ? "" : bitrateMode;
         this.intraRefresh = intraRefresh;
+        this.qpIMax = qpIMax;
         this.output = output;
     }
 
@@ -91,26 +102,42 @@ final class H264Encoder {
      * rather than leaving the car with no picture at all.
      */
     Surface open() throws IOException {
-        codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
-        name = codec.getName();
-        String asked = describe(constrainedBaseline, bitrateMode, intraRefresh);
-        try {
-            codec.configure(format(constrainedBaseline, bitrateMode, intraRefresh, true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-            profileNote = asked.isEmpty() ? "저지연 요청" : asked + " 요청 (SPS 확인 필요)";
-        } catch (Exception e) {
-            // Vendors reject profile/level/mode combinations they dislike. Everything asked for is a nicety;
-            // a picture is not. Fall back to the vendor's own choices — no profile, no mode, no low-latency
-            // hints — rather than leaving the car with none.
-            Ln.w("Video encoder: " + asked + " + low-latency rejected (" + e + ") — falling back to the vendor default");
-            try {
-                codec.release();
-            } catch (Exception ignored) {
-                // already unusable; the fresh codec below is what matters
+        // Three tries, each asking for less: everything (profile, mode, intra refresh, low-latency hints, I-frame QP
+        // cap), then the same without the QP cap (it is the newest key and the one a vendor is likeliest to reject),
+        // then the vendor's bare defaults. Everything asked for is a nicety; a picture is not.
+        String asked = describe(constrainedBaseline, bitrateMode, intraRefresh, qpIMax);
+        String askedNoQp = describe(constrainedBaseline, bitrateMode, intraRefresh, 0);
+        Object[][] attempts = {
+                {format(constrainedBaseline, bitrateMode, intraRefresh, true, qpIMax), asked.isEmpty() ? "저지연 요청" : asked + " 요청 (SPS 확인 필요)"},
+                {format(constrainedBaseline, bitrateMode, intraRefresh, true, 0), (askedNoQp.isEmpty() ? "저지연" : askedNoQp) + " 요청, I-QP 상한 거부됨"},
+                {format(false, "", 0, false, 0), (asked.isEmpty() ? "저지연" : asked) + " 거부됨 → 벤더 기본값"},
+        };
+        Exception last = null;
+        for (int i = 0; i < attempts.length; i++) {
+            if (qpIMax <= 0 && i == 1) {
+                continue; // nothing to drop between the first and the last try
             }
             codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
             name = codec.getName();
-            codec.configure(format(false, "", 0, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-            profileNote = (asked.isEmpty() ? "저지연" : asked) + " 거부됨 → 벤더 기본값";
+            try {
+                codec.configure((MediaFormat) attempts[i][0], null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                profileNote = (String) attempts[i][1];
+                last = null;
+                break;
+            } catch (Exception e) {
+                // Vendors reject profile/level/mode/key combinations they dislike. Log and ask for less.
+                Ln.w("Video encoder: try " + (i + 1) + " (" + attempts[i][1] + ") rejected: " + e);
+                last = e;
+                try {
+                    codec.release();
+                } catch (Exception ignored) {
+                    // already unusable; the fresh codec on the next try is what matters
+                }
+                codec = null;
+            }
+        }
+        if (codec == null) {
+            throw new IOException("encoder configure failed on every try: " + last);
         }
         inputSurface = codec.createInputSurface();
         Ln.i("Video encoder: " + name + " " + width + "x" + height + " " + bitRate / 1000 + " kbps (" + profileNote + ")");
@@ -122,7 +149,7 @@ final class H264Encoder {
         return H264Level.levelFor(width, height, maxFps > 0 ? maxFps : 60);
     }
 
-    private String describe(boolean baseline, String mode, int refresh) {
+    private String describe(boolean baseline, String mode, int refresh, int qpMax) {
         StringBuilder sb = new StringBuilder();
         if (baseline) {
             sb.append("constrained-baseline ").append(H264Level.describe(level()));
@@ -133,11 +160,17 @@ final class H264Encoder {
         if (refresh > 0) {
             sb.append(sb.length() > 0 ? "+" : "").append("intra-refresh ").append(refresh);
         }
+        if (qpMax > 0) {
+            sb.append(sb.length() > 0 ? "+" : "").append("I-QP≤").append(qpMax);
+        }
         return sb.toString();
     }
 
-    private MediaFormat format(boolean baseline, String mode, int refresh, boolean lowLatency) {
+    private MediaFormat format(boolean baseline, String mode, int refresh, boolean lowLatency, int qpMax) {
         MediaFormat format = format();
+        if (qpMax > 0) {
+            format.setInteger(MediaFormat.KEY_VIDEO_QP_I_MAX, qpMax);
+        }
         if (lowLatency) {
             // KEY_LATENCY=1 (below) is the portable request; these two are what actually moved the number on
             // the vendor encoder we have. Both are hints: a codec that does not know them ignores them.
