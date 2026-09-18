@@ -99,9 +99,11 @@ const server = createServer((req, res) => {
   if (url.pathname === '/api/status') {
     res.writeHead(200, { 'content-type': 'application/json' });
     const last = reports[reports.length - 1];
-    const enc = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, encoderRestarts: 0 };
+    const enc = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, nominal: 4_000_000, encoderRestarts: 0, bitrateChanges: 0 };
     res.end(JSON.stringify({
       type: 'status', running: true, source: 'fake', width: enc.width, height: enc.height, maxFps: enc.fps, bitRate: enc.bitrate, encoderRestarts: enc.encoderRestarts, addresses: ADDRESSES,
+      // 실제 서버처럼: 비트레이트만 바꾸는 요청은 인코더를 다시 세우지 않고 받는다(DisplayVideoSource.reconfigure).
+      bitrateLive: true, nominalBitRate: enc.nominal, bitrateChanges: enc.bitrateChanges,
       reports: reports.length, lastReport: last ? { id: last.id, receivedAt: last.receivedAt, remote: last.remote, summary: last.summary } : null,
       ...state,
     }));
@@ -188,20 +190,26 @@ const server = createServer((req, res) => {
   }
   // 폰 인코더의 런타임 설정. 진짜 서버는 인코더를 갈아끼운다; 여기서는 값만 들고 있다가 /api/status 에 싣는다.
   if (url.pathname === '/api/encoder') {
-    state.encoder = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, encoderRestarts: 0 };
+    state.encoder = state.encoder ?? { width: 1280, height: 720, fps: 30, bitrate: 4_000_000, nominal: 4_000_000, encoderRestarts: 0, bitrateChanges: 0 };
+    let rebuilt = null;
     if (req.method === 'POST') {
       const n = (k) => (url.searchParams.get(k) ? Number(url.searchParams.get(k)) : null);
-      const w = n('width') ?? state.encoder.width, h = n('height') ?? state.encoder.height, fps = n('fps') ?? state.encoder.fps, bitrate = n('bitrate') ?? state.encoder.bitrate;
+      const w = n('width') ?? state.encoder.width, h = n('height') ?? state.encoder.height, fps = n('fps') ?? state.encoder.fps;
+      // 크기·fps·프로파일이 그대로면 비트레이트만 바뀐 것: 실제 서버처럼 재빌드 없이 받고 공칭은 두며 세기만 한다.
+      rebuilt = w !== state.encoder.width || h !== state.encoder.height || fps !== state.encoder.fps || url.searchParams.has('profile') || url.searchParams.has('intra_refresh') || url.searchParams.has('qp_i_max');
+      const bitrate = n('bitrate') ?? (rebuilt ? state.encoder.nominal : state.encoder.bitrate);
       if (w < 320 || h < 180 || fps < 1 || fps > 120 || bitrate < 200_000) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: `bad encoder settings ${w}x${h} ${fps}fps ${bitrate}` }));
         return;
       }
-      state.encoder = { width: w, height: h, fps, bitrate, encoderRestarts: state.encoder.encoderRestarts + 1 };
+      state.encoder = rebuilt
+        ? { width: w, height: h, fps, bitrate, nominal: bitrate, encoderRestarts: state.encoder.encoderRestarts + 1, bitrateChanges: state.encoder.bitrateChanges }
+        : { ...state.encoder, bitrate, bitrateChanges: state.encoder.bitrateChanges + (bitrate !== state.encoder.bitrate ? 1 : 0) };
       state.encoderPosts = (state.encoderPosts ?? 0) + 1;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, ...state.encoder }));
+    res.end(JSON.stringify({ ok: true, ...state.encoder, nominalBitRate: state.encoder.nominal, bitrateLive: true, ...(rebuilt === null ? {} : { rebuilt }) }));
     return;
   }
   if (url.pathname === '/api/screen') {

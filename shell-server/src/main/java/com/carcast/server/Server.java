@@ -11,7 +11,7 @@ import java.util.Map;
  * <pre>
  * CLASSPATH=$(pm path com.carcast | cut -d: -f2) app_process / com.carcast.server.Server &lt;build-id&gt; [port=3333]
  *     [display=1280x720/160] [bitrate=4000000] [fps=30] [profile=baseline|default] [decorations=false]
- *     [bitrate_mode=cbr|vbr|default] [intra_refresh=&lt;frames&gt;] [app=com.google.android.youtube] [source=clip]
+ *     [bitrate_mode=cbr|vbr|default] [intra_refresh=&lt;frames&gt;] [qp_i_max=&lt;0..51&gt;] [app=com.google.android.youtube] [source=clip]
  *     [stay_awake=true] [screen_off=false] [sleep_recovery=true] [keep_active=true]
  *     [screen_off_timeout=&lt;ms&gt;] [keep_active_fallback=false] [vd_wake=true]
  * </pre>
@@ -30,6 +30,14 @@ import java.util.Map;
  * interface (hotspot), but only for app-uid sockets. uid 2000 is exempt, so the car can reach us.
  */
 public final class Server {
+    /**
+     * Default cap on the I-frame QP (H.264 QP 0..51; higher is coarser). 28 puts a 1080p IDR around 100 KB —
+     * two or three P-frames' worth at 12 Mbps — instead of the 260~575 KB the vendor's rate control spent on
+     * one (report #76). Overridable per run (`qp_i_max=`), per car (`POST /api/encoder?qp_i_max=`), 0 to leave
+     * it to the vendor.
+     */
+    static final int DEFAULT_QP_I_MAX = 28;
+
     private Server() {
     }
 
@@ -115,7 +123,10 @@ public final class Server {
                     throw new IllegalArgumentException("bitrate_mode must be cbr, vbr or default");
                 }
                 int intraRefresh = Integer.parseInt(raw.getOrDefault("intra_refresh", "0"));
-                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps, constrainedBaseline, bitrateMode, intraRefresh);
+                // qp_i_max=N caps how many bytes an I-frame may be by capping its QP (0: vendor's choice). Default on:
+                // the S26U's requested IDRs at 1080p ran to 575 KB and that was what stalled the car (report #76).
+                int qpIMax = Integer.parseInt(raw.getOrDefault("qp_i_max", String.valueOf(DEFAULT_QP_I_MAX)));
+                display = new DisplayVideoSource(d[0], d[1], d[2], decorations, bitRate, fps, constrainedBaseline, bitrateMode, intraRefresh, qpIMax);
             } catch (RuntimeException e) {
                 System.err.println("carcast-server: bad display options: " + e.getMessage());
                 System.exit(2);
@@ -228,10 +239,11 @@ public final class Server {
             if ("/api/hotspot".equals(path)) {
                 return Hotspot.route(method);
             }
-            // The encoder at runtime: GET says what it is, POST ?width=&height=&fps=&bitrate=&profile= rebuilds it
-            // (the display and the app stay). The car's quality picker and its automatic step-down both come through
-            // here, and a car whose renderer is WebCodecs asks for profile=high — Baseline only exists for the WASM
-            // decoder, and High is the same picture for fewer bits.
+            // The encoder at runtime: GET says what it is, POST ?width=&height=&fps=&bitrate=&profile=&intra_refresh=
+            // rebuilds it (the display and the app stay) — except a bitrate-only POST, which the running codec takes
+            // live (see DisplayVideoSource.reconfigure). The car's quality picker, its automatic step-down and its
+            // adaptive bitrate all come through here, and a car whose renderer is WebCodecs asks for profile=high —
+            // Baseline only exists for the WASM decoder, and High is the same picture for fewer bits.
             if ("/api/encoder".equals(path)) {
                 if (source == null) {
                     return "{\"ok\":false,\"error\":\"no display source\"}";
@@ -242,7 +254,8 @@ public final class Server {
                 try {
                     Map<String, Object> info = source.reconfigure(
                             intOrNull(query.get("width")), intOrNull(query.get("height")),
-                            intOrNull(query.get("fps")), intOrNull(query.get("bitrate")), query.get("profile"));
+                            intOrNull(query.get("fps")), intOrNull(query.get("bitrate")), query.get("profile"),
+                            intOrNull(query.get("intra_refresh")), intOrNull(query.get("qp_i_max")));
                     Map<String, Object> out = new LinkedHashMap<>();
                     out.put("ok", true);
                     out.putAll(info);

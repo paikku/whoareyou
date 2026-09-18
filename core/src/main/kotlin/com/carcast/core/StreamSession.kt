@@ -260,7 +260,12 @@ class StreamSession(
 
     private fun onWebSocket(path: String, query: Map<String, String>, conn: WebSocketConnection): Boolean {
         return when (path) {
-            "/ws/video" -> { videoHub.attach(conn); event("video 클라이언트 접속 (${videoHub.clientCount})"); true }
+            "/ws/video" -> {
+                conn.limitSendBuffer(VIDEO_SEND_BUFFER_BYTES)
+                videoHub.attach(conn)
+                event("video 클라이언트 접속 (${videoHub.clientCount})")
+                true
+            }
             "/ws/audio" -> { audioHub.attach(conn); true }
             "/ws/control" -> {
                 controlClients += conn
@@ -438,6 +443,14 @@ class StreamSession(
         /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
         private const val ACCEPT_LOG_EVERY = 100L
         const val TEST_CLIP = "test-720p30.cmp4"
+        /**
+         * SO_SNDBUF for a video socket (the kernel doubles it, so ~128 KB in flight at most). At 12 Mbps that
+         * is ~85 ms of video; at 6 Mbps ~170 ms — the most the car can be behind without the phone knowing.
+         * The throughput ceiling it implies, 128 KB per round trip, is ~100 Mbps at the hotspot's normal
+         * 10 ms and still 15 Mbps at the 70 ms that only a congested link shows; the moment it binds is the
+         * moment we want frames dropped instead of queued. See WebSocketConnection.limitSendBuffer.
+         */
+        const val VIDEO_SEND_BUFFER_BYTES = 64 * 1024
         /** A trusted certificate bundled with the build (not in git — see tools/tls/README.md). */
         const val TLS_CERT_ASSET = "tls/cert.pem"
         const val TLS_KEY_ASSET = "tls/key.pem"

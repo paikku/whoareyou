@@ -34,6 +34,18 @@ class WebSocketConnection(
     @Volatile var listener: Listener? = null
 
     val queuedFrames: Int get() = queue.size
+
+    /**
+     * Cap the kernel's send buffer for this socket. Android grows it to a megabyte or so on Wi-Fi, and
+     * everything in it is invisible from here: the writer thread hands frames to the kernel, [queuedFrames]
+     * reads zero, and the car is still hundreds of milliseconds behind. Report #70 is what that looks like —
+     * `queued 0`, `staleDropped 0`, rtt 69 ms. With a small buffer the writer blocks as soon as the link
+     * stops draining, the bounded queue fills, and [offer] fails — which is the signal MediaHub is built
+     * around. Best effort: a socket that refuses keeps its default.
+     */
+    fun limitSendBuffer(bytes: Int) {
+        runCatching { socket.sendBufferSize = bytes }
+    }
     /** "ip:port" of the peer, for status lines; the socket may already be gone. */
     val remote: String get() = runCatching { "${socket.inetAddress.hostAddress}:${socket.port}" }.getOrDefault("?")
 

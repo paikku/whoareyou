@@ -22,6 +22,11 @@ export interface ClientStats {
   touch: { batches: number; samples: number };
   skipped?: number;
   offscreen?: boolean;
+  autoStepDowns: number;
+  latencyProbe: any;
+  encoder: any;
+  abr: { nominal: number; target: number; floor: number; cuts: number; raises: number; baselineRtt: number | null; active: boolean; disabled: string };
+  rx: { bytes: number; keyframes: number };
 }
 
 export const stats = (page: Page) => page.evaluate(() => (window as any).__carcast.stats() as ClientStats);

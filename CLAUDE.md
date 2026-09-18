@@ -27,7 +27,8 @@ EXPLORE_STEPS=40 npm run explore   # 무작위 순서로 스스로 돌아다니�
 ```
 
 KVM 이 없는 자리(원격 컨테이너, 맥/윈도)에서는 **푸시하고 `emulator` 워크플로 로그를 읽는 것이
-유일한 길**이다. 탐색은 `tools/virtual-phone/explore.steps` 를 0 이 아닌 수로 바꿔 푸시하면 그 실행에서
+유일한 길**이다. CI 자체가 막혀 있으면(러너 없이 2 초 만에 실패) 컨테이너에 SDK 를 깔아 APK 와 JVM 단위
+테스트까지는 직접 만들 수 있다 — docs/agent-runbook.md §6 "컨테이너에서 APK 만들기". 탐색은 `tools/virtual-phone/explore.steps` 를 0 이 아닌 수로 바꿔 푸시하면 그 실행에서
 돌고, 보고서(아티팩트 `virtual-phone-logs` 의 `out/lifecycle/explore.md`)를 읽은 뒤 0 으로 되돌린다.
 
 ## 원칙

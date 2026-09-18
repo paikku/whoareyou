@@ -149,3 +149,77 @@ test('큰 프리셋에서도 Baseline 요청이 살아남는다', async (t) => {
     assert.equal(back.ok, true, JSON.stringify(back));
   }
 });
+
+// 비트레이트만 바꾸는 요청은 인코더를 다시 세우지 않는다(PARAMETER_KEY_VIDEO_BITRATE). 차의 적응 비트레이트가
+// 몇 초마다 이 길로 오므로, 여기서 재빌드가 나면 그 기능은 켜지 않는 편이 낫다 — 차는 `bitrateLive` 와 응답의
+// `rebuilt` 로 그것을 확인한다. 2 초 잠금도 없어야 한다(재빌드가 아니므로).
+test('비트레이트만 바꾸면 인코더를 다시 세우지 않고 바로 받는다', async (t) => {
+  const s0 = await status();
+  if (s0.source !== 'display') { t.skip('가상 디스플레이가 없다'); return; }
+  assert.equal(s0.bitrateLive, true, '상태에 bitrateLive 가 없다 — 차가 적응 비트레이트를 켜지 않는다');
+  const before = await api('/api/encoder');
+  const target = before.bitrate + 500_000;
+  const r = await api(`/api/encoder?bitrate=${target}`, { method: 'POST' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.rebuilt, false, '비트레이트 전용 요청이 재빌드로 처리됐다');
+  assert.equal(r.bitrate, target);
+  assert.equal(r.nominalBitRate, before.nominalBitRate, '라이브 변경이 공칭값을 건드렸다');
+  const s1 = await status();
+  assert.equal(s1.encoderRestarts, s0.encoderRestarts, '인코더가 다시 섰다');
+  assert.equal(s1.bitrateChanges, (s0.bitrateChanges ?? 0) + 1);
+  assert.equal(s1.bitRate, target);
+  // 잠금 없이 곧바로 되돌릴 수 있다.
+  const back = await api(`/api/encoder?bitrate=${before.bitrate}`, { method: 'POST' });
+  assert.equal(back.ok, true, JSON.stringify(back));
+  assert.equal(back.rebuilt, false);
+  assert.equal((await status()).bitRate, before.bitrate);
+});
+
+// 인트라 리프레시(IDR 대신 I-매크로블록을 N 프레임에 나눠 싣기)는 재빌드가 필요한 손잡이이고, 벤더가 거부하면
+// H264Encoder 가 벤더 기본값으로 물러난다. 여기서는 요청이 통과하고 프레임이 이어지는지, 그리고 0 으로 되돌아
+// 가는지만 본다 — 버스트가 실제로 사라지는지는 실차의 perf(keyBytes)가 답한다.
+test('/api/encoder 로 인트라 리프레시를 켰다 끌 수 있다', async (t) => {
+  const s0 = await status();
+  if (s0.source !== 'display') { t.skip('가상 디스플레이가 없다'); return; }
+  await sleep(2100);
+  const r = await api('/api/encoder?intra_refresh=30', { method: 'POST' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.rebuilt, true);
+  assert.equal(r.intraRefresh, 30);
+  assert.equal((await status()).encoderRestarts, s0.encoderRestarts + 1);
+  const stop = await wiggle();
+  try {
+    await waitFor(async () => {
+      const s = await status();
+      return s.frames > r.frames + 5 || s.frames > s0.frames + 5 ? s : null;
+    }, { timeoutMs: 15_000, what: '인트라 리프레시 뒤 프레임 증가' });
+  } finally {
+    stop();
+  }
+  await sleep(2100);
+  const back = await api('/api/encoder?intra_refresh=0', { method: 'POST' });
+  assert.equal(back.ok, true, JSON.stringify(back));
+  assert.equal(back.intraRefresh, 0);
+  const bad = await api('/api/encoder?intra_refresh=100000', { method: 'POST' });
+  assert.equal(bad.ok, false);
+});
+
+// I-프레임 QP 상한(IDR 크기 상한). 실차 #76 에서 차가 부탁한 IDR 이 1080p 에서 550~575 KB 였고 그것이 멈춤의
+// 증폭기였다. 기본값이 켜져 있으니(Server.DEFAULT_QP_I_MAX) 여기서는 상태에 실리는지, 바꾸면 재빌드되는지,
+// 0 으로 끄고 되돌릴 수 있는지만 본다 — IDR 이 실제로 작아지는지는 실차 perf 의 keyBytes 가 답한다.
+test('/api/encoder 로 I-프레임 QP 상한을 바꾸고 끌 수 있다', async (t) => {
+  const s0 = await status();
+  if (s0.source !== 'display') { t.skip('가상 디스플레이가 없다'); return; }
+  assert.equal(typeof s0.qpIMax, 'number', '상태에 qpIMax 가 없다');
+  await sleep(2100);
+  const r = await api('/api/encoder?qp_i_max=0', { method: 'POST' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.rebuilt, s0.qpIMax !== 0);
+  assert.equal(r.qpIMax, 0);
+  await sleep(2100);
+  const back = await api(`/api/encoder?qp_i_max=${s0.qpIMax}`, { method: 'POST' });
+  assert.equal(back.ok, true, JSON.stringify(back));
+  assert.equal(back.qpIMax, s0.qpIMax);
+  const bad = await api('/api/encoder?qp_i_max=99', { method: 'POST' });
+  assert.equal(bad.ok, false);
+});

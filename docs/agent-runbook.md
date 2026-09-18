@@ -146,6 +146,27 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
 그리고 세션은 있는데 서버가 없을 때는 `ShellServerLink.summary()`(무선 디버깅 꺼짐 / 페어링 필요 / 재시도 대기 …).
 둘 다 `onChange`/`onStateChange` 콜백으로 `CarCastWidget.refresh()` 를 부른다 — 위젯은 폴링하지 못하므로.
 
+### 화질 · 링크 (그림이 흐려지거나, 밀리거나, 인코더가 느릴 때)
+
+- **두 층이 순서대로 움직인다.** 먼저 **적응 비트레이트**(`web/src/abr.ts`, 배선은 `main.ts` "적응 비트레이트"):
+  차가 rtt(2 초 ping)와 버린 프레임을 보고 비트레이트만 재빌드 없이 내린다(`POST /api/encoder?bitrate=` →
+  `rebuilt:false`). 화질 시트의 "자동" 토글과 무관하게 늘 돈다(토글은 사다리만). 그 다음이 **사다리**
+  (`maybeStepDown`, 토글이 켜져 있을 때만): abr 이 바닥(공칭의 40%)에 닿은 뒤에도 나쁜 표본이 이어질 때만
+  해상도·fps 를 한 칸 내린다. 비트가 먼저, 화소는 나중 — 실차 #70 에서 1080p60 을 무너뜨린 것은
+  디코더가 아니라 링크였다(car-tests/model-y §9)
+- **폰 쪽 계측은 `/api/status.timing`** (`FrameTiming`): `encodeMs` 는 합성 → 인코더 출력, `touchToFrameMs` 는
+  터치 → 다음 프레임. 인코더 손잡이(`H264Encoder.format` 의 저지연 키·`KEY_OPERATING_RATE`)를 만졌으면 **차 없이**
+  이 숫자로 판정한다. 대조군은 §9 의 표(720p30 14 ms, 720p60·900p60 11.5 ms)
+- **차 쪽 계측은 리포트의 `perf`** (10 초 표본): `kbps`(실제 받은 비트), `keys`·`keyBytes`(IDR 수와 가장 큰 것),
+  `targetKbps`(abr 목표), 그리고 `rttMs`·`dropped`·`backlog`. rtt 가 뛰면서 `keyBytes` 가 크면 IDR 버스트,
+  backlog 가 8 을 넘으면 디코더. 이벤트에는 `abr ↓/↑`, `keyframe request (…, 백오프 …)`, `init segment avc1.…` 가 남는다
+- **손잡이 (전부 `POST /api/encoder`, 크기·fps·프로파일·인트라 리프레시는 재빌드, 비트레이트만은 즉시):**
+  `?bitrate=` · `?qp_i_max=28`(I 프레임 QP 상한 = IDR 크기 상한, 기본 28, 0 이면 벤더 기본; 실차 #76 이 그 이유) ·
+  `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, 저장됨, 기본 0) · `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
+- 검사: A `quality.spec`("링크가 막히면…"), A+ `09-encoder`("비트레이트만 바꾸면…", "인트라 리프레시를 켰다 끌 수 있다")
+- **폰의 소켓 큐(`videoClientStats.queued`)가 0 이라고 링크가 멀쩡한 것은 아니다.** 커널 송신 버퍼가 그 앞에 있다.
+  64 KB 로 줄여 두었지만(`StreamSession.VIDEO_SEND_BUFFER_BYTES`) 링크가 막혔는지는 차의 rtt 가 먼저 안다
+
 ## 4. 새 상황을 추가하는 법
 
 `tests/e2e/tests/lifecycle/actions.ts` 에 동작 하나를 더하면 시나리오와 무작위 탐색 양쪽에 자동으로 들어간다.
@@ -192,3 +213,30 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
 | `adb shell "... &"` 가 안 돌아옴 | stdin 까지 `/dev/null` 로 떼야 한다(`vphone.sh start_server`) |
 | 차 화면 버튼이 안 눌림 | 스테이지 위 UI 는 `data-ui` 를 달아야 한다. 안 그러면 `setPointerCapture` 가 클릭을 삼킨다 |
 | 실차에서만 나는 증상 | 차에서 디버깅하지 않는다. 💾 로 세션 리포트를 남기고, 그 `events` 를 집에서 재현한다 |
+| **CI 워크플로가 2 초 만에 러너 없이 실패, 로그 404** | GitHub Actions 쪽(결제 한도·러너)이다. 코드 탓이 아니니 아래 "컨테이너에서 APK 만들기"로 간다 |
+| Gradle 이 Maven Central 에서 `429 Too Many Requests` | 프록시가 제한에 걸린 것. `~/.gradle/init.d/central-mirror.gradle` 로 `repo.maven.apache.org` 를 `maven-central.storage-download.googleapis.com/maven2/` 로 바꿔 준다(아래) |
+| Kotlin `Daemon compilation failed: null` | 컨테이너에서 데몬이 죽는 것. `-Pkotlin.compiler.execution.strategy=in-process` |
+
+**컨테이너에서 APK 만들기 (CI 가 막혔을 때, 2026-09-18 실측):**
+
+```bash
+mkdir -p /opt/android-sdk/cmdline-tools && cd /opt/android-sdk/cmdline-tools \
+  && curl -sSL -o t.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+  && unzip -q t.zip && rm t.zip && mv cmdline-tools latest
+export ANDROID_HOME=/opt/android-sdk
+yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+echo "sdk.dir=/opt/android-sdk" > local.properties        # gitignore 됨
+mkdir -p ~/.gradle/init.d && cat > ~/.gradle/init.d/central-mirror.gradle <<'G'
+def mirror = { h -> h.withType(MavenArtifactRepository).configureEach { r ->
+  if (r.url.toString().startsWith('https://repo.maven.apache.org/maven2')) r.url = 'https://maven-central.storage-download.googleapis.com/maven2/' } }
+settingsEvaluated { s -> mirror(s.pluginManagement.repositories); mirror(s.dependencyResolutionManagement.repositories); mirror(s.buildscript.repositories) }
+allprojects { mirror(repositories); mirror(buildscript.repositories) }
+G
+./gradlew :core:test :mux:test :app:testDebugUnitTest :adb:testDebugUnitTest :shell-server:testDebugUnitTest -q -Pkotlin.compiler.execution.strategy=in-process
+./gradlew :app:assembleDebug -q -Pkotlin.compiler.execution.strategy=in-process
+cp app/build/outputs/apk/debug/app-debug.apk out/carcast-debug-$(git rev-parse --short HEAD).apk
+```
+
+**커밋한 뒤에 빌드한다** — 빌드 id(`/api/status.build`, 앱 화면의 `빌드 …`)가 빌드 시점의 HEAD 라서, 먼저 만들고
+커밋하면 APK 가 한 커밋 전의 이름을 단다. 서명은 저장소의 debug keystore 라 CI 가 만든 APK 위에 그대로 덮인다.
