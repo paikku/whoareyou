@@ -223,3 +223,30 @@ test('/api/encoder 로 I-프레임 QP 상한을 바꾸고 끌 수 있다', async
   const bad = await api('/api/encoder?qp_i_max=99', { method: 'POST' });
   assert.equal(bad.ok, false);
 });
+
+// 인코더 벤치(/api/bench): 합성 프레임으로 코덱 하나를 몇 초 돌려 encodeMs 와 IDR 크기를 잰다 — "HEVC·AV1 로 가면
+// 무엇을 얻고 무엇을 잃나"의 폰 쪽 절반이다. 에뮬레이터의 소프트웨어 인코더에서는 숫자가 뜻이 없고(A+ 원칙),
+// 여기서는 길이 이어지는지만 본다: 돌아오고, 프레임을 냈고, 키프레임이 둘(첫 장 + 요청한 것)인지. HEVC 는 기기가
+// 없다고 답할 수 있으므로(error) 그것도 기록할 값이다.
+test('/api/bench 가 코덱별 인코더 지연과 IDR 크기를 돌려준다', async () => {
+  const avc = await api('/api/bench?codec=avc&width=640&height=360&fps=30&frames=45&bitrate=1000000&qp_i_max=28', { method: 'POST' });
+  assert.equal(avc.ok, true, JSON.stringify(avc));
+  assert.equal(avc.codec, 'avc');
+  assert.ok(avc.encoder, '인코더 이름이 없다');
+  assert.ok(avc.encodeMs.n > 20, `프레임이 ${avc.encodeMs.n} 장뿐`);
+  assert.ok(avc.firstKeyBytes > 0);
+  assert.ok(avc.keyframes >= 2, `요청한 IDR 이 안 나왔다 (keyframes ${avc.keyframes})`);
+  console.log(`bench avc: ${avc.encoder} hw=${avc.hardware} ${avc.accepted} p50 ${avc.encodeMs.p50}ms p90 ${avc.encodeMs.p90}ms key ${avc.firstKeyBytes}/${avc.requestedKeyBytes}B P ${avc.avgPBytes}B ${avc.kbps}kbps`);
+  for (const codec of ['hevc', 'av1']) {
+    const r = await api(`/api/bench?codec=${codec}&width=640&height=360&fps=30&frames=45&bitrate=1000000`, { method: 'POST' });
+    if (!r.ok) { console.log(`bench ${codec}: ${r.error}`); continue; }
+    assert.ok(r.encodeMs.n > 0, `${codec}: 프레임이 없다`);
+    console.log(`bench ${codec}: ${r.encoder} hw=${r.hardware} p50 ${r.encodeMs.p50}ms p90 ${r.encodeMs.p90}ms key ${r.firstKeyBytes}/${r.requestedKeyBytes}B P ${r.avgPBytes}B ${r.kbps}kbps`);
+  }
+  // 동시에 둘은 안 된다(하드웨어 인코더 둘이 경주하면 경주를 재는 셈이다).
+  const [a, b] = await Promise.all([
+    api('/api/bench?codec=avc&width=320&height=180&frames=30', { method: 'POST' }),
+    api('/api/bench?codec=avc&width=320&height=180&frames=30', { method: 'POST' }),
+  ]);
+  assert.ok((a.ok ? 1 : 0) + (b.ok ? 1 : 0) === 1, `동시 요청: ${JSON.stringify([a.ok, b.ok])}`);
+});

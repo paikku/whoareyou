@@ -221,6 +221,19 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, screenOn: state.screenOn ?? true }));
     return;
   }
+  // 링크 프로브용 N 바이트(실제 서버의 StreamSession.blob 과 같은 모양).
+  if (url.pathname === '/api/blob') {
+    const bytes = Math.min(4 << 20, Math.max(16, Number(url.searchParams.get('bytes') ?? 65536)));
+    const head = `{"bytes":${bytes},"data":"`;
+    const n = Math.max(0, bytes - head.length - 2);
+    let x = 0x9e3779b9 ^ bytes;
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const chars = new Array(n);
+    for (let i = 0; i < n; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; chars[i] = alphabet[(x >>> 16) & 63]; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(head + chars.join('') + '"}');
+    return;
+  }
   if (url.pathname === '/api/reports') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify([...reports].reverse()));

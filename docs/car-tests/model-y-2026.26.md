@@ -458,5 +458,6 @@ t=45~105: fps 30(유튜브 원본 fps), lag 1~2 ms, 드롭 0, rtt 11~15, 실제 
 ③ **(2026-09-18 재검토 뒤 빌드)** 차 쪽 규칙이 바뀌었다 — 하드웨어 경로는 밀린 프레임을 버리지 않고 푼다.
 `droppedFrames` 대신 `late` 가 찍히는지, `keyframeRequests` 가 GOP 당 한 번 미만인지. 그리고 화질 시트의
 **인트라 리프레시** 토글을 켠 1 분: `keys`·`keyBytes`. (verification-log 열린 질문 15)
-④ https `/diag` 를 한 번 더: HEVC·AV1·VP9 의 prefer-hardware 줄과 WebRTC 루프백 표(열린 질문 16·17). 집에서
-`/api/status.encoders` 로 폰 쪽 절반을 맞춰 본다.
+④ https `/diag` 를 한 번 더: HEVC·AV1·VP9 와 1080p 의 prefer-hardware 줄, 링크 칸(600 KB 가 몇 ms 인가), WebRTC
+코덱별 루프백 표(열린 질문 16·17·18). 집에서 `/api/status.encoders` 와 `POST /api/bench?codec=avc|hevc|av1` 로 폰 쪽
+절반(코덱별 encodeMs·요청 IDR 크기)을 맞춰 본다 — 그러면 코덱·전송 결정에 필요한 숫자가 한 방문에 다 모인다.

@@ -180,6 +180,19 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   트랙, H.264 우선)을 돌려 협상 코덱·`decoderImplementation`·데이터 채널을 적는다(`webrtc`). 폰 쪽: `/api/status.encoders`
   가 avc·hevc·av1·vp9 인코더 이름을 하드웨어 먼저 나열한다. **둘 다 조사일 뿐 파이프라인은 H.264/WebSocket 그대로다** —
   다음 단계로 가려면 `web/src/paths.ts` 주석의 할 일 목록(폰 쪽 절반)이 필요하다
+- **"되는가" 다음은 "얼마나 드는가"다 — 같은 방문에서 같이 잰다.**
+  - 폰 인코더 벤치 `POST /api/bench?codec=avc|hevc|av1|vp9&width=1920&height=1080&fps=30&bitrate=8000000&frames=90&qp_i_max=28`
+    (노트북에서 curl, 3 초, 라이브 인코더는 건드리지 않음): `encodeMs` p50/p90, `firstKeyBytes`, **`requestedKeyBytes`**(차가
+    부탁한 IDR 의 크기 — 실차 #76 의 575 KB 가 이것), `avgPBytes`, `kbps`, `accepted`(벤더가 저지연 키·I-QP 상한을 받았나),
+    `hardware`. 합성 YUV 프레임을 넣으므로 절대값은 라이브(`timing.encodeMs`)와 조금 다르고 **코덱 사이의 비교**가 목적이다.
+    `qp_i_max=0` 과 `28` 을 한 번씩 돌리면 QP 상한이 이 인코더에서 IDR 을 얼마나 줄이는지가 폰만으로 나온다
+  - 링크 프로브: `/diag` 가 `/api/blob?bytes=N` 으로 64K·256K·600K(두 번)·2M 를 받아 ms 와 Mbps 를 적는다(`link`,
+    요약 줄의 `link 600KB=…ms`). "IDR 한 장이 이 링크에서 몇 ms 인가" 를 인코더 없이 직접 잰 값이라, 인코더 벤치의
+    `requestedKeyBytes` 와 곱하면 그 차·그 자리의 멈춤 길이가 계산된다
+  - 차 디코더: `/diag`(https) 가 1080p 줄(High 4.2·HEVC 4.1·AV1 4.1)도 묻고, WebRTC 루프백을 H.264 다음 AV1·VP9·H.265 로
+    하나씩 돌린다(`webrtc.perCodec`). 비신뢰 데이터 채널(ordered:false, maxRetransmits:0)과 WebTransport 존재도 적는다.
+    ⚠️ `decoderImplementation` 은 크로미엄이 미디어 권한을 받은 페이지에만 채워 준다 — PC 에서 빈 문자열이었고 차에서도
+    빌 수 있다. 그러면 "루프백 O" 까지가 답이고 하드웨어 여부는 WebCodecs 표(`prefer-hardware`)로 본다
 
 ## 4. 새 상황을 추가하는 법
 

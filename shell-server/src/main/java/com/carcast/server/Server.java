@@ -239,6 +239,11 @@ public final class Server {
             if ("/api/hotspot".equals(path)) {
                 return Hotspot.route(method);
             }
+            // Encoder bench: one codec, a few seconds of synthetic frames, its latency and IDR sizes — the phone's half
+            // of "would HEVC or AV1 help", without a car and without touching the live encoder (EncoderBench).
+            if ("/api/bench".equals(path) && "POST".equals(method)) {
+                return com.carcast.core.Json.INSTANCE.obj(EncoderBench.run(query));
+            }
             // The encoder at runtime: GET says what it is, POST ?width=&height=&fps=&bitrate=&profile=&intra_refresh=
             // rebuilds it (the display and the app stay) — except a bitrate-only POST, which the running codec takes
             // live (see DisplayVideoSource.reconfigure). The car's quality picker, its automatic step-down and its

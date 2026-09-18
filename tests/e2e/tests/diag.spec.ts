@@ -18,7 +18,7 @@ test('diag page reports environment, API support, WS success and decode', async 
   expect(rows.find((r) => r.startsWith('MediaSource'))).toContain('O');
   expect(rows.find((r) => r.includes('avc1.42E01E'))).toContain('O');
 
-  await page.waitForFunction(() => (window as any).__diag?.done === true, null, { timeout: 60_000 });
+  await page.waitForFunction(() => (window as any).__diag?.done === true, null, { timeout: 120_000 });
   const diag = await page.evaluate(() => (window as any).__diag);
   expect(diag.ws.ok).toBeGreaterThanOrEqual(18);
   expect(diag.video.frames).toBeGreaterThan(30);
@@ -40,7 +40,12 @@ test('diag page reports environment, API support, WS success and decode', async 
   expect(diag.webrtc.present).toBe(true);
   expect(diag.webrtc.loopback, JSON.stringify(diag.webrtc)).toBe('ok');
   expect(diag.webrtc.dataChannel).toBe(true);
+  expect(diag.webrtc.unreliableChannel).toBe(true);
   console.log('webrtc here:', diag.webrtc);
+  // 링크 프로브: 가짜 폰은 loopback 이라 숫자는 뜻이 없고, 다섯 크기가 전부 재졌는지만 본다.
+  const link = diag.link as Record<string, { ms: number; mbps: number } | string>;
+  for (const k of ['64KB', '256KB', '600KB', '600KB#2', '2MB']) expect(typeof link[k], `${k}: ${JSON.stringify(link[k])}`).toBe('object');
+  console.log('link here:', link);
   await expect(page.locator('#report-result')).toContainText('저장됨');
   await expect(page.locator('#summary')).toContainText(teslaToken ? 'Tesla 2026.26' : 'X11 Linux x86_64 Chrome/148 (no Tesla/ token)');
   const reports = await page.evaluate(async () => (await fetch('/api/reports')).json());

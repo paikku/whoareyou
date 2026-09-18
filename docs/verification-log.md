@@ -556,14 +556,22 @@ WS 20회 성공률, 디코드 fps, lag, 사설 주소(핫스팟 `10.136.114.168`
    Main 4.0·VP9 의 `prefer-hardware` 줄이 실린다(no-preference 의 AV1 은 크로미엄의 dav1d 라 늘 O — 뜻이 없다).
    폰 쪽은 `/api/status.encoders` (S26U 의 `c2.qti.hevc.encoder`·`c2.qti.av1.encoder` 가 있는지). 둘 다 O 여야
    비로소 "코덱 교체" 가 선택지가 되고, 그래도 얻는 것은 같은 화질에 비트 30~40% 이지 되먹임 구조의 변화가
-   아니다. 인코더 지연은 폰만으로 잰다(`timing.encodeMs`, AV1 하드웨어 인코더는 파이프라인이 더 깊을 수 있다).
-   파이프라인 쪽 할 일은 `web/src/paths.ts` 주석.
+   아니다. **얼마나 드는지는 폰만으로 잰다:** `POST /api/bench?codec=hevc|av1&width=1920&height=1080&bitrate=8000000`
+   이 코덱마다 `encodeMs` p50/p90 과 `firstKeyBytes`·`requestedKeyBytes`·`avgPBytes` 를 돌려준다(합성 프레임, 라이브
+   인코더와 무관). 볼 것: HEVC/AV1 의 requestedKeyBytes 가 AVC 의 몇 % 인지, 그리고 p50 이 AVC(7~9 ms)보다 얼마나
+   깊은지 — 그 둘이 곧 코덱 교체의 손익이다. 차의 1080p 줄(`High 4.2 @1080p` 등)이 prefer-hardware 에서 X 면
+   그 칸은 지금도 소프트웨어로 풀리고 있었던 것이다. 파이프라인 쪽 할 일은 `web/src/paths.ts` 주석.
 17. **WebRTC 가 이 차의 브라우저에서 성립하는가 (C):** 같은 `/diag` 의 "WebRTC" 표. 평문에서도 되는 유일한
    하드웨어 디코드 길이고 TCP 머리막힘을 벗어나는 유일한 전송이라, 1·2·15 가 실패했을 때의 다음 카드다.
    볼 것: 루프백 O/X, 협상 코덱(H.264 가 되는가 — 되면 재인코딩 없이 그대로 실을 수 있다), `decoderImplementation`
    (ExternalDecoder 류면 하드웨어, FFmpeg/libvpx/dav1d 면 소프트웨어), 데이터 채널. PC(Chrome 148)에서는
-   H264 루프백 120f/4s, 데이터 채널 O 였다(`tests/e2e/tests/diag.spec.ts`). 폰 쪽 스택(ICE·DTLS·SRTP)은 없다 —
-   O 가 나와도 그것을 세우는 일이 남는다.
+   H264 루프백 120f/4s, AV1·VP9 도 O, 데이터 채널·비신뢰 채널 O, `decoderImplementation` 은 **빈 문자열**이었다
+   (크로미엄이 미디어 권한을 받은 페이지에만 채운다 — 차에서도 빌 수 있고, 그러면 하드웨어 여부는 WebCodecs 표로
+   본다; `tests/e2e/tests/diag.spec.ts`). 폰 쪽 스택(ICE·DTLS·SRTP)은 없다 — O 가 나와도 그것을 세우는 일이 남는다.
+18. **이 링크에서 IDR 한 장은 몇 ms 인가 (C):** `/diag` 의 "링크" 칸(`link`, `/api/blob`). 64K·256K·600K×2·2M 의 소요
+   시간과 Mbps. 실차 #76 의 "575 KB = 0.46 초" 는 10 Mbps 를 가정한 계산이었고 이것이 측정이다. 600KB#2 의 ms 에
+   인코더 벤치의 `requestedKeyBytes/600KB` 를 곱한 것이 그 차의 키프레임 한 장 값이고, 100 ms 를 넘으면 QP 상한·
+   인트라 리프레시가 필요한 링크다. PC loopback: 600 KB 42 ms(뜻 없음, 길이 이어지는지만).
 5. 이전 계획의 "shell→앱 유닉스 소켓 IPC"는 서버가 shell로 옮겨가며 불필요해짐. 앱↔서버는 HTTP/WS로 충분한지 M3에서 확정.
 
 ---
