@@ -26,6 +26,17 @@ export interface RendererStats {
 export interface Renderer {
   readonly name: string;
   /**
+   * 프레임을 버렸을 때 폰에 키프레임을 부탁하는 길 — 버린 자리부터는 참조가 깨져 있어서, 다음 IDR
+   * 까지 무엇을 넣어도 그림만 깨진다. 스스로 디코딩하는 렌더러만 알 수 있으므로 선택 사항이다
+   * (<video> 에 맡기는 쪽은 자기가 무엇을 버렸는지 모른다). main.ts 가 건다.
+   */
+  onNeedKeyframe?: (() => void) | null;
+  /**
+   * 그림 가운데의 평균 밝기. 끝에서 끝까지 지연 측정이 "화면이 뒤집혔다"를 이걸로 본다. 픽셀을
+   * 직접 만지는 렌더러만 낼 수 있다 — 이것이 없는 경로에서는 측정 버튼이 그렇게 말한다.
+   */
+  onLuma?: ((luma: number, atMs: number) => void) | null;
+  /**
    * <video> 를 쓰는 렌더러만 참이다. 캔버스는 자동재생 제한을 받지 않으므로 첫 터치 없이 바로
    * 그려진다 — 차에 타면 화면이 이미 나와 있다.
    */

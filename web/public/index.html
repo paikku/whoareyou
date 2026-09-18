@@ -38,24 +38,27 @@
     그 키들은 폰의 기본 디스플레이 것이고, 누르면 차에서 보던 앱이 폰으로 끌려간다.
   -->
   <!-- 화질: 폰 인코더의 크기·fps·비트레이트를 차에서 고른다(/api/encoder). 자동은 내리기만 한다. 아래에 끝에서
-       끝까지의 지연을 재는 버튼 — 폰의 측정 액티비티를 띄우고 화면이 뒤집히는 시간을 잰다. -->
+       끝까지의 지연을 재는 버튼 — 폰의 측정 액티비티를 띄우고 화면이 뒤집히는 시간을 잰다.
+       맨 위는 **경로**(무엇으로 풀어 그리는가) — 차도 폰도 세대가 다르니 고를 수 있어야 한다. paths.ts. -->
   <div id="quality" class="overlay sheet" data-ui hidden>
     <div class="sheet-head">
       <span class="sheet-title">화질</span>
       <span id="quality-now" class="sheet-note"></span>
       <button id="quality-close" class="sheet-close" title="닫기">✕</button>
     </div>
+    <div class="sheet-sub">
+      <span class="sheet-label">경로</span>
+      <span id="path-note" class="sheet-note"></span>
+    </div>
+    <div id="path-grid" class="grid paths"></div>
+    <div class="sheet-sub">
+      <span class="sheet-label">해상도 · fps</span>
+    </div>
     <div id="quality-grid" class="grid"></div>
     <label class="sheet-row"><input id="quality-auto" type="checkbox"> 차가 못 따라오면 자동으로 한 단계 내리기</label>
     <div class="sheet-row">
       <button id="quality-probe" class="state-action">끝에서 끝까지 지연 측정 (10회)</button>
       <span id="quality-result" class="sheet-note"></span>
-    </div>
-    <!-- 하드웨어 디코더는 https 에서만 열린다(VideoDecoder 는 secure context 전용). 폰이 신뢰받는
-         인증서를 들고 있을 때만 보인다. -->
-    <div class="sheet-row" id="fast-row" hidden>
-      <button id="fast-open" class="state-action">하드웨어 디코더로 열기 (권장)</button>
-      <span id="fast-note" class="sheet-note"></span>
     </div>
   </div>
   <div id="launcher" class="overlay sheet" data-ui hidden>

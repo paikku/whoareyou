@@ -75,6 +75,13 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 
 /* 화질 시트: 칸은 홈과 같은 타깃 크기, 아래 줄은 스위치 하나와 버튼 하나. */
 #quality .grid { flex: 0 1 auto; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+/* 경로 칸은 설명 한 줄을 달고 있어 프리셋보다 낮고 넓다 — 고르는 근거가 그 한 줄뿐이라 잘리면 안 된다. */
+#quality .grid.paths .tile { min-height: 0; padding: 10px 12px; align-items: flex-start; text-align: left; gap: 4px; }
+#quality .grid.paths .tile .where { white-space: normal; color: #9a9a9a; font-size: 12px; line-height: 1.35; }
+#quality .grid.paths .tile.away { opacity: 0.55; }
+/* 시트 안의 작은 구분 머리: 무엇을 고르는 칸인지 한 낱말로 */
+.sheet-sub { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.sheet-label { font-size: 13px; color: #d8a24a; }
 #quality .tile { min-height: 64px; font-size: 16px; }
 .sheet-note { flex: 1; min-width: 0; color: #bbb; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-row { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; color: #ddd; font-size: 16px; }

@@ -98,10 +98,11 @@ test('하드웨어 디코더로 열면 사다리에 1080p60 이 생긴다', asyn
   await expect(page.locator('#quality-grid .tile[data-preset="1080p60"]')).toBeVisible();
 });
 
-// 폰은 차가 고른 값을 파일로 기억한다(encoder.conf). 그래서 "하드웨어 전용 설정으로 도는 폰에 평문으로
-// 들어오는" 조합이 실제로 생긴다 — 북마크가 https 와 http 로 둘 있기만 하면 된다. 그 조합의 증상은
-// 그냥 멈춘 화면이고, 자동 내리기는 손대지 못한다(프레임이 안 풀리니 적체도 드롭도 자라지 않는다).
-test('하드웨어 전용 설정으로 도는 폰에 평문으로 들어오면 한 단계 내려 준다', async ({ page }) => {
+// 폰은 차가 고른 값을 파일로 기억한다(encoder.conf). 그래서 "지금 경로의 천장 위 설정으로 도는 폰에
+// 들어오는" 조합이 실제로 생긴다 — 북마크가 https 와 http 로 둘 있거나, 시트에서 경로를 바꾸기만 해도
+// 그렇게 된다. 그 조합의 증상은 그냥 멈춘 화면이고, 자동 내리기는 손대지 못한다(프레임이 안 풀리니
+// 적체도 드롭도 자라지 않는다).
+test('경로의 천장 위 설정으로 도는 폰에 들어오면 한 단계 내려 준다', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(() => fetch('/api/reset'));
   // 지난번 https 방문에서 고른 값이 폰에 남아 있는 상태를 만든다.
@@ -119,7 +120,7 @@ test('하드웨어 전용 설정으로 도는 폰에 평문으로 들어오면 �
   expect(st.height).toBe(900);
   expect(st.maxFps).toBe(60);
   expect((await stats(page) as any).presetGuarded).toBe(true);
-  await expect(page.locator('#stats')).toContainText('하드웨어 디코더가 있어야');
+  await expect(page.locator('#stats')).toContainText('감당하지 못합니다');
   // 성능 판단이 아니라 능력 판단이므로 자동 내리기 횟수에는 넣지 않는다.
   expect((await stats(page) as any).autoStepDowns).toBe(0);
 });
