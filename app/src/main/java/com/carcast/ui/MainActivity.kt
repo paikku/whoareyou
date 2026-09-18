@@ -323,11 +323,12 @@ class MainActivity : AppCompatActivity() {
      * 열지를 바꾸는 일이다 — 부를 수 있는 것은 폰 위에서 도는 이 앱뿐이다.
      *
      * 주소는 기억해 둔다. 우리 도메인으로 발급받는 쪽이 제품 경로이고, 그때 이 화면에서 매번 같은 주소를
-     * 다시 입력하게 만들 이유가 없다.
+     * 다시 입력하게 만들 이유가 없다. 같은 주소로 **자동 갱신**도 돈다(`CertInstall.autoRenew`, 세션이
+     * 서버 상태를 읽을 때마다 물어보고 하루 한 번만 움직인다) — 이 버튼은 그것을 지금 당장 시키는 손잡이다.
      */
     private fun certDialog() {
-        val prefs = getSharedPreferences("tls", MODE_PRIVATE)
-        val saved = prefs.getString(PREF_CERT_SOURCE, null) ?: CertInstall.LOCAL_IP_SH
+        val prefs = getSharedPreferences(CertInstall.PREFS, MODE_PRIVATE)
+        val saved = prefs.getString(CertInstall.PREF_SOURCE, null) ?: CertInstall.LOCAL_IP_SH
         val pad = (16 * resources.displayMetrics.density).toInt()
         val box = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
@@ -348,7 +349,7 @@ class MainActivity : AppCompatActivity() {
             .setView(box)
             .setPositiveButton(R.string.cert_install_go) { _, _ ->
                 val source = field.text.toString().trim()
-                prefs.edit().putString(PREF_CERT_SOURCE, source).apply()
+                prefs.edit().putString(CertInstall.PREF_SOURCE, source).apply()
                 runCertInstall(source)
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -587,8 +588,5 @@ class MainActivity : AppCompatActivity() {
     companion object {
         /** Set by the widget when VPN consent is missing: the app asks, then runs the same bulk start. */
         const val EXTRA_NEEDS_VPN_CONSENT = "needsVpnConsent"
-
-        /** 마지막으로 인증서를 받아 온 주소. 우리 도메인을 쓰기 시작하면 매번 같은 값을 다시 칠 이유가 없다. */
-        private const val PREF_CERT_SOURCE = "certSource"
     }
 }

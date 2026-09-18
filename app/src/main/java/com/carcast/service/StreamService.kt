@@ -167,6 +167,11 @@ class StreamService : Service() {
             // letting the widget poll on its own (a widget has no process of its own to poll from).
             if (up != wasUp) CarCastWidget.refresh(this)
             wasUp = up
+            // 인증서 자동 갱신. 하루에 한 번만 실제로 움직이고(CertInstall.RETRY_AFTER_MS) 나머지는 문자열
+            // 비교 한 번이다. 움직이는 날에는 이 루프가 길어야 40초 멈추는데, 그동안 화면의 상태줄이 조금
+            // 늦는 것과 차에서 경고 화면을 만나는 것 중 전자가 낫다. 폰은 핫스팟이라 LTE 로 받는다.
+            if (up) runCatching { CertInstall.autoRenew(this, s, ::log) }
+                .onFailure { log("인증서 자동 갱신 실패: $it") }
             try { Thread.sleep(2000) } catch (_: InterruptedException) { return }
         }
     }

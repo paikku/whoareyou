@@ -128,6 +128,54 @@ class CertInstallTest {
         assertTrue(r.message, r.message.contains("2026-12-16"))
     }
 
+    // ── 자동 갱신의 판단 — 순수 함수라 시각을 넣어 본다 ──────────────────────────────────────
+
+    private val DAY = 24L * 3600 * 1000
+    private fun status(trusted: Boolean, notAfterMs: Long, httpsPort: Int = 3443) =
+        """{"httpsPort":$httpsPort,"tlsTrusted":$trusted,"tlsNotAfter":"${java.time.Instant.ofEpochMilli(notAfterMs)}"}"""
+
+    /** 멀쩡한 인증서는 건드리지 않는다 — 갱신은 만료가 가까울 때만이다. */
+    @Test
+    fun aHealthyCertificateIsLeftAlone() {
+        val now = 1_700_000_000_000L
+        assertNull(CertInstall.renewalDue(status(true, now + 60 * DAY), now, 0L))
+    }
+
+    /** 14 일 안이면 갱신한다. 하루 한 번씩 열네 번의 기회가 남는 시점이다. */
+    @Test
+    fun anExpiringCertificateIsRenewed() {
+        val now = 1_700_000_000_000L
+        val why = CertInstall.renewalDue(status(true, now + 10 * DAY), now, 0L)
+        assertTrue(why.toString(), why != null && why.contains("만료"))
+    }
+
+    /** 자체서명도 갱신 대상이다 — 이 차는 그 경고를 넘지 못하므로 그대로 두면 하드웨어 경로가 영영 없다. */
+    @Test
+    fun aSelfSignedCertificateIsReplaced() {
+        val now = 1_700_000_000_000L
+        val why = CertInstall.renewalDue(status(false, now + 300 * DAY), now, 0L)
+        assertTrue(why.toString(), why != null && why.contains("자체서명"))
+    }
+
+    /** 하루에 한 번만. 출처가 죽어 있어도 LTE 를 계속 두드리지 않는다. */
+    @Test
+    fun atMostOnceADay() {
+        val now = 1_700_000_000_000L
+        val due = status(true, now + 3 * DAY)
+        assertNull(CertInstall.renewalDue(due, now, now - 2 * 3600 * 1000))
+        assertTrue(CertInstall.renewalDue(due, now, now - 25 * 3600 * 1000) != null)
+    }
+
+    /** TLS listener 가 없거나 상태를 못 읽으면 할 일이 없다 — 갈아끼울 자리가 없다. */
+    @Test
+    fun nothingToDoWithoutATlsListenerOrStatus() {
+        val now = 1_700_000_000_000L
+        assertNull(CertInstall.renewalDue(status(false, now, httpsPort = 0), now, 0L))
+        assertNull(CertInstall.renewalDue(null, now, 0L))
+        assertNull(CertInstall.renewalDue("not json", now, 0L))
+        assertNull(CertInstall.renewalDue("""{"httpsPort":3443,"tlsTrusted":true,"tlsNotAfter":"garbage"}""", now, 0L))
+    }
+
     /** /api/tls 하나만 아는 서버. BulkControlTest 와 같은 이유로 생 소켓이다(앱 단위 검사에는 안드로이드가 없다). */
     private class FakeServer : AutoCloseable {
         private val socket = bind()

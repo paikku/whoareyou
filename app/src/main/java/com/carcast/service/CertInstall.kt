@@ -1,8 +1,11 @@
 package com.carcast.service
 
+import android.content.Context
 import com.carcast.Config
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.Instant
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 갱신한 인증서를 **폰 위에서** 받아 서버에 심는다.
@@ -37,6 +40,58 @@ object CertInstall {
         .getOrNull()?.equals("local-ip.sh", ignoreCase = true) == true
 
     data class Outcome(val ok: Boolean, val message: String)
+
+    /** 앱이 저장하는 곳. 시트의 버튼과 자동 갱신이 **같은 주소**를 본다 — 한쪽에서 바꾸면 다른 쪽도 따라간다. */
+    const val PREFS = "tls"
+    const val PREF_SOURCE = "certSource"
+    private const val PREF_LAST_AUTO = "lastAutoRenewAt"
+
+    /** 만료가 이만큼 남으면 갱신한다. Let's Encrypt 가 90일이라 14일이면 하루 한 번 시도할 기회가 열넷 남는다. */
+    const val RENEW_BEFORE_MS = 14L * 24 * 3600 * 1000
+    /** 한 번 시도했으면 이만큼 쉰다 — 실패해도 하루에 한 번만 두드린다(출처가 죽었을 때 LTE 를 갉지 않게). */
+    const val RETRY_AFTER_MS = 24L * 3600 * 1000
+
+    /**
+     * 지금 자동 갱신이 필요한가. 필요하면 **왜**, 아니면 null. 순수 함수 — 검사가 시각과 상태를 넣어 본다.
+     *
+     * 갱신하는 경우는 둘이다: 공개 CA 인증서의 만료가 가깝거나, 아예 자체서명이거나. 뒤의 것도 넣는 이유는
+     * 이 차가 자체서명의 경고를 **넘지 못하기** 때문이다(실측 2026-09-17) — 그 상태로는 하드웨어 경로가
+     * 없고, 사람이 버튼을 찾아 누르기 전까지 느린 채로 다닌다. 갱신 뒤 서버는 세워 본 것만 저장하므로
+     * 실패는 지금 인증서를 건드리지 않는다.
+     */
+    fun renewalDue(statusJson: String?, nowMs: Long, lastAttemptMs: Long): String? {
+        if (nowMs - lastAttemptMs < RETRY_AFTER_MS) return null
+        val st = runCatching { org.json.JSONObject(statusJson ?: return null) }.getOrNull() ?: return null
+        if (st.optInt("httpsPort") <= 0) return null // TLS listener 자체가 없다 — 갈아끼울 자리가 없다
+        if (!st.optBoolean("tlsTrusted")) return "자체서명 — 이 차는 그 경고를 넘지 못한다"
+        val notAfter = runCatching { Instant.parse(st.optString("tlsNotAfter")).toEpochMilli() }.getOrNull() ?: return null
+        val left = notAfter - nowMs
+        return if (left < RENEW_BEFORE_MS) "만료 ${left / 86_400_000}일 전" else null
+    }
+
+    private val autoBusy = AtomicBoolean(false)
+
+    /**
+     * 사람 손 없이 갱신한다. [statusJson] 은 서버가 방금 답한 `/api/status`. 부르는 쪽의 스레드에서 돌고
+     * (네트워크다 — 메인에서 부르지 말 것), 시도 시각을 **먼저** 적어 두어 도중에 죽어도 하루에 한 번만
+     * 다시 온다. 출처는 시트에서 저장한 주소, 없으면 local-ip.sh 다.
+     */
+    fun autoRenew(context: Context, statusJson: String?, log: (String) -> Unit): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val why = renewalDue(statusJson, System.currentTimeMillis(), prefs.getLong(PREF_LAST_AUTO, 0L)) ?: return false
+        if (!autoBusy.compareAndSet(false, true)) return false
+        try {
+            prefs.edit().putLong(PREF_LAST_AUTO, System.currentTimeMillis()).apply()
+            val source = prefs.getString(PREF_SOURCE, null) ?: LOCAL_IP_SH
+            log("인증서 자동 갱신 ($why): $source")
+            if (isPublicKeySource(source)) log("주의: 이 출처는 개인키가 공개된 진단용 인증서입니다")
+            val r = install(source, log)
+            log("인증서 자동 갱신: ${r.message}")
+            return r.ok
+        } finally {
+            autoBusy.set(false)
+        }
+    }
 
     /** 체인 + 키는 몇 KB 다. 이보다 크면 PEM 이 아닌 것을 받고 있는 것이다. */
     private const val MAX_PEM_BYTES = 512 * 1024
