@@ -124,3 +124,42 @@ test('경로의 천장 위 설정으로 도는 폰에 들어오면 한 단계 �
   // 성능 판단이 아니라 능력 판단이므로 자동 내리기 횟수에는 넣지 않는다.
   expect((await stats(page) as any).autoStepDowns).toBe(0);
 });
+
+// 적응 비트레이트(abr.ts). 사다리보다 앞에 서는 층이다: 링크가 막히면(rtt 가 기준의 두 배 넘게 뛰거나 프레임을
+// 버리면) 비트레이트만 재빌드 없이 내리고, 20 초 조용하면 공칭까지 한 칸씩 되올린다. 가짜 폰은 실제 서버처럼
+// 비트레이트 전용 POST 를 `rebuilt:false` 로 받는다. 시계는 표본이 들고 오므로 여기서 초 단위로 돌린다.
+test('링크가 막히면 비트레이트를 먼저, 재빌드 없이 내리고, 풀리면 천천히 되올린다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+  expect(await page.evaluate(() => (window as any).__carcast.applyPreset('720p30'))).toBe(true);
+  await expect.poll(async () => (await statusOf(page)).bitRate).toBe(4_000_000);
+  await expect.poll(async () => (await stats(page)).abr.nominal).toBe(4_000_000);
+  const tick = (nowMs: number, rttMs: number, dropped = 0, backlog = 0) =>
+    page.evaluate((s) => (window as any).__carcast.abrTick(s), { nowMs, rttMs, dropped, backlog });
+  // 10 초의 조용한 ping 으로 기준(6ms)이 선다. 그동안은 아무것도 안 한다.
+  for (let t = 0; t <= 8000; t += 2000) expect(await tick(t, 6)).toBeNull();
+  // rtt 가 한 번 튄 것으로는 안 움직이고, 두 표본 연속이면 25% 내린다 — 재빌드 없이.
+  expect(await tick(10_000, 60)).toBeNull();
+  expect(await tick(12_000, 60)).toMatchObject({ kind: 'cut', bitrate: 3_000_000 });
+  let st = await statusOf(page);
+  expect(st.bitRate).toBe(3_000_000);
+  expect(st.encoderRestarts).toBe(1);
+  expect(st.bitrateChanges).toBe(1);
+  // 버린 프레임은 바로 사건이지만, 내린 지 5 초 안에는 다시 내리지 않는다.
+  expect(await tick(14_000, 6, 3)).toBeNull();
+  expect(await tick(18_000, 6, 3)).toMatchObject({ kind: 'cut', bitrate: 2_200_000 });
+  // 20 초 조용하면 공칭의 10% 만큼 되올린다.
+  for (let t = 20_000; t < 40_000; t += 2000) expect(await tick(t, 6)).toBeNull();
+  expect(await tick(40_000, 6)).toMatchObject({ kind: 'raise', bitrate: 2_600_000 });
+  st = await statusOf(page);
+  expect(st.bitRate).toBe(2_600_000);
+  expect(st.encoderRestarts).toBe(1);
+  const s = await stats(page);
+  expect(s.abr).toMatchObject({ nominal: 4_000_000, target: 2_600_000, floor: 1_600_000, cuts: 2, raises: 1, active: true });
+  await expect(page.locator('#stats')).toContainText('비트↓2600k');
+  // 프리셋을 바꾸면 거기서 새로 시작한다(재빌드가 공칭으로 되돌린다).
+  expect(await page.evaluate(() => (window as any).__carcast.applyPreset('720p60'))).toBe(true);
+  await expect.poll(async () => (await stats(page)).abr.target).toBe(6_000_000);
+  expect((await statusOf(page)).encoderRestarts).toBe(2);
+});

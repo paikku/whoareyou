@@ -3,6 +3,8 @@ import { KEYCODE, KeyAction, MediaType, TouchAction, encodeKey, encodeKeyframeRe
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { PATHS, PRESETS, cost, pickPath, presetsFor, type Path, type Preset } from './paths';
 import { TouchInput } from './input';
+import { AbrController, type AbrAction, type AbrSample } from './abr';
+import { codecString, parseAvcC } from './h264/fmp4';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
@@ -75,6 +77,11 @@ const note = (s: string) => {
 let packets = 0;
 let lastPacketAt = 0;
 let recoveries = 0;
+// 받은 바이트와 키프레임 크기. perf 표본이 이것으로 실제 kbps 와 IDR 의 크기를 남긴다 — report #70 의
+// "화소가 많아서인가 비트가 많아서인가"를 한 세션으로 가르는 데 없던 두 칸이다(§9).
+let rxBytes = 0;
+let keyframesSeen = 0;
+let winKeyBytes = 0;
 const videoWs = new ReconnectingWs(wsUrl('/ws/video'), {
   onOpen: () => { renderer.reset(); note(`video ws open #${videoWs.stats.connects}`); },
   // 왜 끊겼는지까지 남긴다. 1006 은 인사도 없이 끊긴 것(링크가 사라짐), 1000/1001 은 폰이
@@ -85,8 +92,17 @@ const videoWs = new ReconnectingWs(wsUrl('/ws/video'), {
     const p = parseMediaPacket(data);
     if (!p) return;
     packets++;
+    rxBytes += data.byteLength;
     lastPacketAt = Date.now();
-    if (p.type === MediaType.Init) note('init segment (encoder restart?)');
+    if (p.type === MediaType.Init) {
+      // SPS 가 프로파일의 최종 답이다. `/api/encoder` 의 codec 은 재빌드 **전** 값이라(report #73 의
+      // "→ high (avc1.42C020)") 여기서 새 init 의 avcC 를 읽어 남긴다.
+      const cfg = parseAvcC(p.payload);
+      note(`init segment${cfg ? ` ${codecString(cfg)}` : ''} (encoder restart?)`);
+    } else if (p.type === MediaType.Key) {
+      keyframesSeen++;
+      winKeyBytes = Math.max(winKeyBytes, data.byteLength);
+    }
     renderer.push(p);
   },
 });
@@ -99,12 +115,20 @@ videoWs.start();
  */
 let keyframeRequests = 0;
 let lastKeyframeRequestAt = 0;
+/** 최근 10 초 안에 "프레임을 버려서" 부탁한 시각들 — 되먹임을 끊는 백오프의 근거. */
+const dropRequestTimes: number[] = [];
 function requestKeyframe(why: string): boolean {
   const now = Date.now();
-  if (now - lastKeyframeRequestAt < 500 || !control.open) return false;
+  // 백오프: 링크가 막혀서 버린 프레임에 IDR 로 답하면 IDR 의 버스트가 링크를 더 막고 다시 버리게 된다
+  // (report #70: 96.7·98.9·101.1 초에 연속 세 번, 그 사이 rtt 45 → 69ms). 그래서 같은 이유의 재요청은
+  // 0.5 → 1 → 2 → 4 초로 간격을 벌린다. 10 초 조용하면 처음으로 돌아간다.
+  while (dropRequestTimes.length && now - dropRequestTimes[0]! > 10_000) dropRequestTimes.shift();
+  const gap = why === 'dropped frames' ? 500 * 2 ** Math.min(dropRequestTimes.length, 3) : 500;
+  if (now - lastKeyframeRequestAt < gap || !control.open) return false;
+  if (why === 'dropped frames') dropRequestTimes.push(now);
   lastKeyframeRequestAt = now;
   keyframeRequests++;
-  note(`keyframe request (${why})`);
+  note(`keyframe request (${why}${gap > 500 ? `, 백오프 ${gap}ms` : ''})`);
   return control.send(encodeKeyframeRequest());
 }
 if ('onNeedKeyframe' in renderer) {
@@ -556,6 +580,7 @@ async function pollStatus(): Promise<void> {
     if (epoch !== appEpoch) return;
     lastStatus = st;
     statusFailedAt = 0;
+    syncAbr(st);
     if (typeof st.app === 'string' && st.app) lastPackage = st.app.split('/')[0]!;
     // 화질을 바꾸면 그림의 크기가 바뀐다(/api/encoder). 터치 좌표는 그 크기 기준이므로 여기서도 맞춘다.
     if (st.width && st.height) touch.setVideoSize(st.width, st.height);
@@ -701,10 +726,16 @@ $('btn-fullscreen').addEventListener('click', () => {
  */
 const PERF_SAMPLE_MS = 10_000;
 const PERF_KEEP = 360; // 10초 × 360 = 한 시간
-interface PerfSample { t: number; fps: number; lagMs: number; dropped: number; backlog: number; rttMs: number; skipped: number }
+interface PerfSample {
+  t: number; fps: number; lagMs: number; dropped: number; backlog: number; rttMs: number; skipped: number;
+  /** 그 10 초 동안 실제로 받은 kbps, 키프레임 수, 가장 큰 키프레임(바이트), 그때의 비트레이트 목표(kbps). */
+  kbps: number; keys: number; keyBytes: number; targetKbps: number;
+}
 const perf: PerfSample[] = [];
 let perfFrames = 0;
 let perfDropped = 0;
+let perfBytes = 0;
+let perfKeys = 0;
 let perfAt = Date.now();
 
 setInterval(() => {
@@ -721,9 +752,16 @@ setInterval(() => {
     backlog: s.backlog ?? 0,
     rttMs,
     skipped: s.skipped ?? 0,
+    kbps: secs > 0 ? Math.round((rxBytes - perfBytes) * 8 / secs / 1000) : 0,
+    keys: keyframesSeen - perfKeys,
+    keyBytes: winKeyBytes,
+    targetKbps: Math.round(abr.target / 1000),
   });
   perfFrames = s.framesDecoded;
   perfDropped = s.droppedFrames;
+  perfBytes = rxBytes;
+  perfKeys = keyframesSeen;
+  winKeyBytes = 0;
   if (perf.length > PERF_KEEP) perf.shift();
   maybeStepDown(perf[perf.length - 1]!);
 }, PERF_SAMPLE_MS);
@@ -783,7 +821,8 @@ async function askForProfile(): Promise<void> {
   profileAsked = true;
   try {
     const r = await (await fetch(`/api/encoder?profile=${want}`, { method: 'POST' })).json();
-    note(r.ok ? `encoder profile → ${r.profile} (${r.codec ?? '?'})` : `profile=${want} 거부: ${r.error ?? '?'}`);
+    // codec 은 아직 옛 SPS 다 — 새 프로파일이 정말 붙었는지는 다음 init 세그먼트 이벤트가 말한다.
+    note(r.ok ? `encoder profile → ${r.profile} 요청됨 (${r.encoderProfile ?? '?'})` : `profile=${want} 거부: ${r.error ?? '?'}`);
   } catch (e) {
     note(`profile=${want} 실패: ${String(e)}`);
   }
@@ -799,7 +838,7 @@ async function applyPreset(p: Preset, why: string): Promise<boolean> {
     if (!r.ok) { notice(`화질 변경 실패: ${r.error ?? '?'}`, 6000); note(`encoder ${p.id} (${why}) failed: ${r.error}`); return false; }
     note(`encoder ${p.id} (${why}): ${r.width}x${r.height} ${r.fps}fps ${Math.round(r.bitrate / 1000)}k`);
     notice(`화질: ${p.label}`);
-    if (lastStatus) { lastStatus.width = r.width; lastStatus.height = r.height; lastStatus.maxFps = r.fps; lastStatus.bitRate = r.bitrate; }
+    if (lastStatus) { lastStatus.width = r.width; lastStatus.height = r.height; lastStatus.maxFps = r.fps; lastStatus.bitRate = r.bitrate; syncAbr(lastStatus); }
     touch.setVideoSize(r.width, r.height);
     renderQuality();
     return true;
@@ -850,6 +889,10 @@ function maybeStepDown(sample: PerfSample): void {
   const bad = sample.backlog > 4 || sample.dropped > 0;
   badSamples = bad ? badSamples + 1 : 0;
   if (!autoQuality || badSamples < 2) return;
+  // 비트가 먼저, 화소는 나중이다: 적응 비트레이트가 살아 있고 아직 바닥이 아니면 그쪽에 맡긴다 — 링크
+  // 문제는 몇 초 안에 거기서 풀리고, 디코더 문제라면 바닥까지 내려가도(20 초 안) 나쁜 표본이 이어져서
+  // 결국 여기로 온다. 나쁜 표본 수는 계속 세므로 바닥에 닿는 순간 사다리가 바로 움직인다.
+  if (abrActive() && !abr.atFloor) return;
   void stepDown(`backlog ${sample.backlog}, dropped ${sample.dropped}`);
 }
 async function stepDown(why: string): Promise<boolean> {
@@ -875,6 +918,72 @@ function below(cur: Preset): Preset | null {
   const lighter = ladder().filter((p) => cost(p) < cost(cur));
   return lighter[lighter.length - 1] ?? null;
 }
+
+// ── 적응 비트레이트 ───────────────────────────────────────────────────────────────────────────
+//
+// 규칙은 `abr.ts` 에, 여기는 신호를 모아 넣고 답을 폰에 보내는 배선이다. 폰이 비트레이트를 재빌드 없이
+// 받는다고 말할 때만(`bitrateLive`) 움직인다 — 옛 서버는 한 걸음마다 인코더를 새로 세우므로 차라리 안
+// 하는 편이 낫다. 자동 화질이 꺼져 있으면 이것도 쉰다: 사람이 고른 것은 사람의 것이다.
+const abr = new AbrController();
+/** 왜 쉬는지. 비어 있으면 (폰이 되는 한) 살아 있다. */
+let abrDisabled = '';
+/** 테스트가 표본을 직접 넣는 동안 자기 시계로는 돌지 않는다. */
+let abrManual = false;
+let abrDropped = 0;
+let abrBusy = false;
+let abrSentAt = 0;
+const abrActive = (): boolean => !abrDisabled && autoQuality && lastStatus?.bitrateLive === true && abr.nominal > 0;
+
+/**
+ * 폰의 상태를 제어기에 맞춘다. 공칭값은 폰이 말하는 `nominalBitRate`(마지막 재빌드가 요청받은 값 — 차가 프리셋을
+ * 골랐다면 그 프리셋의 비트레이트다; 옛 서버처럼 말해 주지 않으면 프리셋 표의 값)이고, 그것이 바뀌었으면(프리셋
+ * 변경·사다리) 거기서 새로 시작한다. 폰의 실제 비트레이트가 목표와 다르면 —
+ * 인코더가 다른 이유로 다시 서서 공칭으로 돌아갔다든가 — 목표를 그쪽에 맞춘다. 방금 우리가 보낸 값이
+ * 아직 상태에 안 실렸을 수 있으므로 보낸 직후 몇 초는 건드리지 않는다.
+ */
+function syncAbr(st: any): void {
+  const nominal = typeof st?.nominalBitRate === 'number' && st.nominalBitRate > 0 ? st.nominalBitRate : (currentPreset()?.bitrate ?? 0);
+  const current = typeof st?.bitRate === 'number' ? st.bitRate : 0;
+  if (nominal > 0 && nominal !== abr.nominal) { abr.setNominal(nominal, current); return; }
+  if (abr.nominal > 0 && current > 0 && Math.abs(current - abr.target) >= 100_000 && !abrBusy && Date.now() - abrSentAt > 3000) {
+    abr.target = Math.min(abr.nominal, Math.max(abr.floor, current));
+  }
+}
+
+async function abrTick(sample: AbrSample): Promise<AbrAction | null> {
+  if (!abrActive() || abrBusy || applyingPreset) return null;
+  const action = abr.observe(sample);
+  if (!action) return null;
+  abrBusy = true;
+  try {
+    // 비트레이트만 보낸다 — 크기·fps·프로파일을 같이 보내면 재빌드다.
+    const r = await (await fetch(`/api/encoder?bitrate=${action.bitrate}`, { method: 'POST' })).json();
+    abrSentAt = Date.now();
+    if (!r.ok) { note(`abr ${action.kind} ${Math.round(action.bitrate / 1000)}k 실패: ${r.error ?? '?'}`); return null; }
+    if (r.rebuilt !== false) {
+      abrDisabled = '폰이 비트레이트를 재빌드로만 바꾼다';
+      note(`abr 중단: ${abrDisabled}`);
+      return null;
+    }
+    if (lastStatus) lastStatus.bitRate = r.bitrate;
+    note(`abr ${action.kind === 'cut' ? '↓' : '↑'} ${Math.round(r.bitrate / 1000)}k (${action.why})`);
+    renderQuality();
+    return action;
+  } catch (e) {
+    note(`abr 요청 실패: ${String(e)}`);
+    return null;
+  } finally {
+    abrBusy = false;
+  }
+}
+// ping 과 같은 박자(2 초). rtt 는 그 사이 가장 최근 값, 드롭은 그 사이 늘어난 수.
+setInterval(() => {
+  if (abrManual || !started) return;
+  const s = renderer.stats();
+  const dropped = Math.max(0, s.droppedFrames - abrDropped);
+  abrDropped = s.droppedFrames;
+  void abrTick({ nowMs: Date.now(), rttMs, dropped, backlog: s.backlog ?? 0 });
+}, 2000);
 
 /**
  * 폰이 **이 경로의 천장 위** 설정으로 돌고 있으면 한 단계 내린다.
@@ -1102,6 +1211,10 @@ const stats = () => ({
   touch: { ...touch.stats },
   latencyProbe,
   autoStepDowns,
+  /** 적응 비트레이트: 공칭·목표·바닥·내린 횟수·올린 횟수, 그리고 지금 살아 있는지. */
+  abr: { ...abr.info(Date.now()), active: abrActive(), disabled: abrDisabled },
+  /** 받은 바이트와 키프레임 — perf 표본의 kbps·keyBytes 가 여기서 나온다. */
+  rx: { bytes: rxBytes, keyframes: keyframesSeen },
   // 이 렌더러가 고를 수 있는 사다리, 그리고 못 푸는 설정을 만나 내렸는지. 리포트에 실려서, 차가
   // 어느 경로로 열렸고 무엇까지 고를 수 있었는지가 나중에도 읽힌다.
   presets: available().map((p) => p.id),
@@ -1118,6 +1231,8 @@ const stats = () => ({
   applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
   choosePath: (id: string | null) => choosePath(id ? (PATHS.find((x) => x.id === id) ?? null) : null),
   stepDown: (why = 'test') => stepDown(why),
+  // 적응 비트레이트를 테스트가 자기 시계로 몰기 위한 고리: 첫 호출부터 자동 박자는 멈춘다.
+  abrTick: (sample: AbrSample) => { abrManual = true; return abrTick(sample); },
   runProbe: (opts: { trials?: number; launch?: boolean; onTouch?: () => void }) => runProbe(opts),
   feedLuma: (l: number) => { lumaFed = true; lastLuma = l; lastLumaAt = performance.now(); },
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
@@ -1137,6 +1252,8 @@ setInterval(() => {
     // 초반보다 눈에 띄게 느려졌으면 그 사실만 한 칸 붙인다 — 더워져서 느려지는 중인지 보는 자리다.
     s.perf && s.perf.recent < s.perf.early * 0.7 ? `⤵ ${s.perf.early}→${s.perf.recent}fps` : '',
     s.perf && s.perf.backlog > 10 ? `적체${s.perf.backlog}` : '',
+    // 링크 때문에 비트를 내려 둔 상태면 얼마인지 보인다 — 화질이 왜 흐려졌는지 설명하는 한 칸.
+    s.abr.active && s.abr.target < s.abr.nominal ? `비트↓${Math.round(s.abr.target / 1000)}k` : '',
   ].filter(Boolean).join(' ');
   // A notice (▶ result, 💾 saved, 폰이 가져감) owns the line until its own timeout clears or restores it.
   if (statsEl.textContent && !statsEl.textContent.startsWith(s.renderer)) return;
@@ -1152,7 +1269,7 @@ $('btn-save').addEventListener('click', async () => {
   const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
   const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
   const e2e = s.latencyProbe && s.latencyProbe.n ? ` 끝까지${s.latencyProbe.medianMs}ms` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
   // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는

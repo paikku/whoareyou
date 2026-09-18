@@ -146,6 +146,26 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
 그리고 세션은 있는데 서버가 없을 때는 `ShellServerLink.summary()`(무선 디버깅 꺼짐 / 페어링 필요 / 재시도 대기 …).
 둘 다 `onChange`/`onStateChange` 콜백으로 `CarCastWidget.refresh()` 를 부른다 — 위젯은 폴링하지 못하므로.
 
+### 화질 · 링크 (그림이 흐려지거나, 밀리거나, 인코더가 느릴 때)
+
+- **두 층이 순서대로 움직인다.** 먼저 **적응 비트레이트**(`web/src/abr.ts`, 배선은 `main.ts` "적응 비트레이트"):
+  차가 rtt(2 초 ping)와 버린 프레임을 보고 비트레이트만 재빌드 없이 내린다(`POST /api/encoder?bitrate=` →
+  `rebuilt:false`). 그 다음이 **사다리**(`maybeStepDown`): abr 이 바닥(공칭의 40%)에 닿은 뒤에도 나쁜 표본이
+  이어질 때만 해상도·fps 를 한 칸 내린다. 비트가 먼저, 화소는 나중 — 실차 #70 에서 1080p60 을 무너뜨린 것은
+  디코더가 아니라 링크였다(car-tests/model-y §9)
+- **폰 쪽 계측은 `/api/status.timing`** (`FrameTiming`): `encodeMs` 는 합성 → 인코더 출력, `touchToFrameMs` 는
+  터치 → 다음 프레임. 인코더 손잡이(`H264Encoder.format` 의 저지연 키·`KEY_OPERATING_RATE`)를 만졌으면 **차 없이**
+  이 숫자로 판정한다. 대조군은 §9 의 표(720p30 14 ms, 720p60·900p60 11.5 ms)
+- **차 쪽 계측은 리포트의 `perf`** (10 초 표본): `kbps`(실제 받은 비트), `keys`·`keyBytes`(IDR 수와 가장 큰 것),
+  `targetKbps`(abr 목표), 그리고 `rttMs`·`dropped`·`backlog`. rtt 가 뛰면서 `keyBytes` 가 크면 IDR 버스트,
+  backlog 가 8 을 넘으면 디코더. 이벤트에는 `abr ↓/↑`, `keyframe request (…, 백오프 …)`, `init segment avc1.…` 가 남는다
+- **손잡이 (전부 `POST /api/encoder`, 크기·fps·프로파일·인트라 리프레시는 재빌드, 비트레이트만은 즉시):**
+  `?bitrate=` · `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, 저장됨, 기본 0) ·
+  `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
+- 검사: A `quality.spec`("링크가 막히면…"), A+ `09-encoder`("비트레이트만 바꾸면…", "인트라 리프레시를 켰다 끌 수 있다")
+- **폰의 소켓 큐(`videoClientStats.queued`)가 0 이라고 링크가 멀쩡한 것은 아니다.** 커널 송신 버퍼가 그 앞에 있다.
+  64 KB 로 줄여 두었지만(`StreamSession.VIDEO_SEND_BUFFER_BYTES`) 링크가 막혔는지는 차의 rtt 가 먼저 안다
+
 ## 4. 새 상황을 추가하는 법
 
 `tests/e2e/tests/lifecycle/actions.ts` 에 동작 하나를 더하면 시나리오와 무작위 탐색 양쪽에 자동으로 들어간다.

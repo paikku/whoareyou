@@ -34,6 +34,20 @@ final class H264Encoder {
     private static final int I_FRAME_INTERVAL_S = 10;
     private static final long REPEAT_FRAME_DELAY_US = 100_000;
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
+    /**
+     * Qualcomm's low-latency switch (Codec2 vendor extension). Their encoder pipelines a frame or two by
+     * default; this asks it not to. Other vendors ignore an unknown key, so it costs nothing where it does
+     * not apply. Measured need: encodeMs sat at 11~14 ms across 720p30, 720p60 and 900p60 alike (reports
+     * #68~#73) — flat against pixel count and *slower* at the lower frame rate, which is a pipeline depth,
+     * not a throughput. See docs/car-tests/model-y-2026.26.md §9.
+     */
+    private static final String KEY_QTI_LOW_LATENCY = "vendor.qti-ext-enc-low-latency.enable";
+    /**
+     * What KEY_OPERATING_RATE is set to: a rate well above any frame rate we ask for, which is the
+     * documented way to tell a codec "clock yourself for the worst case, not for the average". At 30 fps
+     * the encoder took 2.5 ms longer per frame than at 60 — it was pacing itself to the input.
+     */
+    private static final int OPERATING_RATE = 240;
 
     private final int width;
     private final int height;
@@ -80,27 +94,23 @@ final class H264Encoder {
         codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         name = codec.getName();
         String asked = describe(constrainedBaseline, bitrateMode, intraRefresh);
-        if (constrainedBaseline || !bitrateMode.isEmpty() || intraRefresh > 0) {
+        try {
+            codec.configure(format(constrainedBaseline, bitrateMode, intraRefresh, true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            profileNote = asked.isEmpty() ? "저지연 요청" : asked + " 요청 (SPS 확인 필요)";
+        } catch (Exception e) {
+            // Vendors reject profile/level/mode combinations they dislike. Everything asked for is a nicety;
+            // a picture is not. Fall back to the vendor's own choices — no profile, no mode, no low-latency
+            // hints — rather than leaving the car with none.
+            Ln.w("Video encoder: " + asked + " + low-latency rejected (" + e + ") — falling back to the vendor default");
             try {
-                codec.configure(format(constrainedBaseline, bitrateMode, intraRefresh), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-                profileNote = asked + " 요청 (SPS 확인 필요)";
-            } catch (Exception e) {
-                // Vendors reject profile/level/mode combinations they dislike. Everything asked for is a nicety;
-                // a picture is not. Fall back to the vendor's own choices rather than leaving the car with none.
-                Ln.w("Video encoder: " + asked + " rejected (" + e + ") — falling back to the vendor default");
-                try {
-                    codec.release();
-                } catch (Exception ignored) {
-                    // already unusable; the fresh codec below is what matters
-                }
-                codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
-                name = codec.getName();
-                codec.configure(format(false, "", 0), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-                profileNote = asked + " 거부됨 → 벤더 기본값";
+                codec.release();
+            } catch (Exception ignored) {
+                // already unusable; the fresh codec below is what matters
             }
-        } else {
-            codec.configure(format(false, "", 0), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-            profileNote = "벤더 기본값";
+            codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+            name = codec.getName();
+            codec.configure(format(false, "", 0, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            profileNote = (asked.isEmpty() ? "저지연" : asked) + " 거부됨 → 벤더 기본값";
         }
         inputSurface = codec.createInputSurface();
         Ln.i("Video encoder: " + name + " " + width + "x" + height + " " + bitRate / 1000 + " kbps (" + profileNote + ")");
@@ -126,8 +136,14 @@ final class H264Encoder {
         return sb.toString();
     }
 
-    private MediaFormat format(boolean baseline, String mode, int refresh) {
+    private MediaFormat format(boolean baseline, String mode, int refresh, boolean lowLatency) {
         MediaFormat format = format();
+        if (lowLatency) {
+            // KEY_LATENCY=1 (below) is the portable request; these two are what actually moved the number on
+            // the vendor encoder we have. Both are hints: a codec that does not know them ignores them.
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, OPERATING_RATE);
+            format.setInteger(KEY_QTI_LOW_LATENCY, 1);
+        }
         if (baseline) {
             format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline);
             // A profile without a level is ignored by some encoders, so one has to be named — and it has to be
@@ -229,6 +245,28 @@ final class H264Encoder {
             b.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
             c.setParameters(b);
         } catch (IllegalStateException ignored) {
+        }
+    }
+
+    /**
+     * Change the target bitrate on the running codec (PARAMETER_KEY_VIDEO_BITRATE). No IDR, no init segment,
+     * no gap — the next frame is simply budgeted differently — which is what an adaptive controller needs:
+     * it may want to move every few seconds, and a rebuild costs the car a keyframe and a pipeline reset each
+     * time (see DisplayVideoSource.reconfigure). Returns false when the codec is not running; the vendor
+     * accepting the parameter but ignoring it is possible and shows up as the bytes not changing.
+     */
+    boolean setBitrate(int bitsPerSecond) {
+        MediaCodec c = codec;
+        if (c == null || stopped.get()) {
+            return false;
+        }
+        try {
+            Bundle b = new Bundle();
+            b.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitsPerSecond);
+            c.setParameters(b);
+            return true;
+        } catch (IllegalStateException e) {
+            return false;
         }
     }
 
