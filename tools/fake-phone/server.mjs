@@ -198,7 +198,7 @@ const server = createServer((req, res) => {
       const n = (k) => (url.searchParams.get(k) ? Number(url.searchParams.get(k)) : null);
       const w = n('width') ?? state.encoder.width, h = n('height') ?? state.encoder.height, fps = n('fps') ?? state.encoder.fps;
       // 크기·fps·프로파일이 그대로면 비트레이트만 바뀐 것: 실제 서버처럼 재빌드 없이 받고 공칭은 두며 세기만 한다.
-      rebuilt = w !== state.encoder.width || h !== state.encoder.height || fps !== state.encoder.fps || url.searchParams.has('profile') || url.searchParams.has('intra_refresh') || url.searchParams.has('qp_i_max');
+      rebuilt = w !== state.encoder.width || h !== state.encoder.height || fps !== state.encoder.fps || url.searchParams.has('profile') || url.searchParams.has('intra_refresh') || url.searchParams.has('qp_i_min') || url.searchParams.has('qp_i_max');
       const bitrate = n('bitrate') ?? (rebuilt ? state.encoder.nominal : state.encoder.bitrate);
       if (w < 320 || h < 180 || fps < 1 || fps > 120 || bitrate < 200_000) {
         res.writeHead(200, { 'content-type': 'application/json' });

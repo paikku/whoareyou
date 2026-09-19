@@ -32,18 +32,28 @@ final class EncoderSettings {
     final Boolean constrainedBaseline;
     /** Intra-refresh period in frames, 0 off; null when the file does not say. */
     final Integer intraRefresh;
-    /** Largest QP for I-frames (caps the IDR size), 0 vendor's choice; null when the file does not say. */
+    /** Smallest QP for I-frames (the IDR size cap), 0 vendor's choice; null when the file does not say. */
+    final Integer qpIMin;
+    /** Largest QP for I-frames (an IDR quality floor), 0 vendor's choice; null when the file does not say. */
     final Integer qpIMax;
 
-    EncoderSettings(int width, int height, int fps, int bitRate, Boolean constrainedBaseline, Integer intraRefresh, Integer qpIMax) {
+    EncoderSettings(int width, int height, int fps, int bitRate, Boolean constrainedBaseline, Integer intraRefresh, Integer qpIMin, Integer qpIMax) {
         this.width = width;
         this.height = height;
         this.fps = fps;
         this.bitRate = bitRate;
         this.constrainedBaseline = constrainedBaseline;
         this.intraRefresh = intraRefresh;
+        this.qpIMin = qpIMin;
         this.qpIMax = qpIMax;
     }
+
+    /**
+     * The one default that shipped inverted (build e0ee6d2 ~ 966a320): `qp_i_max=28` was saved by every rebuild as
+     * the "IDR cap" while actually being a quality floor that made IDRs *bigger* (car-tests/model-y §13). A file
+     * that says exactly that and knows nothing of `qp_i_min` is that build's doing, not a person's choice.
+     */
+    static final int LEGACY_INVERTED_QP_I_MAX = 28;
 
     /** Bounds the car may ask for. The JS decoder on the car is the real limit; these only stop nonsense. */
     static void validate(int width, int height, int fps, int bitRate) {
@@ -62,6 +72,21 @@ final class EncoderSettings {
     static void validateQpIMax(int qp) {
         if (qp < 0 || qp > 51) {
             throw new IllegalArgumentException("qp_i_max must be 0..51: " + qp);
+        }
+    }
+
+    static void validateQpIMin(int qp) {
+        if (qp < 0 || qp > 51) {
+            throw new IllegalArgumentException("qp_i_min must be 0..51: " + qp);
+        }
+    }
+
+    /** Both set and crossed is a request no encoder can honour. */
+    static void validateQpIBounds(int min, int max) {
+        validateQpIMin(min);
+        validateQpIMax(max);
+        if (min > 0 && max > 0 && min > max) {
+            throw new IllegalArgumentException("qp_i_min must not exceed qp_i_max: " + min + " > " + max);
         }
     }
 
@@ -93,16 +118,20 @@ final class EncoderSettings {
             String profile = kv.get("profile");
             Boolean baseline = profile == null ? null : !"high".equalsIgnoreCase(profile);
             Integer refresh = kv.containsKey("intra_refresh") ? Integer.valueOf(kv.get("intra_refresh")) : null;
-            Integer qp = kv.containsKey("qp_i_max") ? Integer.valueOf(kv.get("qp_i_max")) : null;
+            Integer qpMax = kv.containsKey("qp_i_max") ? Integer.valueOf(kv.get("qp_i_max")) : null;
+            Integer qpMin = kv.containsKey("qp_i_min") ? Integer.valueOf(kv.get("qp_i_min")) : null;
+            if (qpMin == null && qpMax != null && qpMax == LEGACY_INVERTED_QP_I_MAX) {
+                // Written by the inverted build: forget it so the command-line defaults (qp_i_min) apply.
+                Ln.i("encoder.conf: dropping qp_i_max=" + qpMax + " saved by the inverted build (see EncoderSettings)");
+                qpMax = null;
+            }
             EncoderSettings s = new EncoderSettings(Integer.parseInt(kv.get("width")), Integer.parseInt(kv.get("height")),
-                    Integer.parseInt(kv.get("fps")), Integer.parseInt(kv.get("bitrate")), baseline, refresh, qp);
+                    Integer.parseInt(kv.get("fps")), Integer.parseInt(kv.get("bitrate")), baseline, refresh, qpMin, qpMax);
             validate(s.width, s.height, s.fps, s.bitRate);
             if (refresh != null) {
                 validateIntraRefresh(refresh);
             }
-            if (qp != null) {
-                validateQpIMax(qp);
-            }
+            validateQpIBounds(qpMin != null ? qpMin : 0, qpMax != null ? qpMax : 0);
             return s;
         } catch (Exception e) {
             Ln.w("encoder.conf unreadable, using defaults: " + e);
@@ -127,6 +156,9 @@ final class EncoderSettings {
             }
             if (intraRefresh != null) {
                 sb.append("intra_refresh=").append(intraRefresh).append('\n');
+            }
+            if (qpIMin != null) {
+                sb.append("qp_i_min=").append(qpIMin).append('\n');
             }
             if (qpIMax != null) {
                 sb.append("qp_i_max=").append(qpIMax).append('\n');

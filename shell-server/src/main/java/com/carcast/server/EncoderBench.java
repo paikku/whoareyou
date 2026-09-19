@@ -32,8 +32,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * so {@code nanoTime − pts} at output is the encoder's latency exactly as {@link FrameTiming} measures the live
  * one. Frames are paced at the requested fps so the encoder's rate control sees a real cadence.
  *
- * <p>{@code POST /api/bench?codec=hevc&width=1920&height=1080&fps=30&bitrate=8000000&frames=90&qp_i_max=28}.
+ * <p>{@code POST /api/bench?codec=hevc&width=1920&height=1080&fps=30&bitrate=8000000&frames=90&qp_i_min=28}.
  * Synchronous; {@code frames/fps} seconds. One at a time — two hardware encoders racing would measure the race.
+ *
+ * <p>Two lessons from the first run on the S26U (car-tests/model-y §13): the first version dequeued one output per
+ * input and so measured its own startup depth (101 ms for every codec, identically) — now every available output is
+ * drained and the wait for the next frame is spent polling the output queue, so a frame is timed within a
+ * millisecond of leaving the encoder. And the smooth gradient it painted was too easy: a requested 1080p IDR came
+ * out at 49 KB where the car had seen 575 KB. The default content is now noise-textured ({@code content=noise}),
+ * which is the hard end; {@code content=gradient} keeps the easy one for comparison.
  */
 final class EncoderBench {
     private static final AtomicBoolean BUSY = new AtomicBoolean();
@@ -69,10 +76,12 @@ final class EncoderBench {
         int fps = Integer.parseInt(q.getOrDefault("fps", "30"));
         int bitrate = Integer.parseInt(q.getOrDefault("bitrate", "4000000"));
         int frames = Math.min(MAX_FRAMES, Integer.parseInt(q.getOrDefault("frames", "90")));
+        int qpIMin = Integer.parseInt(q.getOrDefault("qp_i_min", "0"));
         int qpIMax = Integer.parseInt(q.getOrDefault("qp_i_max", "0"));
         boolean lowLatency = !"0".equals(q.getOrDefault("low_latency", "1"));
+        boolean noise = !"gradient".equals(q.getOrDefault("content", "noise"));
         EncoderSettings.validate(width, height, fps, bitrate);
-        EncoderSettings.validateQpIMax(qpIMax);
+        EncoderSettings.validateQpIBounds(qpIMin, qpIMax);
         if ((width & 1) != 0 || (height & 1) != 0) {
             throw new IllegalArgumentException("width/height must be even");
         }
@@ -94,6 +103,9 @@ final class EncoderBench {
         m.put("fps", fps);
         m.put("bitrate", bitrate);
         m.put("frames", frames);
+        m.put("content", noise ? "noise" : "gradient");
+        m.put("qpIMin", qpIMin);
+        m.put("qpIMax", qpIMax);
 
         // Same request as the live encoder (H264Encoder.format), minus the surface: CBR, no B-frames, real-time
         // priority, the low-latency hints, and the I-frame QP cap when asked for. Tried in the same order too —
@@ -101,12 +113,16 @@ final class EncoderBench {
         MediaCodec mc = null;
         String accepted = "";
         Exception last = null;
-        int[][] attempts = qpIMax > 0 ? new int[][]{{1, qpIMax}, {1, 0}, {0, 0}} : new int[][]{{1, 0}, {0, 0}};
+        boolean qp = qpIMin > 0 || qpIMax > 0;
+        int[][] attempts = qp ? new int[][]{{1, 1}, {1, 0}, {0, 0}} : new int[][]{{1, 0}, {0, 0}};
         for (int[] a : attempts) {
             mc = MediaCodec.createByCodecName(name);
             try {
-                mc.configure(format(mime, width, height, fps, bitrate, a[0] == 1 && lowLatency, a[1]), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-                accepted = (a[0] == 1 && lowLatency ? "low-latency" : "plain") + (a[1] > 0 ? "+I-QP≤" + a[1] : (qpIMax > 0 ? " (I-QP cap rejected)" : ""));
+                boolean withQp = a[1] == 1;
+                mc.configure(format(mime, width, height, fps, bitrate, a[0] == 1 && lowLatency, withQp ? qpIMin : 0, withQp ? qpIMax : 0), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                accepted = (a[0] == 1 && lowLatency ? "low-latency" : "plain")
+                        + (withQp && qpIMin > 0 ? "+I-QP≥" + qpIMin : "") + (withQp && qpIMax > 0 ? "+I-QP≤" + qpIMax : "")
+                        + (qp && !withQp ? " (I-QP bounds rejected)" : "");
                 last = null;
                 break;
             } catch (Exception e) {
@@ -149,10 +165,39 @@ final class EncoderBench {
                     break;
                 }
                 if (sent < frames) {
+                    // Until the next frame is due, wait *on the output queue*: that is where the number we are after
+                    // appears, and sleeping through it would time our nap instead of the encoder.
                     long due = t0 + sent * frameNs;
-                    long wait = due - System.nanoTime();
-                    if (wait > 0) {
-                        Thread.sleep(wait / 1_000_000, (int) (wait % 1_000_000));
+                    long wait;
+                    while ((wait = due - System.nanoTime()) > 0) {
+                        int out = mc.dequeueOutputBuffer(bi, Math.max(1, wait / 1000));
+                        if (out >= 0) {
+                            try {
+                                if ((bi.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && bi.size > 0) {
+                                    long now = System.nanoTime();
+                                    long us = now / 1000 - bi.presentationTimeUs;
+                                    if (us < 0 || us > MAX_ENCODE_US) {
+                                        skipped++;
+                                    } else {
+                                        encodeUs.add(us);
+                                    }
+                                    if ((bi.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
+                                        keyBytes.add(bi.size);
+                                    } else {
+                                        pBytes.add(bi.size);
+                                    }
+                                    totalBytes += bi.size;
+                                    if (firstOutNs == 0) {
+                                        firstOutNs = now;
+                                    }
+                                    lastOutNs = now;
+                                }
+                            } finally {
+                                mc.releaseOutputBuffer(out, false);
+                            }
+                        } else if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            m.put("outputFormat", String.valueOf(mc.getOutputFormat()));
+                        }
                     }
                     int id = mc.dequeueInputBuffer(20_000);
                     if (id >= 0) {
@@ -165,7 +210,7 @@ final class EncoderBench {
                             throw new IllegalStateException("encoder gave no input image (YUV420Flexible not honoured)");
                         }
                         if (pattern == null) {
-                            pattern = new Pattern(width, height);
+                            pattern = new Pattern(width, height, noise);
                         }
                         pattern.paint(img, sent);
                         long pts = System.nanoTime() / 1000;
@@ -187,7 +232,14 @@ final class EncoderBench {
                     }
                 }
                 int out = mc.dequeueOutputBuffer(bi, sent < frames ? 0 : 250_000);
-                if (out >= 0) {
+                boolean gotAny = false;
+                while (out >= 0 || out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        m.put("outputFormat", String.valueOf(mc.getOutputFormat()));
+                        out = mc.dequeueOutputBuffer(bi, 0);
+                        continue;
+                    }
+                    gotAny = true;
                     try {
                         if ((bi.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && bi.size > 0) {
                             long now = System.nanoTime();
@@ -214,10 +266,13 @@ final class EncoderBench {
                     } finally {
                         mc.releaseOutputBuffer(out, false);
                     }
-                } else if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    m.put("outputFormat", String.valueOf(mc.getOutputFormat()));
-                } else if (out == MediaCodec.INFO_TRY_AGAIN_LATER && sent >= frames) {
-                    eos = true; // nothing more is coming
+                    if (eos) {
+                        break;
+                    }
+                    out = mc.dequeueOutputBuffer(bi, 0);
+                }
+                if (out == MediaCodec.INFO_TRY_AGAIN_LATER && sent >= frames && !gotAny) {
+                    eos = true; // a quarter second of silence after EOS: nothing more is coming
                 }
             }
         } finally {
@@ -301,7 +356,7 @@ final class EncoderBench {
         return sw;
     }
 
-    private static MediaFormat format(String mime, int width, int height, int fps, int bitrate, boolean lowLatency, int qpIMax) {
+    private static MediaFormat format(String mime, int width, int height, int fps, int bitrate, boolean lowLatency, int qpIMin, int qpIMax) {
         MediaFormat f = MediaFormat.createVideoFormat(mime, width, height);
         f.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
         f.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
@@ -314,6 +369,9 @@ final class EncoderBench {
         if (lowLatency) {
             f.setInteger(MediaFormat.KEY_OPERATING_RATE, 240);
             f.setInteger("vendor.qti-ext-enc-low-latency.enable", 1);
+        }
+        if (qpIMin > 0) {
+            f.setInteger(MediaFormat.KEY_VIDEO_QP_I_MIN, qpIMin);
         }
         if (qpIMax > 0) {
             f.setInteger(MediaFormat.KEY_VIDEO_QP_I_MAX, qpIMax);
@@ -332,16 +390,27 @@ final class EncoderBench {
         private final byte[] yRow;
         private final byte[] cRow;
 
-        Pattern(int width, int height) {
+        /**
+         * @param noise texture the rows with pseudo-random detail. A smooth gradient is the easiest picture an encoder
+         *              can meet (a 1080p IDR of it was 49 KB where real video gave 575 KB); noise is the hardest. Real
+         *              screens sit between, nearer the noisy end when video is playing. The rows are still precomputed
+         *              and rotated per frame, so painting stays cheap.
+         */
+        Pattern(int width, int height, boolean noise) {
             this.width = width;
             this.height = height;
             yRow = new byte[width * 2];
-            for (int x = 0; x < yRow.length; x++) {
-                yRow[x] = (byte) (16 + (x * 219 / width) % 220);
-            }
             cRow = new byte[width];
-            for (int x = 0; x < cRow.length; x++) {
-                cRow[x] = (byte) (64 + (x * 128 / width));
+            int x = 0x2545F491;
+            for (int i = 0; i < yRow.length; i++) {
+                x = x * 1103515245 + 12345;
+                int base = 16 + (i * 219 / width) % 220;
+                yRow[i] = (byte) (noise ? 16 + ((base - 16 + ((x >>> 16) & 0x7f)) % 220) : base);
+            }
+            for (int i = 0; i < cRow.length; i++) {
+                x = x * 1103515245 + 12345;
+                int base = 64 + (i * 128 / width);
+                cRow[i] = (byte) (noise ? 32 + ((base - 32 + ((x >>> 16) & 0x3f)) % 192) : base);
             }
         }
 

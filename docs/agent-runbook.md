@@ -161,7 +161,8 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   `targetKbps`(abr 목표), 그리고 `rttMs`·`dropped`·`backlog`. rtt 가 뛰면서 `keyBytes` 가 크면 IDR 버스트,
   backlog 가 8 을 넘으면 디코더. 이벤트에는 `abr ↓/↑`, `keyframe request (…, 백오프 …)`, `init segment avc1.…` 가 남는다
 - **손잡이 (전부 `POST /api/encoder`, 크기·fps·프로파일·인트라 리프레시는 재빌드, 비트레이트만은 즉시):**
-  `?bitrate=` · `?qp_i_max=28`(I 프레임 QP 상한 = IDR 크기 상한, 기본 28, 0 이면 벤더 기본; 실차 #76 이 그 이유) ·
+  `?bitrate=` · `?qp_i_min=28`(I 프레임 QP **하한** = IDR **크기 상한**, 기본 28, 0 이면 벤더 기본; 실차 #76 이 그 이유) ·
+  `?qp_i_max=N`(반대 경계 = 화질 하한, 기본 0 — 첫 빌드가 이것을 크기 상한으로 잘못 실어 IDR 이 두 배가 됐다, car-tests §13) ·
   `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, 저장됨, 기본 0) · `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
 - 검사: A `quality.spec`("링크가 막히면…"), A+ `09-encoder`("비트레이트만 바꾸면…", "인트라 리프레시를 켰다 끌 수 있다")
 - **폰의 소켓 큐(`videoClientStats.queued`)가 0 이라고 링크가 멀쩡한 것은 아니다.** 커널 송신 버퍼가 그 앞에 있다.
@@ -184,8 +185,9 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   - 폰 인코더 벤치 `POST /api/bench?codec=avc|hevc|av1|vp9&width=1920&height=1080&fps=30&bitrate=8000000&frames=90&qp_i_max=28`
     (노트북에서 curl, 3 초, 라이브 인코더는 건드리지 않음): `encodeMs` p50/p90, `firstKeyBytes`, **`requestedKeyBytes`**(차가
     부탁한 IDR 의 크기 — 실차 #76 의 575 KB 가 이것), `avgPBytes`, `kbps`, `accepted`(벤더가 저지연 키·I-QP 상한을 받았나),
-    `hardware`. 합성 YUV 프레임을 넣으므로 절대값은 라이브(`timing.encodeMs`)와 조금 다르고 **코덱 사이의 비교**가 목적이다.
-    `qp_i_max=0` 과 `28` 을 한 번씩 돌리면 QP 상한이 이 인코더에서 IDR 을 얼마나 줄이는지가 폰만으로 나온다
+    `hardware`. 합성 프레임(기본 `content=noise`, 어려운 쪽; `content=gradient` 는 쉬운 쪽)을 넣으므로 절대값은 라이브
+    (`timing.encodeMs`)와 다르고 **코덱 사이·설정 사이의 비교**가 목적이다. `qp_i_min=0·28·32·36` 을 한 번씩 돌리면 IDR
+    바이트 상한이 이 인코더에서 어디에 걸리는지가 폰만으로 나온다(§13 의 표가 그 첫 줄)
   - 링크 프로브: `/diag` 가 `/api/blob?bytes=N` 으로 64K·256K·600K(두 번)·2M 를 받아 ms 와 Mbps 를 적는다(`link`,
     요약 줄의 `link 600KB=…ms`). "IDR 한 장이 이 링크에서 몇 ms 인가" 를 인코더 없이 직접 잰 값이라, 인코더 벤치의
     `requestedKeyBytes` 와 곱하면 그 차·그 자리의 멈춤 길이가 계산된다

@@ -212,24 +212,28 @@ test('/api/encoder 로 인트라 리프레시를 켰다 끌 수 있다', async (
   assert.equal(bad.ok, false);
 });
 
-// I-프레임 QP 상한(IDR 크기 상한). 실차 #76 에서 차가 부탁한 IDR 이 1080p 에서 550~575 KB 였고 그것이 멈춤의
-// 증폭기였다. 기본값이 켜져 있으니(Server.DEFAULT_QP_I_MAX) 여기서는 상태에 실리는지, 바꾸면 재빌드되는지,
-// 0 으로 끄고 되돌릴 수 있는지만 본다 — IDR 이 실제로 작아지는지는 실차 perf 의 keyBytes 가 답한다.
-test('/api/encoder 로 I-프레임 QP 상한을 바꾸고 끌 수 있다', async (t) => {
+// I-프레임 QP 경계. IDR 크기를 잡는 것은 **qp_i_min**(이보다 고운 QP 를 못 쓴다 = 바이트 상한)이고, qp_i_max 는 반대
+// (화질 하한)다 — 첫 빌드가 이 둘을 거꾸로 실어 요청 IDR 이 두 배로 커졌다(car-tests/model-y §13). 기본은 min=28,
+// max=0. 여기서는 상태에 실리는지, 바꾸면 재빌드되는지, 0 으로 끄고 되돌릴 수 있는지, 엇갈린 경계를 거부하는지만
+// 본다 — IDR 이 실제로 작아지는지는 /api/bench 와 실차 perf 의 keyBytes 가 답한다.
+test('/api/encoder 로 I-프레임 QP 경계(min·max)를 바꾸고 끌 수 있다', async (t) => {
   const s0 = await status();
   if (s0.source !== 'display') { t.skip('가상 디스플레이가 없다'); return; }
+  assert.equal(typeof s0.qpIMin, 'number', '상태에 qpIMin 이 없다');
   assert.equal(typeof s0.qpIMax, 'number', '상태에 qpIMax 가 없다');
   await sleep(2100);
-  const r = await api('/api/encoder?qp_i_max=0', { method: 'POST' });
+  const r = await api('/api/encoder?qp_i_min=0', { method: 'POST' });
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(r.rebuilt, s0.qpIMax !== 0);
-  assert.equal(r.qpIMax, 0);
+  assert.equal(r.rebuilt, s0.qpIMin !== 0);
+  assert.equal(r.qpIMin, 0);
   await sleep(2100);
-  const back = await api(`/api/encoder?qp_i_max=${s0.qpIMax}`, { method: 'POST' });
+  const back = await api(`/api/encoder?qp_i_min=${s0.qpIMin}&qp_i_max=${s0.qpIMax}`, { method: 'POST' });
   assert.equal(back.ok, true, JSON.stringify(back));
+  assert.equal(back.qpIMin, s0.qpIMin);
   assert.equal(back.qpIMax, s0.qpIMax);
-  const bad = await api('/api/encoder?qp_i_max=99', { method: 'POST' });
-  assert.equal(bad.ok, false);
+  assert.equal((await api('/api/encoder?qp_i_max=99', { method: 'POST' })).ok, false);
+  assert.equal((await api('/api/encoder?qp_i_min=40&qp_i_max=30', { method: 'POST' })).ok, false, '엇갈린 경계를 받았다');
+  assert.equal((await status()).qpIMin, s0.qpIMin, '거부된 요청이 상태를 바꿨다');
 });
 
 // 인코더 벤치(/api/bench): 합성 프레임으로 코덱 하나를 몇 초 돌려 encodeMs 와 IDR 크기를 잰다 — "HEVC·AV1 로 가면
@@ -237,14 +241,19 @@ test('/api/encoder 로 I-프레임 QP 상한을 바꾸고 끌 수 있다', async
 // 여기서는 길이 이어지는지만 본다: 돌아오고, 프레임을 냈고, 키프레임이 둘(첫 장 + 요청한 것)인지. HEVC 는 기기가
 // 없다고 답할 수 있으므로(error) 그것도 기록할 값이다.
 test('/api/bench 가 코덱별 인코더 지연과 IDR 크기를 돌려준다', async () => {
-  const avc = await api('/api/bench?codec=avc&width=640&height=360&fps=30&frames=45&bitrate=1000000&qp_i_max=28', { method: 'POST' });
+  const avc = await api('/api/bench?codec=avc&width=640&height=360&fps=30&frames=45&bitrate=1000000&qp_i_min=28', { method: 'POST' });
   assert.equal(avc.ok, true, JSON.stringify(avc));
   assert.equal(avc.codec, 'avc');
   assert.ok(avc.encoder, '인코더 이름이 없다');
   assert.ok(avc.encodeMs.n > 20, `프레임이 ${avc.encodeMs.n} 장뿐`);
   assert.ok(avc.firstKeyBytes > 0);
   assert.ok(avc.keyframes >= 2, `요청한 IDR 이 안 나왔다 (keyframes ${avc.keyframes})`);
+  assert.equal(avc.content, 'noise');
+  assert.equal(avc.qpIMin, 28);
   console.log(`bench avc: ${avc.encoder} hw=${avc.hardware} ${avc.accepted} p50 ${avc.encodeMs.p50}ms p90 ${avc.encodeMs.p90}ms key ${avc.firstKeyBytes}/${avc.requestedKeyBytes}B P ${avc.avgPBytes}B ${avc.kbps}kbps`);
+  // 두 번째 출력 이후의 지연은 파이프라인 깊이가 아니라 인코더의 것이어야 한다: 첫 벤치는 출력을 한 바퀴에 한 장씩만
+  // 빼서 모든 코덱이 똑같이 101 ms(3 프레임 주기)로 읽혔다. 소프트웨어 인코더라도 30fps 한 주기(33 ms)의 몇 배는 아니다.
+  assert.ok(avc.encodeMs.p50 < 1000, `p50 ${avc.encodeMs.p50}ms — 측정이 다시 파이프라인 깊이를 재고 있다`);
   for (const codec of ['hevc', 'av1']) {
     const r = await api(`/api/bench?codec=${codec}&width=640&height=360&fps=30&frames=45&bitrate=1000000`, { method: 'POST' });
     if (!r.ok) { console.log(`bench ${codec}: ${r.error}`); continue; }
