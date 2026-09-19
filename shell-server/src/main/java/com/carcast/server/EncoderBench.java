@@ -85,8 +85,16 @@ final class EncoderBench {
         // Why: on noise at 8 Mbps the S26U gave a requested IDR of 335~380 KB whatever qp_i_min said (§13 second run) —
         // the floor never bit because rate control was already coarser than it. If this knob shrinks the IDR, the live
         // encoder can do the same on every keyframe request (H264Encoder.requestKeyframe).
+        // Third run (§13): the dip in the same setParameters as the sync request changed nothing — three runs gave the
+        // requested IDR byte-for-byte identical to no dip (367,610), while the total kbps rose, i.e. the new target
+        // landed *after* the IDR. request_lead_frames=N sends the dip N frames before the request instead, to tell
+        // "the parameter is late" from "rate control ignores the target for a requested IDR".
         int requestBitrate = Integer.parseInt(q.getOrDefault("request_bitrate", "0"));
         int restoreAfter = Integer.parseInt(q.getOrDefault("request_restore_frames", "3"));
+        int lead = Integer.parseInt(q.getOrDefault("request_lead_frames", "0"));
+        if (lead < 0 || restoreAfter < 1) {
+            throw new IllegalArgumentException("request_lead_frames must be >= 0 and request_restore_frames >= 1");
+        }
         EncoderSettings.validate(width, height, fps, bitrate);
         EncoderSettings.validateQpIBounds(qpIMin, qpIMax);
         if ((width & 1) != 0 || (height & 1) != 0) {
@@ -114,6 +122,8 @@ final class EncoderBench {
         m.put("qpIMin", qpIMin);
         m.put("qpIMax", qpIMax);
         m.put("requestBitrate", requestBitrate);
+        m.put("requestLeadFrames", lead);
+        m.put("requestRestoreFrames", restoreAfter);
 
         // Same request as the live encoder (H264Encoder.format), minus the surface: CBR, no B-frames, real-time
         // priority, the low-latency hints, and the I-frame QP cap when asked for. Tried in the same order too —
@@ -223,9 +233,14 @@ final class EncoderBench {
                         pattern.paint(img, sent);
                         long pts = System.nanoTime() / 1000;
                         mc.queueInputBuffer(id, 0, size, pts, 0);
+                        if (requestBitrate > 0 && lead > 0 && sent == Math.max(0, requestAt - lead)) {
+                            Bundle b = new Bundle();
+                            b.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, requestBitrate);
+                            mc.setParameters(b);
+                        }
                         if (sent == requestAt) {
                             Bundle b = new Bundle();
-                            if (requestBitrate > 0) {
+                            if (requestBitrate > 0 && lead == 0) {
                                 b.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, requestBitrate);
                             }
                             b.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);

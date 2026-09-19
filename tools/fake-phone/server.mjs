@@ -104,6 +104,8 @@ const server = createServer((req, res) => {
       type: 'status', running: true, source: 'fake', width: enc.width, height: enc.height, maxFps: enc.fps, bitRate: enc.bitrate, encoderRestarts: enc.encoderRestarts, addresses: ADDRESSES,
       // 실제 서버처럼 인트라 리프레시(프레임 수, 0 = IDR)를 말한다 — 차의 시트가 이 값으로 토글을 그린다.
       intraRefresh: enc.intraRefresh ?? 0,
+      // I 프레임 QP 하한도 실제 서버처럼 말한다(기본 28) — 화질 시트의 선택 상자가 이 값으로 그려진다.
+      qpIMin: enc.qpIMin ?? 28,
       // 실제 서버처럼: 비트레이트만 바꾸는 요청은 인코더를 다시 세우지 않고 받는다(DisplayVideoSource.reconfigure).
       bitrateLive: true, nominalBitRate: enc.nominal, bitrateChanges: enc.bitrateChanges,
       reports: reports.length, lastReport: last ? { id: last.id, receivedAt: last.receivedAt, remote: last.remote, summary: last.summary } : null,
@@ -206,8 +208,14 @@ const server = createServer((req, res) => {
         return;
       }
       const intraRefresh = n('intra_refresh') ?? (url.searchParams.has('intra_refresh') ? 0 : state.encoder.intraRefresh ?? 0);
+      const qpIMin = n('qp_i_min') ?? (url.searchParams.has('qp_i_min') ? 0 : state.encoder.qpIMin ?? 28);
+      if (qpIMin < 0 || qpIMin > 51) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `qp_i_min out of range: ${qpIMin}` }));
+        return;
+      }
       state.encoder = rebuilt
-        ? { width: w, height: h, fps, bitrate, nominal: bitrate, intraRefresh, encoderRestarts: state.encoder.encoderRestarts + 1, bitrateChanges: state.encoder.bitrateChanges }
+        ? { width: w, height: h, fps, bitrate, nominal: bitrate, intraRefresh, qpIMin, encoderRestarts: state.encoder.encoderRestarts + 1, bitrateChanges: state.encoder.bitrateChanges }
         : { ...state.encoder, bitrate, bitrateChanges: state.encoder.bitrateChanges + (bitrate !== state.encoder.bitrate ? 1 : 0) };
       state.encoderPosts = (state.encoderPosts ?? 0) + 1;
     }

@@ -49,6 +49,26 @@ test('인트라 리프레시 토글은 폰의 값을 따르고, 누르면 인코
   await expect(toggle).not.toBeChecked();
 });
 
+// 키프레임 크기 상한(I-QP 하한): 폰이 말한 값(기본 28)으로 그려지고, 고르면 `qp_i_min=N` 이 POST 로 가 인코더가
+// 다시 선다. 실차에서 "실제 화면의 IDR 은 몇에서 물리는가"를 노트북 없이 돌리는 손잡이다(car-tests/model-y §13).
+test('키프레임 상한 선택은 폰의 값을 따르고, 고르면 인코더가 그 값으로 다시 선다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+  await page.locator('#btn-quality').click();
+  const sel = page.locator('#quality-qp');
+  await expect(sel).toBeEnabled();
+  await expect(sel).toHaveValue('28');
+  await sel.selectOption('40');
+  await expect.poll(async () => (await statusOf(page)).qpIMin).toBe(40);
+  expect((await statusOf(page)).encoderRestarts).toBe(1);
+  await expect(page.locator('#stats')).toContainText('I-QP 하한 40');
+  await sel.selectOption('0');
+  await expect.poll(async () => (await statusOf(page)).qpIMin).toBe(0);
+  await expect(sel).toHaveValue('0');
+  await expect(page.locator('#stats')).toContainText('벤더 기본');
+});
+
 test('자동 내리기는 한 단계 아래 프리셋으로 가고, 맨 아래에서는 손대지 않는다', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);

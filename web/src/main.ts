@@ -884,6 +884,32 @@ async function applyPreset(p: Preset, why: string): Promise<boolean> {
   }
 }
 
+// I 프레임 QP 하한(= 차가 부탁한 IDR 의 바이트 상한). 폰 벤치는 이 키가 먹는 것을 보였다(gradient 48.6 → 7 KB at 40,
+// car-tests/model-y §13) — 실제 화면에서 몇에 물리는지, 물린 IDR 의 화질 펄스가 눈에 띄는지는 차에서만 나온다.
+// 여기서 고르면 폰이 인코더를 다시 세우고(2 초 잠금, 차는 새 init 세그먼트를 받는다) encoder.conf 에 남긴다.
+const qualityQp = $<HTMLSelectElement>('quality-qp');
+qualityQp.addEventListener('change', () => { void applyQpIMin(Number(qualityQp.value)); });
+async function applyQpIMin(n: number): Promise<boolean> {
+  try {
+    const r = await (await fetch(`/api/encoder?qp_i_min=${n}`, { method: 'POST' })).json();
+    if (!r.ok) {
+      notice(`키프레임 상한 변경 실패: ${r.error ?? '?'}`, 6000);
+      note(`encoder qp_i_min=${n} failed: ${r.error}`);
+      renderQuality(); // 폰이 말한 값으로 되돌린다
+      return false;
+    }
+    note(`encoder qp_i_min=${n}${r.rebuilt === false ? ' (그대로)' : ''}`);
+    notice(n > 0 ? `키프레임 I-QP 하한 ${n}` : '키프레임 상한 없음 (벤더 기본)');
+    if (lastStatus) lastStatus.qpIMin = typeof r.qpIMin === 'number' ? r.qpIMin : n;
+    renderQuality();
+    return true;
+  } catch (e) {
+    notice(`키프레임 상한 요청 실패: ${String(e)}`, 6000);
+    renderQuality();
+    return false;
+  }
+}
+
 function renderQuality(): void {
   if (qualityPanel.hidden) return;
   const cur = currentPreset();
@@ -896,6 +922,18 @@ function renderQuality(): void {
   const intra = typeof st?.intraRefresh === 'number' ? st.intraRefresh : null;
   qualityIntra.disabled = intra === null;
   qualityIntra.checked = (intra ?? 0) > 0;
+  const qp = typeof st?.qpIMin === 'number' ? st.qpIMin : null;
+  qualityQp.disabled = qp === null;
+  if (qp !== null) {
+    // 폰의 값이 목록에 없으면(curl 로 넣은 30 같은) 그 값을 항목으로 만들어 보여 준다 — 없는 것을 고른 척하지 않는다.
+    if (![...qualityQp.options].some((o) => o.value === String(qp))) {
+      const o = document.createElement('option');
+      o.value = String(qp);
+      o.textContent = String(qp);
+      qualityQp.append(o);
+    }
+    qualityQp.value = String(qp);
+  }
 }
 
 function openQuality(): void {
@@ -1272,6 +1310,7 @@ const stats = () => ({
   restartVideo: () => videoWs.restart(),
   requestKeyframe: () => requestKeyframe('test'),
   applyIntraRefresh,
+  applyQpIMin,
   // 화질·지연 측정을 테스트에서 몰기 위한 고리. feedLuma 는 디코더 대신 밝기를 넣어 준다(가짜 폰은 그림을 못 뒤집는다).
   applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
   choosePath: (id: string | null) => choosePath(id ? (PATHS.find((x) => x.id === id) ?? null) : null),
