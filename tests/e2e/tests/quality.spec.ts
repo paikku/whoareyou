@@ -164,6 +164,31 @@ test('경로의 천장 위 설정으로 도는 폰에 들어오면 한 단계 �
   expect((await stats(page) as any).autoStepDowns).toBe(0);
 });
 
+// 실차 #79: 2.5 분에 자르기 12 번, 올리기 0 번. 인코더를 다시 세울 때마다(프리셋·I-QP 변경) 20 초 안에
+// 바닥(공칭의 40%)이었고, 링크는 멀쩡했다(rtt 12~15ms, 70 Mbps). 자른 이유는 전부 재동기 — 새 init 이 오면
+// 디코더를 다시 세우고 키프레임까지 오는 것을 버리는데, 그 버린 수가 그대로 혼잡으로 읽혔다. 차에서만 보이던
+// 되먹임이라 신호를 읽는 자리를 따로 떼어(abr.ts `CongestionReader`) 여기서 직접 민다.
+test('재동기 때문에 버린 프레임과 그 뒤의 버스트는 abr 이 혼잡으로 읽지 않는다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  const read = (s: Record<string, unknown>) => page.evaluate((x) => (window as any).__carcast.congestion(x), s);
+  // 기준을 세운다(첫 표본은 그 자체가 기준이다).
+  expect(await read({ droppedFrames: 0, late: 0, overloads: 0, backlog: 0 })).toEqual({ dropped: 0, backlog: 0 });
+  // 키프레임을 기다리며 120 장을 버렸다 — 이 표본은 링크 이야기가 아니므로 건너뛴다.
+  expect(await read({ droppedFrames: 120, late: 0, overloads: 0, waitingForKey: true, backlog: 0 })).toBeNull();
+  // 키프레임이 오는 순간 그동안 쌓인 것이 한꺼번에 들어와 90 장이 "늦음"으로 보인다. 그것도 우리가 만든 것이다.
+  expect(await read({ droppedFrames: 120, late: 90, overloads: 0, backlog: 3 })).toEqual({ dropped: 0, backlog: 3 });
+  // 한두 장 늦는 것은 60fps 의 평범한 떨림이라 25% 를 깎을 이유가 아니다.
+  expect(await read({ droppedFrames: 120, late: 93, overloads: 0, backlog: 0 })).toEqual({ dropped: 0, backlog: 0 });
+  // 적체가 한계를 넘은 것은 진짜 신호다: 기다리는 동안 봤어도 잃지 않고 다음 표본에 실어 보낸다.
+  expect(await read({ droppedFrames: 300, late: 93, overloads: 1, waitingForKey: true, backlog: 31 })).toBeNull();
+  expect(await read({ droppedFrames: 300, late: 93, overloads: 1, backlog: 0 })).toEqual({ dropped: 1, backlog: 0 });
+  // 문턱을 넘는 "늦음"은 그대로 간다.
+  expect(await read({ droppedFrames: 300, late: 103, overloads: 1, backlog: 0 })).toEqual({ dropped: 10, backlog: 0 });
+  // 스스로 버리는 소프트 경로(h264, overloads 없음)에서는 예전처럼 드롭을 본다.
+  expect(await read({ droppedFrames: 305, late: 103, backlog: 0 })).toEqual({ dropped: 5, backlog: 0 });
+});
+
 // 적응 비트레이트(abr.ts). 사다리보다 앞에 서는 층이다: 링크가 막히면(rtt 가 기준의 두 배 넘게 뛰거나 프레임을
 // 버리면) 비트레이트만 재빌드 없이 내리고, 20 초 조용하면 공칭까지 한 칸씩 되올린다. 가짜 폰은 실제 서버처럼
 // 비트레이트 전용 POST 를 `rebuilt:false` 로 받는다. 시계는 표본이 들고 오므로 여기서 초 단위로 돌린다.

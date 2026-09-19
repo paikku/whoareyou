@@ -71,7 +71,7 @@ export class WebCodecsRenderer implements Renderer {
   private needKey = false;
   /** 넣었는데 아직 그림으로 안 나온 것들의 도착 시각 — 지연과 적체를 여기서 읽는다. */
   private inFlight: number[] = [];
-  private st: RendererStats = { framesDecoded: 0, fps: 0, latencyMs: 0, droppedFrames: 0, lastError: '', hardware: undefined, late: 0 };
+  private st: RendererStats = { framesDecoded: 0, fps: 0, latencyMs: 0, droppedFrames: 0, lastError: '', hardware: undefined, late: 0, overloads: 0 };
   private times: number[] = [];
   /** 밝기를 읽을 때만 쓰는 1x1 캔버스 — 프레임마다 전체를 읽지 않는다. */
   private lumaCanvas: HTMLCanvasElement | null = null;
@@ -120,8 +120,7 @@ export class WebCodecsRenderer implements Renderer {
       this.configured = true;
       this.st.hardware = hardware;
       // 새 디코더는 키프레임부터 시작해야 한다. GOP 가 10초라 부탁하는 편이 빠르다.
-      this.needKey = true;
-      this.onNeedKeyframe?.();
+      this.beginResync(false);
     } catch (e) {
       this.configureFailures++;
       this.st.lastError = `configure 실패: ${String(e)}`;
@@ -221,7 +220,7 @@ export class WebCodecsRenderer implements Renderer {
     } else if (this.needKey || this.inFlight.length > HARD_BACKLOG) {
       // 참조가 끊겨 있거나(새 디코더·오류 뒤) 무언가 잘못됐다: 키프레임까지 버리고 폰에 하나 달라고 한다.
       // 깨진 참조를 디코더에 넣어 봐야 그림만 깨진다. 단순히 밀린 것은 여기로 오지 않는다(MAX_BACKLOG 참고).
-      if (!this.needKey) { this.needKey = true; this.onNeedKeyframe?.(); }
+      if (!this.needKey) this.beginResync(true);
       this.st.droppedFrames++;
       return;
     } else if (this.inFlight.length > MAX_BACKLOG) {
@@ -237,9 +236,25 @@ export class WebCodecsRenderer implements Renderer {
     } catch (e) {
       this.inFlight.pop();
       this.st.lastError = `decode 실패: ${String(e)}`;
-      this.needKey = true;
-      this.onNeedKeyframe?.();
+      this.beginResync(false);
     }
+  }
+
+  /**
+   * 참조 사슬을 버리고 다음 키프레임부터 다시 시작한다.
+   *
+   * `inFlight` 도 같이 비운다. 그 안의 시각들은 "넣었는데 아직 안 나온 것"인데, 재동기 뒤에는 그 중
+   * 무엇이 그림으로 나올지 알 수 없다 — 남겨 두면 두 가지가 거짓말을 한다. `latencyMs` 가 옛 시각과
+   * 비교되어 0.5 초짜리 지연으로 보이고(실차 #79 의 "lag 585ms"), `backlog` 가 한계 위에 머물러
+   * 재동기가 스스로를 다시 부른다. 나올 그림은 그대로 그려지고, 다만 그 한 장의 지연만 안 세게 된다.
+   *
+   * `overload` 는 "적체가 한계를 넘어서" 왔는가다 — 그것만 abr 에 혼잡으로 간다(main.ts).
+   */
+  private beginResync(overload: boolean): void {
+    this.needKey = true;
+    this.inFlight = [];
+    if (overload) this.st.overloads = (this.st.overloads ?? 0) + 1;
+    this.onNeedKeyframe?.();
   }
 
   /** 캔버스는 자동재생 제한을 받지 않는다 — 첫 터치 없이 이미 그려져 있다. */
@@ -255,7 +270,7 @@ export class WebCodecsRenderer implements Renderer {
     const now = performance.now();
     while (this.times.length && now - this.times[0]! > 1000) this.times.shift();
     this.st.fps = this.times.length;
-    return { ...this.st, backlog: this.inFlight.length };
+    return { ...this.st, backlog: this.inFlight.length, waitingForKey: this.needKey };
   }
 
   destroy(): void {

@@ -135,3 +135,55 @@ export class AbrController {
 }
 
 const round = (bps: number): number => Math.floor(bps / STEP_BPS) * STEP_BPS;
+
+// ── 렌더러가 내는 수에서 "링크가 막혔다"만 골라내기 ────────────────────────────────────────────
+//
+// 왜 이것이 따로 있나: 실차 #79 에서 abr 은 2.5 분 동안 12 번 자르고 한 번도 못 올렸다 — 인코더를 다시
+// 세울 때마다(프리셋 변경, I-QP 변경) 20 초 안에 바닥(공칭의 40%)이었다. 링크는 멀쩡했다(rtt 12~15ms,
+// 70 Mbps). 자른 이유는 전부 **우리가 만든 공백**이었다: 새 init 이 오면 디코더를 다시 세우고 키프레임을
+// 기다리며 오는 것을 버리는데, 그 버린 수가 그대로 혼잡으로 읽혔다("abr ↓ 9000k (dropped 1)").
+//
+// 그래서 신호를 이렇게 읽는다.
+//   · 재동기 중(키프레임 대기)의 표본은 **건너뛴다** — 그동안 버린 것은 링크의 증거가 아니다.
+//   · 혼잡의 크기는 버린 장수가 아니라 **적체가 한계를 넘은 횟수**(`overloads`)다. 기다린 길이에
+//     비례해 부풀지 않는다. 스스로 버리는 소프트 경로(h264)는 그 수가 없으므로 예전처럼 드롭을 본다.
+//   · 재동기 **직후** 표본의 "늦음"도 안 센다: 키프레임이 오는 순간 그동안 쌓인 것이 한꺼번에 들어와
+//     늘 수십 장이 늦게 온 것으로 보이는데, 그것도 우리가 만든 버스트다.
+
+/** 렌더러 통계 중 여기서 보는 것만(`RendererStats` 의 부분집합). */
+export interface RendererSignal {
+  droppedFrames: number;
+  late?: number;
+  overloads?: number;
+  waitingForKey?: boolean;
+  backlog?: number;
+}
+
+/** 2 초 표본 안에 이만큼까지의 "늦음"은 혼잡으로 치지 않는다(60fps 에서 한두 장은 늘 있다). */
+export const LATE_TOLERANCE = 4;
+
+export class CongestionReader {
+  private dropped = 0;
+  private late = 0;
+  private overloads = 0;
+  /** 지난 표본이 재동기 중이었나. */
+  private resyncing = false;
+  /** 건너뛴 표본에서 본 적체 초과 — 진짜 신호이므로 다음 표본에 실어 보낸다. */
+  private pending = 0;
+
+  /** 표본 하나를 읽는다. 건너뛸 표본이면 null. */
+  read(s: RendererSignal): { dropped: number; backlog: number } | null {
+    const overload = s.overloads === undefined
+      ? Math.max(0, s.droppedFrames - this.dropped)
+      : Math.max(0, s.overloads - this.overloads);
+    const late = this.resyncing ? 0 : Math.max(0, (s.late ?? 0) - this.late);
+    this.dropped = s.droppedFrames;
+    this.late = s.late ?? 0;
+    this.overloads = s.overloads ?? 0;
+    if (s.waitingForKey) { this.resyncing = true; this.pending += overload; return null; }
+    this.resyncing = false;
+    const dropped = this.pending + overload + (late > LATE_TOLERANCE ? late : 0);
+    this.pending = 0;
+    return { dropped, backlog: s.backlog ?? 0 };
+  }
+}

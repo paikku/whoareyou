@@ -3,8 +3,9 @@ import { KEYCODE, KeyAction, MediaType, TouchAction, encodeKey, encodeKeyframeRe
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { PATHS, PRESETS, cost, pickPath, presetsFor, type Path, type Preset } from './paths';
 import { TouchInput } from './input';
-import { AbrController, type AbrAction, type AbrSample } from './abr';
+import { AbrController, CongestionReader, type AbrAction, type AbrSample, type RendererSignal } from './abr';
 import { codecString, parseAvcC } from './h264/fmp4';
+import type { RendererStats } from './renderer/types';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
@@ -121,9 +122,14 @@ function requestKeyframe(why: string): boolean {
   const now = Date.now();
   // 백오프: 링크가 막혀서 버린 프레임에 IDR 로 답하면 IDR 의 버스트가 링크를 더 막고 다시 버리게 된다
   // (report #70: 96.7·98.9·101.1 초에 연속 세 번, 그 사이 rtt 45 → 69ms). 그래서 같은 이유의 재요청은
-  // 0.5 → 1 → 2 → 4 초로 간격을 벌린다. 10 초 조용하면 처음으로 돌아간다.
+  // 0.5 → 1 초로 간격을 벌린다. 10 초 조용하면 처음으로 돌아간다.
+  //
+  // 왜 4 초에서 1 초로 줄었나: 저 백오프는 IDR 이 1080p 에서 260~575 KB 이던 때에 정해졌다. I-QP 하한이
+  // 들어간 뒤 같은 화면의 IDR 은 110 KB(하한 28)~29 KB(하한 44)다(실차 #79) — 70 Mbps 링크에서 12 ms 다.
+  // 그동안 차는 **키프레임을 기다리며 오는 것을 전부 버린다.** 4 초를 기다리는 값이 12 ms 짜리 버스트보다
+  // 비싸다: #79 에서 한 번 기다릴 때마다 60fps 로 100~240 장이 사라졌고, 그 드롭이 다시 abr 을 끌어내렸다.
   while (dropRequestTimes.length && now - dropRequestTimes[0]! > 10_000) dropRequestTimes.shift();
-  const gap = why === 'dropped frames' ? 500 * 2 ** Math.min(dropRequestTimes.length, 3) : 500;
+  const gap = why === 'dropped frames' ? 500 * 2 ** Math.min(dropRequestTimes.length, 1) : 500;
   if (now - lastKeyframeRequestAt < gap || !control.open) return false;
   if (why === 'dropped frames') dropRequestTimes.push(now);
   lastKeyframeRequestAt = now;
@@ -143,12 +149,31 @@ if ('onNeedKeyframe' in renderer) {
 let wdPackets = 0;
 let wdFrames = 0;
 let wdStalledTicks = 0;
+/** 키프레임을 기다리느라 아무것도 안 푸는 중인 틱의 수 — 멈춘 것과 구별해서 센다. */
+let wdKeyWaitTicks = 0;
 setInterval(() => {
-  if (!started || !videoWs.open) { wdStalledTicks = 0; return; }
+  if (!started || !videoWs.open) { wdStalledTicks = 0; wdKeyWaitTicks = 0; return; }
   const s = renderer.stats();
   const dp = packets - wdPackets;
   const df = s.framesDecoded - wdFrames;
   wdPackets = packets; wdFrames = s.framesDecoded;
+  // 키프레임을 기다리는 중이면 "프레임이 0 장"은 고장이 아니라 **우리가 버리고 있는 것**이다. 여기서
+  // 또 부탁해 봐야 백오프만 쓰고(렌더러가 프레임마다 이미 부탁한다) 리포트에 없는 고장이 하나 남는다
+  // (실차 #79 의 "decode stall" 네 번은 전부 이 기다림이었다). 다만 폰이 끝내 IDR 을 안 주는 경우가
+  // 있으므로 — 그때는 소켓을 다시 여는 것이 유일한 길이다 — 기다림이 4 초를 넘기면 그렇게 한다.
+  if (s.waitingForKey) {
+    wdStalledTicks = 0;
+    // 화면이 멈춰 있으면 인코더도 조용하다 — 그때는 IDR 이 안 오는 것이 정상이라 세지 않는다(위와 같은 규칙).
+    wdKeyWaitTicks = dp >= 5 ? wdKeyWaitTicks + 1 : 0;
+    if (wdKeyWaitTicks >= 8) {
+      wdKeyWaitTicks = 0;
+      recoveries++;
+      note('키프레임을 4 초 기다려도 안 온다 → video ws 재접속');
+      videoWs.restart();
+    }
+    return;
+  }
+  wdKeyWaitTicks = 0;
   wdStalledTicks = dp >= 5 && df === 0 ? wdStalledTicks + 1 : 0;
   if (wdStalledTicks === 4) {
     note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → 키프레임 요청`);
@@ -730,13 +755,26 @@ interface PerfSample {
   t: number; fps: number; lagMs: number; dropped: number; backlog: number; rttMs: number; skipped: number;
   /** 밀린 채 왔지만 버리지 않고 푼 수(webcodecs, `RendererStats.late`). 드롭 0 에 이것이 크면 링크가 끊겼다 이어진 것이다. */
   late: number;
+  /**
+   * 혼잡으로 셀 사건의 수 — 하드웨어 경로는 적체가 한계를 넘어 재동기한 횟수, 스스로 버리는 소프트
+   * 경로는 버린 프레임 수(`overloadCount`). 드롭이 큰데 이것이 0 이면 그 드롭은 혼잡이 아니라
+   * 재동기(인코더 재시작)다 — 실차 #79 가 그랬고, 사다리와 abr 둘 다 그것에 속았다.
+   */
+  overloads: number;
   /** 그 10 초 동안 실제로 받은 kbps, 키프레임 수, 가장 큰 키프레임(바이트), 그때의 비트레이트 목표(kbps). */
   kbps: number; keys: number; keyBytes: number; targetKbps: number;
 }
+/**
+ * 이 렌더러에서 혼잡으로 셀 수. 하드웨어 경로는 밀린 것을 버리지 않으므로 "적체가 한계를 넘은 횟수"가
+ * 그 수이고(`overloads`), 스스로 버리는 소프트 경로에는 그 수가 없으므로 버린 프레임을 본다.
+ * 재동기(키프레임 대기) 때문에 버린 것은 어느 쪽에도 안 들어간다 — 그것이 #79 의 오진이었다.
+ */
+const overloadCount = (s: RendererStats): number => s.overloads ?? s.droppedFrames;
 const perf: PerfSample[] = [];
 let perfFrames = 0;
 let perfDropped = 0;
 let perfLate = 0;
+let perfOverloads = 0;
 let perfBytes = 0;
 let perfKeys = 0;
 let perfAt = Date.now();
@@ -756,6 +794,7 @@ setInterval(() => {
     rttMs,
     skipped: s.skipped ?? 0,
     late: (s.late ?? 0) - perfLate,
+    overloads: overloadCount(s) - perfOverloads,
     kbps: secs > 0 ? Math.round((rxBytes - perfBytes) * 8 / secs / 1000) : 0,
     keys: keyframesSeen - perfKeys,
     keyBytes: winKeyBytes,
@@ -764,6 +803,7 @@ setInterval(() => {
   perfFrames = s.framesDecoded;
   perfDropped = s.droppedFrames;
   perfLate = s.late ?? 0;
+  perfOverloads = overloadCount(s);
   perfBytes = rxBytes;
   perfKeys = keyframesSeen;
   winKeyBytes = 0;
@@ -962,7 +1002,9 @@ let badSamples = 0;
 let lastStepDownAt = 0;
 let autoStepDowns = 0;
 function maybeStepDown(sample: PerfSample): void {
-  const bad = sample.backlog > 4 || sample.dropped > 0;
+  // 드롭이 아니라 `overloads` 를 본다: 인코더가 다시 서면 키프레임까지 버리는데(재동기), 그것은 이 차가
+  // 못 따라온다는 뜻이 아니다. #79 에서 그 드롭 643 장은 전부 재동기였고 적체 초과는 한 번도 없었다.
+  const bad = sample.backlog > 4 || sample.overloads > 0;
   badSamples = bad ? badSamples + 1 : 0;
   if (!autoQuality || badSamples < 2) return;
   // 비트가 먼저, 화소는 나중이다: 적응 비트레이트가 살아 있고 아직 바닥이 아니면 그쪽에 맡긴다 — 링크
@@ -1007,8 +1049,8 @@ const abr = new AbrController();
 let abrDisabled = '';
 /** 테스트가 표본을 직접 넣는 동안 자기 시계로는 돌지 않는다. */
 let abrManual = false;
-let abrDropped = 0;
-let abrLate = 0;
+/** 렌더러의 수에서 "링크가 막혔다"만 골라내는 자리(abr.ts). */
+const congestion = new CongestionReader();
 let abrBusy = false;
 let abrSentAt = 0;
 const abrActive = (): boolean => !abrDisabled && lastStatus?.bitrateLive === true && abr.nominal > 0;
@@ -1058,13 +1100,10 @@ async function abrTick(sample: AbrSample): Promise<AbrAction | null> {
 // ping 과 같은 박자(2 초). rtt 는 그 사이 가장 최근 값, 드롭은 그 사이 늘어난 수.
 setInterval(() => {
   if (abrManual || !started) return;
-  const s = renderer.stats();
-  // 늦게 온 것(버리지 않고 푼 것)도 드롭과 같은 신호다: 한꺼번에 왔다는 것은 그 앞에서 링크가 막혔다는 뜻이다.
-  // 하드웨어 경로는 이제 버리지 않으므로(webcodecs.ts MAX_BACKLOG) 이것이 없으면 abr 은 rtt 만 보게 된다.
-  const dropped = Math.max(0, s.droppedFrames - abrDropped) + Math.max(0, (s.late ?? 0) - abrLate);
-  abrDropped = s.droppedFrames;
-  abrLate = s.late ?? 0;
-  void abrTick({ nowMs: Date.now(), rttMs, dropped, backlog: s.backlog ?? 0 });
+  const signal = congestion.read(renderer.stats());
+  // null 은 "이 표본은 링크 이야기가 아니다"(재동기 중) — 규칙을 굶기는 편이 거짓 신호를 주는 것보다 낫다.
+  if (!signal) return;
+  void abrTick({ nowMs: Date.now(), rttMs, ...signal });
 }, 2000);
 
 /**
@@ -1108,9 +1147,13 @@ let lastLuma = -1;
 let lastLumaAt = 0;
 /** 테스트가 밝기를 손으로 넣는 동안(feedLuma) 디코더의 밝기는 무시한다 — 가짜 폰의 클립이 덮어쓰면 측정이 어긋난다. */
 let lumaFed = false;
-if ('onLuma' in renderer) {
-  renderer.onLuma = (l, at) => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
-}
+/**
+ * 밝기는 **측정하는 동안에만** 읽는다. 읽는 값 자체는 1x1 이지만, 그걸 얻으려면 프레임마다
+ * `drawImage` + `getImageData` 로 GPU 에서 되읽어야 한다 — 60fps 로 늘 돌리면 차의 MCU 에서 그 되읽기가
+ * 디코더 뒤에 적체로 쌓인다(실차 #79 는 1080p60 에서 적체 15~22 를 봤다). 측정은 사람이 누를 때만 돈다.
+ */
+const lumaSink = (l: number, at: number): void => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
+const watchLuma = (on: boolean): void => { if ('onLuma' in renderer) renderer.onLuma = on ? lumaSink : null; };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PROBE_ACTIVITY = 'com.carcast/.ui.LatencyProbeActivity';
@@ -1125,6 +1168,7 @@ async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () 
     return null;
   }
   probeRunning = true;
+  watchLuma(true);
   qualityProbe.disabled = true;
   qualityResult.textContent = '측정 중…';
   const trials = opts.trials ?? 10;
@@ -1166,6 +1210,7 @@ async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () 
     return latencyProbe;
   } finally {
     probeRunning = false;
+    watchLuma(false);
     qualityProbe.disabled = false;
     if (launch) {
       // 측정 액티비티에서 나간다: 뒤로가기는 차 화면의 앱에 간다. 그 밑에 있던 앱이 돌아온다.
@@ -1317,6 +1362,8 @@ const stats = () => ({
   stepDown: (why = 'test') => stepDown(why),
   // 적응 비트레이트를 테스트가 자기 시계로 몰기 위한 고리: 첫 호출부터 자동 박자는 멈춘다.
   abrTick: (sample: AbrSample) => { abrManual = true; return abrTick(sample); },
+  // 렌더러의 수를 혼잡 신호로 읽는 자리(재동기 중에는 null). 차에서만 보이던 되먹임이라 테스트가 직접 민다.
+  congestion: (s: RendererSignal) => { abrManual = true; return congestion.read(s); },
   runProbe: (opts: { trials?: number; launch?: boolean; onTouch?: () => void }) => runProbe(opts),
   feedLuma: (l: number) => { lumaFed = true; lastLuma = l; lastLumaAt = performance.now(); },
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
@@ -1354,7 +1401,7 @@ $('btn-save').addEventListener('click', async () => {
   const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
   const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
   const e2e = s.latencyProbe && s.latencyProbe.n ? ` 끝까지${s.latencyProbe.medianMs}ms` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.late ? ` 늦음${s.late}` : ''}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.late ? ` 늦음${s.late}` : ''}${s.overloads ? ` 적체초과${s.overloads}` : ''}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
   // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는
