@@ -96,7 +96,7 @@ public final class DisplayVideoSource implements VideoSource {
         if (saved != null) {
             Ln.i("encoder.conf: " + saved.width + "x" + saved.height + " " + saved.fps + "fps " + saved.bitRate / 1000 + " kbps"
                     + (saved.constrainedBaseline != null ? (saved.constrainedBaseline ? " baseline" : " high") : "")
-                    + (saved.intraRefresh != null ? " intra_refresh=" + saved.intraRefresh : "") + " (overrides the defaults)");
+                    + (saved.qpIMin != null ? " qp_i_min=" + saved.qpIMin : "") + " (overrides the defaults)");
             width = saved.width;
             height = saved.height;
             dpi = EncoderSettings.dpiFor(saved.height);
@@ -104,9 +104,6 @@ public final class DisplayVideoSource implements VideoSource {
             maxFps = saved.fps;
             if (saved.constrainedBaseline != null) {
                 constrainedBaseline = saved.constrainedBaseline;
-            }
-            if (saved.intraRefresh != null) {
-                intraRefresh = saved.intraRefresh;
             }
             if (saved.qpIMin != null) {
                 qpIMin = saved.qpIMin;
@@ -273,7 +270,8 @@ public final class DisplayVideoSource implements VideoSource {
         encoder = fresh;
         encoderRestarts++;
         lastEncoderRestartAt = now;
-        new EncoderSettings(w, h, f, b, constrainedBaseline, intraRefresh, qpIMin, qpIMax).save();
+        // 인트라 리프레시는 일부러 안 남긴다 — 이번 서버가 도는 동안만 산다(EncoderSettings 주석).
+        new EncoderSettings(w, h, f, b, constrainedBaseline, qpIMin, qpIMax).save();
         Map<String, Object> m = encoderInfo();
         m.put("rebuilt", true);
         return m;
