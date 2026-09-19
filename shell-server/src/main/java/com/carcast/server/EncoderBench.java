@@ -80,6 +80,13 @@ final class EncoderBench {
         int qpIMax = Integer.parseInt(q.getOrDefault("qp_i_max", "0"));
         boolean lowLatency = !"0".equals(q.getOrDefault("low_latency", "1"));
         boolean noise = !"gradient".equals(q.getOrDefault("content", "noise"));
+        // An experiment on the requested IDR's budget: rate control sizes an IDR from the *current* target, so dip the
+        // live bitrate to this just before asking for the sync frame and restore it a few frames later. 0 = do not.
+        // Why: on noise at 8 Mbps the S26U gave a requested IDR of 335~380 KB whatever qp_i_min said (§13 second run) —
+        // the floor never bit because rate control was already coarser than it. If this knob shrinks the IDR, the live
+        // encoder can do the same on every keyframe request (H264Encoder.requestKeyframe).
+        int requestBitrate = Integer.parseInt(q.getOrDefault("request_bitrate", "0"));
+        int restoreAfter = Integer.parseInt(q.getOrDefault("request_restore_frames", "3"));
         EncoderSettings.validate(width, height, fps, bitrate);
         EncoderSettings.validateQpIBounds(qpIMin, qpIMax);
         if ((width & 1) != 0 || (height & 1) != 0) {
@@ -106,6 +113,7 @@ final class EncoderBench {
         m.put("content", noise ? "noise" : "gradient");
         m.put("qpIMin", qpIMin);
         m.put("qpIMax", qpIMax);
+        m.put("requestBitrate", requestBitrate);
 
         // Same request as the live encoder (H264Encoder.format), minus the surface: CBR, no B-frames, real-time
         // priority, the low-latency hints, and the I-frame QP cap when asked for. Tried in the same order too —
@@ -217,7 +225,14 @@ final class EncoderBench {
                         mc.queueInputBuffer(id, 0, size, pts, 0);
                         if (sent == requestAt) {
                             Bundle b = new Bundle();
+                            if (requestBitrate > 0) {
+                                b.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, requestBitrate);
+                            }
                             b.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+                            mc.setParameters(b);
+                        } else if (requestBitrate > 0 && sent == requestAt + restoreAfter) {
+                            Bundle b = new Bundle();
+                            b.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitrate);
                             mc.setParameters(b);
                         }
                         sent++;

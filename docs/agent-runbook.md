@@ -187,7 +187,8 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
     부탁한 IDR 의 크기 — 실차 #76 의 575 KB 가 이것), `avgPBytes`, `kbps`, `accepted`(벤더가 저지연 키·I-QP 상한을 받았나),
     `hardware`. 합성 프레임(기본 `content=noise`, 어려운 쪽; `content=gradient` 는 쉬운 쪽)을 넣으므로 절대값은 라이브
     (`timing.encodeMs`)와 다르고 **코덱 사이·설정 사이의 비교**가 목적이다. `qp_i_min=0·28·32·36` 을 한 번씩 돌리면 IDR
-    바이트 상한이 이 인코더에서 어디에 걸리는지가 폰만으로 나온다(§13 의 표가 그 첫 줄)
+    바이트 상한이 이 인코더에서 어디에 걸리는지가 폰만으로 나온다(§13: noise 에서는 안 걸렸다).
+    `request_bitrate=2000000` 은 싱크 프레임 직전에 라이브 비트레이트를 내렸다 되돌리는 실험이다
   - 링크 프로브: `/diag` 가 `/api/blob?bytes=N` 으로 64K·256K·600K(두 번)·2M 를 받아 ms 와 Mbps 를 적는다(`link`,
     요약 줄의 `link 600KB=…ms`). "IDR 한 장이 이 링크에서 몇 ms 인가" 를 인코더 없이 직접 잰 값이라, 인코더 벤치의
     `requestedKeyBytes` 와 곱하면 그 차·그 자리의 멈춤 길이가 계산된다
