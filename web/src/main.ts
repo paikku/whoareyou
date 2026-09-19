@@ -874,6 +874,8 @@ qualityAuto.addEventListener('change', () => {
 // 키프레임 버스트(1080p 에서 260~575 KB, 실차 #76)가 링크를 반 초 막는 것을 없애는 손잡이인데, 지금까지는
 // 노트북의 curl 로만 켤 수 있어서 실차에서 한 번도 못 돌았다. 여기서 켜고 끄면 폰이 encoder.conf 에 남긴다.
 // 켠 뒤에도 차가 부탁한 키프레임(kind 4)에는 IDR 이 온다 — 그것이 얼마나 자주 오는지가 곧 이 손잡이의 성적이다.
+// 이 선택은 **남지 않는다**: 폰이 encoder.conf 에 안 적으므로 서버가 다시 서면 꺼진 채로 시작한다. 벤더가 실제로
+// 받아 주는지 확인된 적이 없고(SPS 미확인), IDR 버스트는 I-QP 하한과 abr 수정으로 이미 사라졌기 때문이다(§16).
 const qualityIntra = $<HTMLInputElement>('quality-intra');
 const INTRA_REFRESH_FRAMES = 30;
 qualityIntra.addEventListener('change', () => { void applyIntraRefresh(qualityIntra.checked); });

@@ -172,7 +172,8 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   `?bitrate=` · `?qp_i_min=28`(I 프레임 QP **하한** = IDR **크기 상한**, 기본 28, 0 이면 벤더 기본; 실차 #76 이 그 이유;
   화질 시트의 "키프레임 크기 상한" 이 같은 것을 POST 한다) ·
   `?qp_i_max=N`(반대 경계 = 화질 하한, 기본 0 — 첫 빌드가 이것을 크기 상한으로 잘못 실어 IDR 이 두 배가 됐다, car-tests §13) ·
-  `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, 저장됨, 기본 0) · `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
+  `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, **기본 0이고 저장하지 않는다** — 서버가
+  다시 서면 꺼진 채로 시작한다; 벤더가 받아 주는지 확인된 적이 없고 IDR 버스트는 이미 다른 데서 사라졌다, §16) · `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
 - 검사: A `quality.spec`("링크가 막히면…"), A+ `09-encoder`("비트레이트만 바꾸면…", "인트라 리프레시를 켰다 끌 수 있다")
 - **폰의 소켓 큐(`videoClientStats.queued`)가 0 이라고 링크가 멀쩡한 것은 아니다.** 커널 송신 버퍼가 그 앞에 있다.
   64 KB 로 줄여 두었지만(`StreamSession.VIDEO_SEND_BUFFER_BYTES`) 링크가 막혔는지는 차의 rtt 가 먼저 안다
@@ -184,9 +185,13 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   오류·30 장 넘는 적체(무언가 잘못된 것)·2 초 스톨에서만 나가고, 같은 이유의 재요청은 0.5 → 1 초로 벌린다
   (예전엔 4 초까지 벌렸는데, IDR 이 29~110 KB 가 된 지금은 기다리는 값이 더 비싸다 — car-tests §14).
   재동기하는 동안은 `stats.waitingForKey` 가 서고, 그 사이의 "프레임 0 장"은 스톨로 세지 않는다. 소프트 디코더(h264.ts)는 CPU 가 바닥이라 예전 규칙 그대로다
-- **인트라 리프레시는 화질 시트에서 켠다** ("키프레임 대신 인트라 리프레시", `POST /api/encoder?intra_refresh=30|0`).
-  폰이 `intraRefresh` 를 말해 줄 때만 살아 있고, 선택은 encoder.conf 에 남는다. 켠 뒤에도 차가 부탁한 키프레임에는
-  IDR 이 온다 — 그 횟수(`keyframeRequests`)가 곧 이 손잡이의 성적이다. 실차 기록은 아직 없다(열린 질문 15)
+- **인트라 리프레시는 화질 시트에서 켠다** ("키프레임 대신 인트라 리프레시 · 이번 세션만",
+  `POST /api/encoder?intra_refresh=30|0`). 폰이 `intraRefresh` 를 말해 줄 때만 살아 있고, **선택은 안 남는다** —
+  서버가 다시 서면 꺼진 채로 시작한다(실차 #83 에서 켠 줄 모르고 39 분을 돌았다). 켠 뒤에도 차가 부탁한
+  키프레임에는 IDR 이 온다(실차 #83 에서 켠 채로도 88~129 KB). **지금은 기본 꺼짐이 맞다**: 벤더가 이 키를
+  받아 주는지 확인된 적이 없고(`encoderProfile` 이 "요청" 이라고만 말한다), 이 손잡이가 없애려던 버스트는
+  I-QP 하한(15~35 KB)과 abr 수정(요청 4 분에 4 번)으로 이미 사라졌다. 성적을 재려면 같은 세션에서 껐다 켜고
+  perf 의 `keys`·`keyBytes`·`kbps` 를 견준다 — `keys` 가 줄면 벤더가 받은 것이다(열린 질문 15)
 - **다른 코덱·다른 전송으로 갈 수 있는지는 프로브가 답한다.** 차 쪽: https 의 `/diag` 가 HEVC Main·AV1 Main·VP9 를
   `isConfigSupported`(prefer-hardware) 로 묻고(`secure.configs`), 같은 페이지 안에서 WebRTC 루프백(pc1 → pc2, 캔버스
   트랙, H.264 우선)을 돌려 협상 코덱·`decoderImplementation`·데이터 채널을 적는다(`webrtc`). 폰 쪽: `/api/status.encoders`

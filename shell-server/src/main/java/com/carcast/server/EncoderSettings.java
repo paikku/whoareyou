@@ -9,9 +9,18 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * What the car last asked the encoder to be (size, fps, bitrate, profile, intra refresh) — kept across
+ * What the car last asked the encoder to be (size, fps, bitrate, profile, I-frame QP bounds) — kept across
  * server restarts, like {@link AppHistory}, so a choice made in the car sticks without the app having to
  * know about it.
+ *
+ * <p><b>Intra refresh is deliberately not among them.</b> It is an experiment whose effect this phone has
+ * never been shown to honour (the encoder reports it as "requested", and the SPS was never checked), it
+ * costs a little compression efficiency, and the burst it was meant to remove is already gone — the IDR
+ * the car asks for is 15~35 KB once {@code qp_i_min} caps it, and the car asks four times in four minutes
+ * now that abr no longer reads a resync as congestion (car-tests/model-y §14·§16). Remembering it made it
+ * silently true: in report #83 it stayed on for 39 minutes because a rebuild lock ate the "off" tap. So the
+ * toggle in the car works for as long as the server runs, every start begins with it off, and a value left
+ * in the file by an older build is dropped on load.
  *
  * The profile is here because every car with a hardware decoder asks for High on attach, and until it was
  * saved every attach cost two encoder builds: one at Baseline from the command line, one at High a moment
@@ -30,20 +39,17 @@ final class EncoderSettings {
     final int bitRate;
     /** Constrained Baseline asked for; null when the file does not say (older file → command line decides). */
     final Boolean constrainedBaseline;
-    /** Intra-refresh period in frames, 0 off; null when the file does not say. */
-    final Integer intraRefresh;
     /** Smallest QP for I-frames (the IDR size cap), 0 vendor's choice; null when the file does not say. */
     final Integer qpIMin;
     /** Largest QP for I-frames (an IDR quality floor), 0 vendor's choice; null when the file does not say. */
     final Integer qpIMax;
 
-    EncoderSettings(int width, int height, int fps, int bitRate, Boolean constrainedBaseline, Integer intraRefresh, Integer qpIMin, Integer qpIMax) {
+    EncoderSettings(int width, int height, int fps, int bitRate, Boolean constrainedBaseline, Integer qpIMin, Integer qpIMax) {
         this.width = width;
         this.height = height;
         this.fps = fps;
         this.bitRate = bitRate;
         this.constrainedBaseline = constrainedBaseline;
-        this.intraRefresh = intraRefresh;
         this.qpIMin = qpIMin;
         this.qpIMax = qpIMax;
     }
@@ -117,7 +123,10 @@ final class EncoderSettings {
             }
             String profile = kv.get("profile");
             Boolean baseline = profile == null ? null : !"high".equalsIgnoreCase(profile);
-            Integer refresh = kv.containsKey("intra_refresh") ? Integer.valueOf(kv.get("intra_refresh")) : null;
+            if (kv.containsKey("intra_refresh")) {
+                // An older build saved it. Intra refresh is a session-only experiment now (see the class note).
+                Ln.i("encoder.conf: dropping intra_refresh=" + kv.get("intra_refresh") + " — it is not remembered any more");
+            }
             Integer qpMax = kv.containsKey("qp_i_max") ? Integer.valueOf(kv.get("qp_i_max")) : null;
             Integer qpMin = kv.containsKey("qp_i_min") ? Integer.valueOf(kv.get("qp_i_min")) : null;
             if (qpMin == null && qpMax != null && qpMax == LEGACY_INVERTED_QP_I_MAX) {
@@ -126,11 +135,8 @@ final class EncoderSettings {
                 qpMax = null;
             }
             EncoderSettings s = new EncoderSettings(Integer.parseInt(kv.get("width")), Integer.parseInt(kv.get("height")),
-                    Integer.parseInt(kv.get("fps")), Integer.parseInt(kv.get("bitrate")), baseline, refresh, qpMin, qpMax);
+                    Integer.parseInt(kv.get("fps")), Integer.parseInt(kv.get("bitrate")), baseline, qpMin, qpMax);
             validate(s.width, s.height, s.fps, s.bitRate);
-            if (refresh != null) {
-                validateIntraRefresh(refresh);
-            }
             validateQpIBounds(qpMin != null ? qpMin : 0, qpMax != null ? qpMax : 0);
             return s;
         } catch (Exception e) {
@@ -153,9 +159,6 @@ final class EncoderSettings {
             sb.append("bitrate=").append(bitRate).append('\n');
             if (constrainedBaseline != null) {
                 sb.append("profile=").append(constrainedBaseline ? "baseline" : "high").append('\n');
-            }
-            if (intraRefresh != null) {
-                sb.append("intra_refresh=").append(intraRefresh).append('\n');
             }
             if (qpIMin != null) {
                 sb.append("qp_i_min=").append(qpIMin).append('\n');
