@@ -6,6 +6,7 @@ import { TouchInput } from './input';
 import { AbrController, CongestionReader, type AbrAction, type AbrSample, type RendererSignal } from './abr';
 import { codecString, parseAvcC } from './h264/fmp4';
 import type { RendererStats } from './renderer/types';
+import { WEB_BUILD } from './build';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
@@ -592,6 +593,33 @@ let appEpoch = 0;
 let lastStatus: any = null;
 let statusFailedAt = 0;
 /**
+ * 폰이 새 빌드인데 이 페이지는 옛 빌드다 — 한 번만 다시 연다.
+ *
+ * APK 를 다시 깔면 서버가 다시 서고 소켓은 스스로 이어진다(그게 원래 원하는 동작이다). 그래서 차의 탭은
+ * **열린 채 옛 자바스크립트로 계속 돈다.** 실차 #83 이 그랬다: 폰만 `2c474d1` 이고 차는 39 분 전에 연
+ * 페이지여서, 그 빌드에서 고친 것이 하나도 안 도는 세션을 "고쳐지지 않았다"로 읽을 뻔했다.
+ *
+ * 다시 여는 것은 빌드 하나당 한 번뿐이다(localStorage 에 적어 둔다). 적지 못하면 — 사생활 모드 등 —
+ * 다시 열지 않고 말만 한다. 되풀이해서 다시 여는 것이 옛 페이지보다 나쁘다.
+ */
+const RELOADED_KEY = 'carcast.reloadedFor';
+let buildChecked = '';
+function checkBuild(phone: unknown): void {
+  const p = typeof phone === 'string' ? phone : '';
+  if (!WEB_BUILD || !p || p === WEB_BUILD || buildChecked === p) return;
+  buildChecked = p;
+  note(`build mismatch: 페이지 ${WEB_BUILD}, 폰 ${p}`);
+  let already = '';
+  try { already = localStorage.getItem(RELOADED_KEY) ?? ''; } catch { /* 저장소가 막혀 있다 */ }
+  if (already === p) { notice(`폰이 새 빌드입니다(${p}) — 페이지를 새로고침하세요`, 15000); return; }
+  try { localStorage.setItem(RELOADED_KEY, p); } catch {
+    notice(`폰이 새 빌드입니다(${p}) — 페이지를 새로고침하세요`, 15000);
+    return;
+  }
+  notice(`폰이 새 빌드입니다(${p}) — 페이지를 다시 엽니다`, 4000);
+  setTimeout(() => location.reload(), 1200);
+}
+/**
  * 폰의 상태를 한 번 읽는다. 처음 한 번은 **바로** 부른다: setInterval 만으로는 첫 답이 2 초 뒤에 오고, 빈
  * 가상 화면은 프레임을 한 장도 안 보내므로 차에 타서 페이지를 열면 그 2 초 동안 검은 화면만 보였다.
  * 홈(또는 지난번 앱)이 그만큼 빨리 뜬다.
@@ -605,6 +633,7 @@ async function pollStatus(): Promise<void> {
     if (epoch !== appEpoch) return;
     lastStatus = st;
     statusFailedAt = 0;
+    checkBuild(st.build);
     syncAbr(st);
     if (typeof st.app === 'string' && st.app) lastPackage = st.app.split('/')[0]!;
     // 화질을 바꾸면 그림의 크기가 바뀐다(/api/encoder). 터치 좌표는 그 크기 기준이므로 여기서도 맞춘다.
@@ -851,7 +880,7 @@ qualityIntra.addEventListener('change', () => { void applyIntraRefresh(qualityIn
 async function applyIntraRefresh(on: boolean): Promise<boolean> {
   const n = on ? INTRA_REFRESH_FRAMES : 0;
   try {
-    const r = await (await fetch(`/api/encoder?intra_refresh=${n}`, { method: 'POST' })).json();
+    const r = await postEncoder(`intra_refresh=${n}`);
     if (!r.ok) {
       notice(`인트라 리프레시 변경 실패: ${r.error ?? '?'}`, 6000);
       note(`encoder intra_refresh=${n} failed: ${r.error}`);
@@ -902,13 +931,32 @@ async function askForProfile(): Promise<void> {
   }
 }
 
+/**
+ * 인코더를 다시 세우는 요청. 폰은 재빌드를 2 초에 하나로 막는데(`DisplayVideoSource.RECONFIGURE_MIN_GAP_MS`),
+ * 차에서는 손잡이를 연달아 만지는 것이 보통이라 그 거절이 곧 **누른 것이 사라지는 일**이 된다 — 실차 #83 에서
+ * 인트라 리프레시를 켠 1.3 초 뒤에 끈 것이 이 거절에 걸렸고("encoder was rebuilt 1293 ms ago; wait"),
+ * 아무도 다시 안 보내서 그 세션 39 분이 통째로 켜진 채 돌았다. 그래서 이 거절만은 남은 시간을 기다렸다가
+ * 한 번 더 보낸다. 다른 실패는 그대로 올린다 — 되풀이해서 될 일이 아니다.
+ */
+const REBUILD_LOCK_MS = 2_000;
+async function postEncoder(query: string): Promise<any> {
+  const send = async (): Promise<any> => (await fetch(`/api/encoder?${query}`, { method: 'POST' })).json();
+  const r = await send();
+  const m = r?.ok === false && typeof r.error === 'string' ? /rebuilt (\d+) ms ago/.exec(r.error) : null;
+  if (!m) return r;
+  const waitMs = Math.max(250, REBUILD_LOCK_MS - Number(m[1]) + 200);
+  note(`encoder ${query}: 재빌드 잠금 — ${waitMs}ms 뒤 한 번 더`);
+  await new Promise((done) => setTimeout(done, waitMs));
+  return send();
+}
+
 let applyingPreset = false;
 async function applyPreset(p: Preset, why: string): Promise<boolean> {
   if (applyingPreset) return false;
   applyingPreset = true;
   try {
     const q = `width=${p.width}&height=${p.height}&fps=${p.fps}&bitrate=${p.bitrate}&profile=${wantedProfile()}`;
-    const r = await (await fetch(`/api/encoder?${q}`, { method: 'POST' })).json();
+    const r = await postEncoder(q);
     if (!r.ok) { notice(`화질 변경 실패: ${r.error ?? '?'}`, 6000); note(`encoder ${p.id} (${why}) failed: ${r.error}`); return false; }
     note(`encoder ${p.id} (${why}): ${r.width}x${r.height} ${r.fps}fps ${Math.round(r.bitrate / 1000)}k`);
     notice(`화질: ${p.label}`);
@@ -931,7 +979,7 @@ const qualityQp = $<HTMLSelectElement>('quality-qp');
 qualityQp.addEventListener('change', () => { void applyQpIMin(Number(qualityQp.value)); });
 async function applyQpIMin(n: number): Promise<boolean> {
   try {
-    const r = await (await fetch(`/api/encoder?qp_i_min=${n}`, { method: 'POST' })).json();
+    const r = await postEncoder(`qp_i_min=${n}`);
     if (!r.ok) {
       notice(`키프레임 상한 변경 실패: ${r.error ?? '?'}`, 6000);
       note(`encoder qp_i_min=${n} failed: ${r.error}`);
@@ -1318,6 +1366,8 @@ function perfTrend(): { early: number; recent: number; backlog: number } | null 
 // Stats line + a hook for the Playwright tests.
 const stats = () => ({
   renderer: renderer.name,
+  /** 이 페이지의 빌드. 폰의 `build` 와 다르면 리포트가 옛 페이지의 것이다(#83). */
+  webBuild: WEB_BUILD,
   /** 지금 경로와 그것을 어떻게 고르게 됐는지. 리포트만 보고도 "무엇으로 푼 세션인가"가 읽힌다. */
   path: path.id,
   pathAuto: chosen.auto,
@@ -1397,11 +1447,12 @@ setInterval(() => {
 $('btn-save').addEventListener('click', async () => {
   const s = stats();
   const st = lastStatus;
+  const stale = st && s.webBuild && st.build && st.build !== s.webBuild ? ` ⚠페이지 build=${s.webBuild}` : '';
   const phone = st ? ` | 폰 build=${st.build ?? '?'} ${st.interactive === false ? '잠듦' : '깨어있음'} 화면${st.screenOn === false ? 'OFF' : 'ON'}${st.sleepRecoveries ? ` 되살림${st.sleepRecoveries}` : ''}${st.keptActive ? ` 활성유지${st.keptActive}` : ''} idle${Math.round((s.idleMs ?? 0) / 100) / 10}s` : '';
   const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
   const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
   const e2e = s.latencyProbe && s.latencyProbe.n ? ` 끝까지${s.latencyProbe.medianMs}ms` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.late ? ` 늦음${s.late}` : ''}${s.overloads ? ` 적체초과${s.overloads}` : ''}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.late ? ` 늦음${s.late}` : ''}${s.overloads ? ` 적체초과${s.overloads}` : ''}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}${stale}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
   // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는

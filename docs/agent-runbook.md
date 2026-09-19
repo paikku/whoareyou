@@ -157,6 +157,11 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   (`maybeStepDown`, 토글이 켜져 있을 때만): abr 이 바닥(공칭의 40%)에 닿은 뒤에도 나쁜 표본이 이어질 때만
   해상도·fps 를 한 칸 내린다. 여기서도 "나쁜 표본"은 드롭이 아니라 perf 의 `overloads` 다(같은 이유). 비트가 먼저, 화소는 나중 — 실차 #70 에서 1080p60 을 무너뜨린 것은
   디코더가 아니라 링크였다(car-tests/model-y §9)
+- **리포트를 읽기 전에 `⚠페이지 build=` 부터 본다.** 그 표시가 있으면 폰과 차의 빌드가 다르다 — 차의 탭이
+  옛 자바스크립트로 돌고 있었다는 뜻이고, 그 세션의 차 쪽 수치는 **그 옛 빌드의 것**이다(실차 #83, car-tests §15).
+  이 빌드부터 페이지가 빌드당 한 번 스스로 다시 열지만(`main.ts` `checkBuild`), 표시가 보이면 그 세션은 버린다.
+- **인코더를 다시 세우는 요청은 2 초에 하나다**(`DisplayVideoSource.RECONFIGURE_MIN_GAP_MS`). 차의 손잡이는
+  그 거절을 만나면 남은 시간을 기다렸다가 한 번 더 보낸다(`postEncoder`) — 안 그러면 누른 것이 조용히 사라진다(#83).
 - **폰 쪽 계측은 `/api/status.timing`** (`FrameTiming`): `encodeMs` 는 합성 → 인코더 출력, `touchToFrameMs` 는
   터치 → 다음 프레임. 인코더 손잡이(`H264Encoder.format` 의 저지연 키·`KEY_OPERATING_RATE`)를 만졌으면 **차 없이**
   이 숫자로 판정한다. 대조군은 §9 의 표(720p30 14 ms, 720p60·900p60 11.5 ms)

@@ -89,7 +89,9 @@ function packet(type, ptsUs, payload) {
 const state = { touches: [], keys: [], texts: [], videoClients: 0, controlClients: 0, framesSent: 0, wsRejected: 0, wsAccepted: 0,
   // 실기기와 같은 진단 필드: 받은 연결 수와 accept 오류. 차에서 "죽었다"고 할 때 폰까지 닿았는지를
   // 가른다(StreamSession.statusJson 과 같은 이름이어야 리포트를 같은 눈으로 읽을 수 있다).
-  accepts: 0, acceptErrors: 0, accepting: true, videoDropped: 0, lastAcceptAgoMs: null };
+  accepts: 0, acceptErrors: 0, accepting: true, videoDropped: 0, lastAcceptAgoMs: null,
+  // 실제 서버처럼 빌드 sha 를 말하고 HTML 의 __BUILD__ 를 그것으로 바꾼다. /api/build 로 바꿀 수 있다.
+  build: 'fake0', rebuildLockMs: 0 };
 // Diagnostic reports posted by /diag (same API as the phone's ReportStore, memory only).
 const reports = [];
 
@@ -207,6 +209,16 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: `bad encoder settings ${w}x${h} ${fps}fps ${bitrate}` }));
         return;
       }
+      // 진짜 폰은 재빌드를 2 초에 하나로 막는다(DisplayVideoSource.RECONFIGURE_MIN_GAP_MS). 늘 켜 두면
+      // 프리셋을 연달아 바꾸는 기존 검사가 실패하므로, 그 거절을 보고 싶은 검사만 /api/rebuild-lock 으로 켠다.
+      if (rebuilt && state.rebuildLockMs > 0) {
+        const ago = Date.now() - (state.lastRebuildAt ?? 0);
+        if (ago < state.rebuildLockMs) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: `encoder was rebuilt ${ago} ms ago; wait` }));
+          return;
+        }
+      }
       const intraRefresh = n('intra_refresh') ?? (url.searchParams.has('intra_refresh') ? 0 : state.encoder.intraRefresh ?? 0);
       const qpIMin = n('qp_i_min') ?? (url.searchParams.has('qp_i_min') ? 0 : state.encoder.qpIMin ?? 28);
       if (qpIMin < 0 || qpIMin > 51) {
@@ -217,10 +229,29 @@ const server = createServer((req, res) => {
       state.encoder = rebuilt
         ? { width: w, height: h, fps, bitrate, nominal: bitrate, intraRefresh, qpIMin, encoderRestarts: state.encoder.encoderRestarts + 1, bitrateChanges: state.encoder.bitrateChanges }
         : { ...state.encoder, bitrate, bitrateChanges: state.encoder.bitrateChanges + (bitrate !== state.encoder.bitrate ? 1 : 0) };
+      if (rebuilt) state.lastRebuildAt = Date.now();
       state.encoderPosts = (state.encoderPosts ?? 0) + 1;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, ...state.encoder, nominalBitRate: state.encoder.nominal, bitrateLive: true, ...(rebuilt === null ? {} : { rebuilt }) }));
+    return;
+  }
+  // 검사용: 폰이 새 빌드로 바뀐 것(= APK 재설치)을 흉내 낸다. 이 뒤로 /api/status.build 와 HTML 의 빌드가
+  // 같이 바뀌므로, 옛 페이지만 다른 값을 들고 있게 된다.
+  if (url.pathname === '/api/build') {
+    if (req.method === 'POST') state.build = String(url.searchParams.get('sha') ?? state.build);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, build: state.build }));
+    return;
+  }
+  // 검사용: 재빌드 잠금을 켠다(ms=0 이면 끈다). 진짜 폰은 2000 이다.
+  if (url.pathname === '/api/rebuild-lock') {
+    if (req.method === 'POST') {
+      state.rebuildLockMs = Math.max(0, Number(url.searchParams.get('ms') ?? 0) || 0);
+      state.lastRebuildAt = Date.now();
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, rebuildLockMs: state.rebuildLockMs ?? 0 }));
     return;
   }
   if (url.pathname === '/api/screen') {
@@ -273,7 +304,7 @@ const server = createServer((req, res) => {
     // 입력 기록과 앱 상태를 처음으로. 하나의 가짜 폰이 모든 스펙과 프로필을 차례로 받으므로, 앞 테스트가
     // 남긴 "차 화면 비어 있음"이 다음 테스트의 시작 화면(홈이 저절로 뜸)을 바꾸던 것을 여기서 끊는다.
     state.touches = []; state.keys = []; state.texts = []; state.batches = 0; state.keyframeRequests = 0; state.pings = 0;
-    delete state.encoder; state.encoderPosts = 0;
+    delete state.encoder; state.encoderPosts = 0; state.rebuildLockMs = 0; delete state.lastRebuildAt;
     state.apps = []; state.appOnPhone = false; delete state.appDisplay; delete state.app;
     res.writeHead(200); res.end('ok');
     return;
@@ -283,8 +314,11 @@ const server = createServer((req, res) => {
   if (!file.startsWith(WEB)) { res.writeHead(400); res.end(); return; }
   readFile(file, (err, data) => {
     if (err) { res.writeHead(404); res.end('404 ' + path); return; }
+    // 실제 서버처럼 HTML 의 __BUILD__ 를 지금 빌드 sha 로 바꾼다(core HttpServer.serveStatic). 그래야 페이지가
+    // 자기 빌드를 알고, 폰이 다른 빌드로 바뀐 것을 알아볼 수 있다(main.ts checkBuild, 실차 #83).
+    const body = extname(file) === '.html' ? Buffer.from(String(data).split('__BUILD__').join(state.build)) : data;
     res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store' });
-    res.end(data);
+    res.end(body);
   });
 });
 

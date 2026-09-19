@@ -164,6 +164,21 @@ test('경로의 천장 위 설정으로 도는 폰에 들어오면 한 단계 �
   expect((await stats(page) as any).autoStepDowns).toBe(0);
 });
 
+// 실차 #83: 인트라 리프레시를 켜고 1.3 초 뒤에 껐는데, 폰의 재빌드 잠금(2 초)이 두 번째를 거절했고
+// ("encoder was rebuilt 1293 ms ago; wait") 아무도 다시 안 보내서 그 세션 39 분이 통째로 켜진 채 돌았다.
+// 차에서는 손잡이를 연달아 만지는 것이 보통이라, 이 거절만은 기다렸다가 한 번 더 보낸다.
+test('재빌드 잠금에 걸린 손잡이는 잠금이 풀리면 스스로 다시 보낸다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+  await page.evaluate(() => fetch('/api/rebuild-lock?ms=2000', { method: 'POST' }));
+  // 잠금이 방금 시작됐으므로 이 첫 요청부터 거절당한다 — 그래도 결과는 "켜졌다"여야 한다.
+  expect(await page.evaluate(() => (window as any).__carcast.applyIntraRefresh(true))).toBe(true);
+  expect((await statusOf(page)).intraRefresh).toBe(30);
+  const log = await page.evaluate(() => ((window as any).__carcast.events as string[]).join('\n'));
+  expect(log).toContain('재빌드 잠금');
+});
+
 // 실차 #79: 2.5 분에 자르기 12 번, 올리기 0 번. 인코더를 다시 세울 때마다(프리셋·I-QP 변경) 20 초 안에
 // 바닥(공칭의 40%)이었고, 링크는 멀쩡했다(rtt 12~15ms, 70 Mbps). 자른 이유는 전부 재동기 — 새 init 이 오면
 // 디코더를 다시 세우고 키프레임까지 오는 것을 버리는데, 그 버린 수가 그대로 혼잡으로 읽혔다. 차에서만 보이던
