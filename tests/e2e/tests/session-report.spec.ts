@@ -41,3 +41,27 @@ test('main page saves a session report with stats and events', async ({ page }) 
   // The stats line shows only what is abnormal: a clean run has no reconnects or recoveries on it.
   await expect(page.locator('#stats')).not.toContainText('복구');
 });
+
+// 실차 #83: 폰만 새 빌드(`2c474d1`)였고 차의 탭은 39 분 전에 연 옛 페이지였다. APK 를 다시 깔면 서버가
+// 다시 서고 소켓은 스스로 이어지므로 탭은 열린 채 **옛 자바스크립트로** 계속 돈다 — 리포트에는 폰의 빌드만
+// 찍혀서, 그 빌드에서 고친 것이 하나도 안 도는 세션을 "안 고쳐졌다"로 읽을 뻔했다. 이제 페이지도 자기
+// 빌드를 알고(HTML 의 `__BUILD__`), 다르면 빌드 하나당 한 번 스스로 다시 연다.
+test('폰이 새 빌드로 바뀌면 페이지가 한 번 스스로 다시 열린다', async ({ page }) => {
+  // 이 검사는 하나의 가짜 폰을 프로젝트마다 다시 쓰므로 빌드 이름을 매번 새로 짓는다 — 지난 실행이 남긴
+  // localStorage 기록과 겹치면 "이미 한 번 열었다"가 되어 아무 일도 안 일어난다(그것도 맞는 동작이다).
+  const old = `fake-${Date.now()}-a`;
+  const neu = `fake-${Date.now()}-b`;
+  await page.goto('/');
+  await startPlayback(page);
+  // 폰의 빌드를 바꾼다 = APK 를 다시 깐 것이다. 지금 열려 있는 페이지는 옛 것이 되므로 스스로 다시 열린다.
+  const first = page.waitForEvent('load');
+  await page.evaluate((sha) => fetch(`/api/build?sha=${sha}`, { method: 'POST' }), old);
+  await first;
+  await expect.poll(async () => page.evaluate(() => (window as any).__carcast?.stats().webBuild), { timeout: 15_000 }).toBe(old);
+  const reloaded = page.waitForEvent('load');
+  await page.evaluate((sha) => fetch(`/api/build?sha=${sha}`, { method: 'POST' }), neu);
+  await reloaded;
+  // 다시 열린 페이지는 새 빌드다 — 그러니 같은 이유로 또 열 일이 없다. 그 기록도 남는다(한 번뿐인 근거).
+  await expect.poll(async () => page.evaluate(() => (window as any).__carcast?.stats().webBuild), { timeout: 15_000 }).toBe(neu);
+  expect(await page.evaluate(() => localStorage.getItem('carcast.reloadedFor'))).toBe(neu);
+});

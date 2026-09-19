@@ -86,3 +86,4 @@ body.diag #report-result { margin-top: 6px; font-size: 14px; color: #aaa; }
 .sheet-note { flex: 1; min-width: 0; color: #bbb; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-row { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; color: #ddd; font-size: 16px; }
 .sheet-row input[type=checkbox] { width: 22px; height: 22px; }
+.sheet-row select { font-size: 16px; padding: 4px 8px; background: #222; color: #ddd; border: 1px solid #555; border-radius: 6px; }

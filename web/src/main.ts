@@ -3,8 +3,10 @@ import { KEYCODE, KeyAction, MediaType, TouchAction, encodeKey, encodeKeyframeRe
 import { ReconnectingWs, wsUrl } from './transport/ws';
 import { PATHS, PRESETS, cost, pickPath, presetsFor, type Path, type Preset } from './paths';
 import { TouchInput } from './input';
-import { AbrController, type AbrAction, type AbrSample } from './abr';
+import { AbrController, CongestionReader, type AbrAction, type AbrSample, type RendererSignal } from './abr';
 import { codecString, parseAvcC } from './h264/fmp4';
+import type { RendererStats } from './renderer/types';
+import { WEB_BUILD } from './build';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
@@ -121,9 +123,14 @@ function requestKeyframe(why: string): boolean {
   const now = Date.now();
   // 백오프: 링크가 막혀서 버린 프레임에 IDR 로 답하면 IDR 의 버스트가 링크를 더 막고 다시 버리게 된다
   // (report #70: 96.7·98.9·101.1 초에 연속 세 번, 그 사이 rtt 45 → 69ms). 그래서 같은 이유의 재요청은
-  // 0.5 → 1 → 2 → 4 초로 간격을 벌린다. 10 초 조용하면 처음으로 돌아간다.
+  // 0.5 → 1 초로 간격을 벌린다. 10 초 조용하면 처음으로 돌아간다.
+  //
+  // 왜 4 초에서 1 초로 줄었나: 저 백오프는 IDR 이 1080p 에서 260~575 KB 이던 때에 정해졌다. I-QP 하한이
+  // 들어간 뒤 같은 화면의 IDR 은 110 KB(하한 28)~29 KB(하한 44)다(실차 #79) — 70 Mbps 링크에서 12 ms 다.
+  // 그동안 차는 **키프레임을 기다리며 오는 것을 전부 버린다.** 4 초를 기다리는 값이 12 ms 짜리 버스트보다
+  // 비싸다: #79 에서 한 번 기다릴 때마다 60fps 로 100~240 장이 사라졌고, 그 드롭이 다시 abr 을 끌어내렸다.
   while (dropRequestTimes.length && now - dropRequestTimes[0]! > 10_000) dropRequestTimes.shift();
-  const gap = why === 'dropped frames' ? 500 * 2 ** Math.min(dropRequestTimes.length, 3) : 500;
+  const gap = why === 'dropped frames' ? 500 * 2 ** Math.min(dropRequestTimes.length, 1) : 500;
   if (now - lastKeyframeRequestAt < gap || !control.open) return false;
   if (why === 'dropped frames') dropRequestTimes.push(now);
   lastKeyframeRequestAt = now;
@@ -143,12 +150,31 @@ if ('onNeedKeyframe' in renderer) {
 let wdPackets = 0;
 let wdFrames = 0;
 let wdStalledTicks = 0;
+/** 키프레임을 기다리느라 아무것도 안 푸는 중인 틱의 수 — 멈춘 것과 구별해서 센다. */
+let wdKeyWaitTicks = 0;
 setInterval(() => {
-  if (!started || !videoWs.open) { wdStalledTicks = 0; return; }
+  if (!started || !videoWs.open) { wdStalledTicks = 0; wdKeyWaitTicks = 0; return; }
   const s = renderer.stats();
   const dp = packets - wdPackets;
   const df = s.framesDecoded - wdFrames;
   wdPackets = packets; wdFrames = s.framesDecoded;
+  // 키프레임을 기다리는 중이면 "프레임이 0 장"은 고장이 아니라 **우리가 버리고 있는 것**이다. 여기서
+  // 또 부탁해 봐야 백오프만 쓰고(렌더러가 프레임마다 이미 부탁한다) 리포트에 없는 고장이 하나 남는다
+  // (실차 #79 의 "decode stall" 네 번은 전부 이 기다림이었다). 다만 폰이 끝내 IDR 을 안 주는 경우가
+  // 있으므로 — 그때는 소켓을 다시 여는 것이 유일한 길이다 — 기다림이 4 초를 넘기면 그렇게 한다.
+  if (s.waitingForKey) {
+    wdStalledTicks = 0;
+    // 화면이 멈춰 있으면 인코더도 조용하다 — 그때는 IDR 이 안 오는 것이 정상이라 세지 않는다(위와 같은 규칙).
+    wdKeyWaitTicks = dp >= 5 ? wdKeyWaitTicks + 1 : 0;
+    if (wdKeyWaitTicks >= 8) {
+      wdKeyWaitTicks = 0;
+      recoveries++;
+      note('키프레임을 4 초 기다려도 안 온다 → video ws 재접속');
+      videoWs.restart();
+    }
+    return;
+  }
+  wdKeyWaitTicks = 0;
   wdStalledTicks = dp >= 5 && df === 0 ? wdStalledTicks + 1 : 0;
   if (wdStalledTicks === 4) {
     note(`decode stall (${dp} packets, 0 frames in 2s, lag ${Math.round(s.latencyMs)}ms${s.lastError ? `, ${s.lastError}` : ''}) → 키프레임 요청`);
@@ -567,6 +593,33 @@ let appEpoch = 0;
 let lastStatus: any = null;
 let statusFailedAt = 0;
 /**
+ * 폰이 새 빌드인데 이 페이지는 옛 빌드다 — 한 번만 다시 연다.
+ *
+ * APK 를 다시 깔면 서버가 다시 서고 소켓은 스스로 이어진다(그게 원래 원하는 동작이다). 그래서 차의 탭은
+ * **열린 채 옛 자바스크립트로 계속 돈다.** 실차 #83 이 그랬다: 폰만 `2c474d1` 이고 차는 39 분 전에 연
+ * 페이지여서, 그 빌드에서 고친 것이 하나도 안 도는 세션을 "고쳐지지 않았다"로 읽을 뻔했다.
+ *
+ * 다시 여는 것은 빌드 하나당 한 번뿐이다(localStorage 에 적어 둔다). 적지 못하면 — 사생활 모드 등 —
+ * 다시 열지 않고 말만 한다. 되풀이해서 다시 여는 것이 옛 페이지보다 나쁘다.
+ */
+const RELOADED_KEY = 'carcast.reloadedFor';
+let buildChecked = '';
+function checkBuild(phone: unknown): void {
+  const p = typeof phone === 'string' ? phone : '';
+  if (!WEB_BUILD || !p || p === WEB_BUILD || buildChecked === p) return;
+  buildChecked = p;
+  note(`build mismatch: 페이지 ${WEB_BUILD}, 폰 ${p}`);
+  let already = '';
+  try { already = localStorage.getItem(RELOADED_KEY) ?? ''; } catch { /* 저장소가 막혀 있다 */ }
+  if (already === p) { notice(`폰이 새 빌드입니다(${p}) — 페이지를 새로고침하세요`, 15000); return; }
+  try { localStorage.setItem(RELOADED_KEY, p); } catch {
+    notice(`폰이 새 빌드입니다(${p}) — 페이지를 새로고침하세요`, 15000);
+    return;
+  }
+  notice(`폰이 새 빌드입니다(${p}) — 페이지를 다시 엽니다`, 4000);
+  setTimeout(() => location.reload(), 1200);
+}
+/**
  * 폰의 상태를 한 번 읽는다. 처음 한 번은 **바로** 부른다: setInterval 만으로는 첫 답이 2 초 뒤에 오고, 빈
  * 가상 화면은 프레임을 한 장도 안 보내므로 차에 타서 페이지를 열면 그 2 초 동안 검은 화면만 보였다.
  * 홈(또는 지난번 앱)이 그만큼 빨리 뜬다.
@@ -580,6 +633,7 @@ async function pollStatus(): Promise<void> {
     if (epoch !== appEpoch) return;
     lastStatus = st;
     statusFailedAt = 0;
+    checkBuild(st.build);
     syncAbr(st);
     if (typeof st.app === 'string' && st.app) lastPackage = st.app.split('/')[0]!;
     // 화질을 바꾸면 그림의 크기가 바뀐다(/api/encoder). 터치 좌표는 그 크기 기준이므로 여기서도 맞춘다.
@@ -728,12 +782,28 @@ const PERF_SAMPLE_MS = 10_000;
 const PERF_KEEP = 360; // 10초 × 360 = 한 시간
 interface PerfSample {
   t: number; fps: number; lagMs: number; dropped: number; backlog: number; rttMs: number; skipped: number;
+  /** 밀린 채 왔지만 버리지 않고 푼 수(webcodecs, `RendererStats.late`). 드롭 0 에 이것이 크면 링크가 끊겼다 이어진 것이다. */
+  late: number;
+  /**
+   * 혼잡으로 셀 사건의 수 — 하드웨어 경로는 적체가 한계를 넘어 재동기한 횟수, 스스로 버리는 소프트
+   * 경로는 버린 프레임 수(`overloadCount`). 드롭이 큰데 이것이 0 이면 그 드롭은 혼잡이 아니라
+   * 재동기(인코더 재시작)다 — 실차 #79 가 그랬고, 사다리와 abr 둘 다 그것에 속았다.
+   */
+  overloads: number;
   /** 그 10 초 동안 실제로 받은 kbps, 키프레임 수, 가장 큰 키프레임(바이트), 그때의 비트레이트 목표(kbps). */
   kbps: number; keys: number; keyBytes: number; targetKbps: number;
 }
+/**
+ * 이 렌더러에서 혼잡으로 셀 수. 하드웨어 경로는 밀린 것을 버리지 않으므로 "적체가 한계를 넘은 횟수"가
+ * 그 수이고(`overloads`), 스스로 버리는 소프트 경로에는 그 수가 없으므로 버린 프레임을 본다.
+ * 재동기(키프레임 대기) 때문에 버린 것은 어느 쪽에도 안 들어간다 — 그것이 #79 의 오진이었다.
+ */
+const overloadCount = (s: RendererStats): number => s.overloads ?? s.droppedFrames;
 const perf: PerfSample[] = [];
 let perfFrames = 0;
 let perfDropped = 0;
+let perfLate = 0;
+let perfOverloads = 0;
 let perfBytes = 0;
 let perfKeys = 0;
 let perfAt = Date.now();
@@ -752,6 +822,8 @@ setInterval(() => {
     backlog: s.backlog ?? 0,
     rttMs,
     skipped: s.skipped ?? 0,
+    late: (s.late ?? 0) - perfLate,
+    overloads: overloadCount(s) - perfOverloads,
     kbps: secs > 0 ? Math.round((rxBytes - perfBytes) * 8 / secs / 1000) : 0,
     keys: keyframesSeen - perfKeys,
     keyBytes: winKeyBytes,
@@ -759,6 +831,8 @@ setInterval(() => {
   });
   perfFrames = s.framesDecoded;
   perfDropped = s.droppedFrames;
+  perfLate = s.late ?? 0;
+  perfOverloads = overloadCount(s);
   perfBytes = rxBytes;
   perfKeys = keyframesSeen;
   winKeyBytes = 0;
@@ -796,6 +870,35 @@ qualityAuto.addEventListener('change', () => {
   try { localStorage.setItem('carcast.autoQuality', autoQuality ? '1' : '0'); } catch { /* 저장소 없음 */ }
 });
 
+// 인트라 리프레시(실험). 폰의 `intra_refresh=N` 은 IDR 한 장 대신 I-매크로블록을 N 프레임에 나눠 싣는다 —
+// 키프레임 버스트(1080p 에서 260~575 KB, 실차 #76)가 링크를 반 초 막는 것을 없애는 손잡이인데, 지금까지는
+// 노트북의 curl 로만 켤 수 있어서 실차에서 한 번도 못 돌았다. 여기서 켜고 끄면 폰이 encoder.conf 에 남긴다.
+// 켠 뒤에도 차가 부탁한 키프레임(kind 4)에는 IDR 이 온다 — 그것이 얼마나 자주 오는지가 곧 이 손잡이의 성적이다.
+const qualityIntra = $<HTMLInputElement>('quality-intra');
+const INTRA_REFRESH_FRAMES = 30;
+qualityIntra.addEventListener('change', () => { void applyIntraRefresh(qualityIntra.checked); });
+async function applyIntraRefresh(on: boolean): Promise<boolean> {
+  const n = on ? INTRA_REFRESH_FRAMES : 0;
+  try {
+    const r = await postEncoder(`intra_refresh=${n}`);
+    if (!r.ok) {
+      notice(`인트라 리프레시 변경 실패: ${r.error ?? '?'}`, 6000);
+      note(`encoder intra_refresh=${n} failed: ${r.error}`);
+      renderQuality(); // 체크 상태를 폰이 말한 값으로 되돌린다
+      return false;
+    }
+    note(`encoder intra_refresh=${n}${r.rebuilt === false ? ' (그대로)' : ''}`);
+    notice(on ? `인트라 리프레시 켬 (${INTRA_REFRESH_FRAMES} 프레임)` : '인트라 리프레시 끔 (키프레임)');
+    if (lastStatus) lastStatus.intraRefresh = typeof r.intraRefresh === 'number' ? r.intraRefresh : n;
+    renderQuality();
+    return true;
+  } catch (e) {
+    notice(`인트라 리프레시 요청 실패: ${String(e)}`, 6000);
+    renderQuality();
+    return false;
+  }
+}
+
 /** 지금 폰이 도는 설정에 맞는 프리셋, 없으면 null (PC 명령으로 띄운 별난 설정). */
 function currentPreset(): Preset | null {
   const st = lastStatus;
@@ -828,13 +931,32 @@ async function askForProfile(): Promise<void> {
   }
 }
 
+/**
+ * 인코더를 다시 세우는 요청. 폰은 재빌드를 2 초에 하나로 막는데(`DisplayVideoSource.RECONFIGURE_MIN_GAP_MS`),
+ * 차에서는 손잡이를 연달아 만지는 것이 보통이라 그 거절이 곧 **누른 것이 사라지는 일**이 된다 — 실차 #83 에서
+ * 인트라 리프레시를 켠 1.3 초 뒤에 끈 것이 이 거절에 걸렸고("encoder was rebuilt 1293 ms ago; wait"),
+ * 아무도 다시 안 보내서 그 세션 39 분이 통째로 켜진 채 돌았다. 그래서 이 거절만은 남은 시간을 기다렸다가
+ * 한 번 더 보낸다. 다른 실패는 그대로 올린다 — 되풀이해서 될 일이 아니다.
+ */
+const REBUILD_LOCK_MS = 2_000;
+async function postEncoder(query: string): Promise<any> {
+  const send = async (): Promise<any> => (await fetch(`/api/encoder?${query}`, { method: 'POST' })).json();
+  const r = await send();
+  const m = r?.ok === false && typeof r.error === 'string' ? /rebuilt (\d+) ms ago/.exec(r.error) : null;
+  if (!m) return r;
+  const waitMs = Math.max(250, REBUILD_LOCK_MS - Number(m[1]) + 200);
+  note(`encoder ${query}: 재빌드 잠금 — ${waitMs}ms 뒤 한 번 더`);
+  await new Promise((done) => setTimeout(done, waitMs));
+  return send();
+}
+
 let applyingPreset = false;
 async function applyPreset(p: Preset, why: string): Promise<boolean> {
   if (applyingPreset) return false;
   applyingPreset = true;
   try {
     const q = `width=${p.width}&height=${p.height}&fps=${p.fps}&bitrate=${p.bitrate}&profile=${wantedProfile()}`;
-    const r = await (await fetch(`/api/encoder?${q}`, { method: 'POST' })).json();
+    const r = await postEncoder(q);
     if (!r.ok) { notice(`화질 변경 실패: ${r.error ?? '?'}`, 6000); note(`encoder ${p.id} (${why}) failed: ${r.error}`); return false; }
     note(`encoder ${p.id} (${why}): ${r.width}x${r.height} ${r.fps}fps ${Math.round(r.bitrate / 1000)}k`);
     notice(`화질: ${p.label}`);
@@ -850,6 +972,32 @@ async function applyPreset(p: Preset, why: string): Promise<boolean> {
   }
 }
 
+// I 프레임 QP 하한(= 차가 부탁한 IDR 의 바이트 상한). 폰 벤치는 이 키가 먹는 것을 보였다(gradient 48.6 → 7 KB at 40,
+// car-tests/model-y §13) — 실제 화면에서 몇에 물리는지, 물린 IDR 의 화질 펄스가 눈에 띄는지는 차에서만 나온다.
+// 여기서 고르면 폰이 인코더를 다시 세우고(2 초 잠금, 차는 새 init 세그먼트를 받는다) encoder.conf 에 남긴다.
+const qualityQp = $<HTMLSelectElement>('quality-qp');
+qualityQp.addEventListener('change', () => { void applyQpIMin(Number(qualityQp.value)); });
+async function applyQpIMin(n: number): Promise<boolean> {
+  try {
+    const r = await postEncoder(`qp_i_min=${n}`);
+    if (!r.ok) {
+      notice(`키프레임 상한 변경 실패: ${r.error ?? '?'}`, 6000);
+      note(`encoder qp_i_min=${n} failed: ${r.error}`);
+      renderQuality(); // 폰이 말한 값으로 되돌린다
+      return false;
+    }
+    note(`encoder qp_i_min=${n}${r.rebuilt === false ? ' (그대로)' : ''}`);
+    notice(n > 0 ? `키프레임 I-QP 하한 ${n}` : '키프레임 상한 없음 (벤더 기본)');
+    if (lastStatus) lastStatus.qpIMin = typeof r.qpIMin === 'number' ? r.qpIMin : n;
+    renderQuality();
+    return true;
+  } catch (e) {
+    notice(`키프레임 상한 요청 실패: ${String(e)}`, 6000);
+    renderQuality();
+    return false;
+  }
+}
+
 function renderQuality(): void {
   if (qualityPanel.hidden) return;
   const cur = currentPreset();
@@ -858,6 +1006,22 @@ function renderQuality(): void {
     ? `지금: ${st.width}x${st.height} ${st.maxFps ?? '?'}fps ${st.bitRate ? Math.round(st.bitRate / 1000) + 'k' : ''}${cur ? '' : ' (프리셋 아님)'}`
     : '지금: 폰 응답 대기';
   for (const el of qualityGrid.querySelectorAll<HTMLElement>('.tile')) el.classList.toggle('held', el.dataset.preset === cur?.id);
+  // 폰이 말해 주는 값이 곧 체크 상태다. 말해 주지 않으면(클립 소스, 옛 서버) 손잡이를 잠근다 — 없는 것을 켜는 척하지 않는다.
+  const intra = typeof st?.intraRefresh === 'number' ? st.intraRefresh : null;
+  qualityIntra.disabled = intra === null;
+  qualityIntra.checked = (intra ?? 0) > 0;
+  const qp = typeof st?.qpIMin === 'number' ? st.qpIMin : null;
+  qualityQp.disabled = qp === null;
+  if (qp !== null) {
+    // 폰의 값이 목록에 없으면(curl 로 넣은 30 같은) 그 값을 항목으로 만들어 보여 준다 — 없는 것을 고른 척하지 않는다.
+    if (![...qualityQp.options].some((o) => o.value === String(qp))) {
+      const o = document.createElement('option');
+      o.value = String(qp);
+      o.textContent = String(qp);
+      qualityQp.append(o);
+    }
+    qualityQp.value = String(qp);
+  }
 }
 
 function openQuality(): void {
@@ -886,7 +1050,9 @@ let badSamples = 0;
 let lastStepDownAt = 0;
 let autoStepDowns = 0;
 function maybeStepDown(sample: PerfSample): void {
-  const bad = sample.backlog > 4 || sample.dropped > 0;
+  // 드롭이 아니라 `overloads` 를 본다: 인코더가 다시 서면 키프레임까지 버리는데(재동기), 그것은 이 차가
+  // 못 따라온다는 뜻이 아니다. #79 에서 그 드롭 643 장은 전부 재동기였고 적체 초과는 한 번도 없었다.
+  const bad = sample.backlog > 4 || sample.overloads > 0;
   badSamples = bad ? badSamples + 1 : 0;
   if (!autoQuality || badSamples < 2) return;
   // 비트가 먼저, 화소는 나중이다: 적응 비트레이트가 살아 있고 아직 바닥이 아니면 그쪽에 맡긴다 — 링크
@@ -931,7 +1097,8 @@ const abr = new AbrController();
 let abrDisabled = '';
 /** 테스트가 표본을 직접 넣는 동안 자기 시계로는 돌지 않는다. */
 let abrManual = false;
-let abrDropped = 0;
+/** 렌더러의 수에서 "링크가 막혔다"만 골라내는 자리(abr.ts). */
+const congestion = new CongestionReader();
 let abrBusy = false;
 let abrSentAt = 0;
 const abrActive = (): boolean => !abrDisabled && lastStatus?.bitrateLive === true && abr.nominal > 0;
@@ -981,10 +1148,10 @@ async function abrTick(sample: AbrSample): Promise<AbrAction | null> {
 // ping 과 같은 박자(2 초). rtt 는 그 사이 가장 최근 값, 드롭은 그 사이 늘어난 수.
 setInterval(() => {
   if (abrManual || !started) return;
-  const s = renderer.stats();
-  const dropped = Math.max(0, s.droppedFrames - abrDropped);
-  abrDropped = s.droppedFrames;
-  void abrTick({ nowMs: Date.now(), rttMs, dropped, backlog: s.backlog ?? 0 });
+  const signal = congestion.read(renderer.stats());
+  // null 은 "이 표본은 링크 이야기가 아니다"(재동기 중) — 규칙을 굶기는 편이 거짓 신호를 주는 것보다 낫다.
+  if (!signal) return;
+  void abrTick({ nowMs: Date.now(), rttMs, ...signal });
 }, 2000);
 
 /**
@@ -1028,9 +1195,13 @@ let lastLuma = -1;
 let lastLumaAt = 0;
 /** 테스트가 밝기를 손으로 넣는 동안(feedLuma) 디코더의 밝기는 무시한다 — 가짜 폰의 클립이 덮어쓰면 측정이 어긋난다. */
 let lumaFed = false;
-if ('onLuma' in renderer) {
-  renderer.onLuma = (l, at) => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
-}
+/**
+ * 밝기는 **측정하는 동안에만** 읽는다. 읽는 값 자체는 1x1 이지만, 그걸 얻으려면 프레임마다
+ * `drawImage` + `getImageData` 로 GPU 에서 되읽어야 한다 — 60fps 로 늘 돌리면 차의 MCU 에서 그 되읽기가
+ * 디코더 뒤에 적체로 쌓인다(실차 #79 는 1080p60 에서 적체 15~22 를 봤다). 측정은 사람이 누를 때만 돈다.
+ */
+const lumaSink = (l: number, at: number): void => { if (!lumaFed) { lastLuma = l; lastLumaAt = at; } };
+const watchLuma = (on: boolean): void => { if ('onLuma' in renderer) renderer.onLuma = on ? lumaSink : null; };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PROBE_ACTIVITY = 'com.carcast/.ui.LatencyProbeActivity';
@@ -1045,6 +1216,7 @@ async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () 
     return null;
   }
   probeRunning = true;
+  watchLuma(true);
   qualityProbe.disabled = true;
   qualityResult.textContent = '측정 중…';
   const trials = opts.trials ?? 10;
@@ -1086,6 +1258,7 @@ async function runProbe(opts: { trials?: number; launch?: boolean; onTouch?: () 
     return latencyProbe;
   } finally {
     probeRunning = false;
+    watchLuma(false);
     qualityProbe.disabled = false;
     if (launch) {
       // 측정 액티비티에서 나간다: 뒤로가기는 차 화면의 앱에 간다. 그 밑에 있던 앱이 돌아온다.
@@ -1193,6 +1366,8 @@ function perfTrend(): { early: number; recent: number; backlog: number } | null 
 // Stats line + a hook for the Playwright tests.
 const stats = () => ({
   renderer: renderer.name,
+  /** 이 페이지의 빌드. 폰의 `build` 와 다르면 리포트가 옛 페이지의 것이다(#83). */
+  webBuild: WEB_BUILD,
   /** 지금 경로와 그것을 어떻게 고르게 됐는지. 리포트만 보고도 "무엇으로 푼 세션인가"가 읽힌다. */
   path: path.id,
   pathAuto: chosen.auto,
@@ -1229,12 +1404,16 @@ const stats = () => ({
   stats, start, events, perf,
   restartVideo: () => videoWs.restart(),
   requestKeyframe: () => requestKeyframe('test'),
+  applyIntraRefresh,
+  applyQpIMin,
   // 화질·지연 측정을 테스트에서 몰기 위한 고리. feedLuma 는 디코더 대신 밝기를 넣어 준다(가짜 폰은 그림을 못 뒤집는다).
   applyPreset: (id: string) => { const p = PRESETS.find((x) => x.id === id); return p ? applyPreset(p, 'test') : Promise.resolve(false); },
   choosePath: (id: string | null) => choosePath(id ? (PATHS.find((x) => x.id === id) ?? null) : null),
   stepDown: (why = 'test') => stepDown(why),
   // 적응 비트레이트를 테스트가 자기 시계로 몰기 위한 고리: 첫 호출부터 자동 박자는 멈춘다.
   abrTick: (sample: AbrSample) => { abrManual = true; return abrTick(sample); },
+  // 렌더러의 수를 혼잡 신호로 읽는 자리(재동기 중에는 null). 차에서만 보이던 되먹임이라 테스트가 직접 민다.
+  congestion: (s: RendererSignal) => { abrManual = true; return congestion.read(s); },
   runProbe: (opts: { trials?: number; launch?: boolean; onTouch?: () => void }) => runProbe(opts),
   feedLuma: (l: number) => { lumaFed = true; lastLuma = l; lastLumaAt = performance.now(); },
   // 손가락이 눌린 채로 소켓이 끊기는 상황을 테스트에서 만들기 위한 고리 (차에서 쓰는 길은 아니다).
@@ -1248,6 +1427,7 @@ setInterval(() => {
     s.videoWs.connects > 1 ? `↻${s.videoWs.connects - 1}` : '',
     s.recoveries ? `복구${s.recoveries}` : '',
     s.droppedFrames ? `드롭${s.droppedFrames}` : '',
+    s.late ? `늦음${s.late}` : '',
     s.appOnPhone ? '📱폰이 앱을 가져감' : '',
     s.idleMs > 1500 ? `폰 무응답 ${Math.round(s.idleMs / 1000)}s` : '',
     s.lastError ? `err ${s.lastError}` : '',
@@ -1267,11 +1447,12 @@ setInterval(() => {
 $('btn-save').addEventListener('click', async () => {
   const s = stats();
   const st = lastStatus;
+  const stale = st && s.webBuild && st.build && st.build !== s.webBuild ? ` ⚠페이지 build=${s.webBuild}` : '';
   const phone = st ? ` | 폰 build=${st.build ?? '?'} ${st.interactive === false ? '잠듦' : '깨어있음'} 화면${st.screenOn === false ? 'OFF' : 'ON'}${st.sleepRecoveries ? ` 되살림${st.sleepRecoveries}` : ''}${st.keptActive ? ` 활성유지${st.keptActive}` : ''} idle${Math.round((s.idleMs ?? 0) / 100) / 10}s` : '';
   const trend = s.perf ? ` 추이 ${s.perf.early}→${s.perf.recent}fps 적체${s.perf.backlog} (${Math.round(perf.length * PERF_SAMPLE_MS / 6000) / 10}분)` : '';
   const rtt = s.rttMs >= 0 ? ` rtt ${s.rttMs}ms` : '';
   const e2e = s.latencyProbe && s.latencyProbe.n ? ` 끝까지${s.latencyProbe.medianMs}ms` : '';
-  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}`;
+  const summary = `session ${s.renderer} ${s.fps}fps lag ${Math.round(s.latencyMs)}ms${rtt} frames ${s.framesDecoded} packets ${s.packets} ws↻${s.videoWs.connects - 1}/${s.videoWs.failures} 복구${s.recoveries} 드롭${s.droppedFrames}${s.late ? ` 늦음${s.late}` : ''}${s.overloads ? ` 적체초과${s.overloads}` : ''}${s.keyframeRequests ? ` 키프레임요청${s.keyframeRequests}` : ''}${s.abr.cuts ? ` 비트↓${s.abr.cuts}↑${s.abr.raises}` : ''}${e2e}${s.lastError ? ` err=${s.lastError}` : ''}${trend}${phone}${stale}`;
   // 폰 쪽 상태를 같이 싣는다. 실차 리포트 #26·#27 은 차 쪽 수치만 담고 있어서 "전원 버튼을 눌렀을 때
   // 폰이 실제로 잠들었는지, 패널만 꺼졌는지"를 끝내 가릴 수 없었다 — 원인을 가르는 바로 그 정보였다.
   // 대응책이 있는지도 같이 남긴다. 소프트 디코딩이 버거운 것으로 드러났을 때 다음 수가 무엇이냐는

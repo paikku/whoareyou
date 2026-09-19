@@ -15,6 +15,7 @@
 import type { MediaPacket } from '../protocol';
 import { MediaType } from '../protocol';
 import type { Renderer, RendererStats } from './types';
+import { versioned } from '../build';
 import { mdatNals, parseAvcC, toAnnexB, type AvcConfig } from '../h264/fmp4';
 import { YuvGl } from '../h264/yuv-gl';
 
@@ -26,15 +27,6 @@ export function h264Supported(): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * 페이지가 받은 빌드 sha 로 URL 을 버전 지정한다 — 폰 서버는 `?v=<sha>` 가 맞는 자산을 1 년 immutable 로
- * 주므로, 175 KB 워커를 차에 탈 때마다 다시 받지 않는다. sha 가 안 채워진 곳(가짜 폰)에서는 그대로 둔다.
- */
-function versioned(url: string): string {
-  const v = document.querySelector('meta[name="carcast-build"]')?.getAttribute('content') ?? '';
-  return v && v !== '__BUILD__' ? `${url}?v=${encodeURIComponent(v)}` : url;
 }
 
 /**

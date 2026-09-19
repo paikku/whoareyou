@@ -30,6 +30,45 @@ test('화질 시트에서 고르면 폰 인코더 설정이 바뀌고 터치 좌
   expect(s.encoder).toMatchObject({ width: 1600, height: 900, fps: 30 });
 });
 
+// 인트라 리프레시 토글: 폰이 말한 값으로 그려지고, 누르면 `intra_refresh=30|0` 이 POST 로 간다. 실차에서는
+// 이 손잡이가 "키프레임 버스트가 범인인가"를 가르는 실험이다(car-tests/model-y §11).
+test('인트라 리프레시 토글은 폰의 값을 따르고, 누르면 인코더에 그 값이 간다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+  await page.locator('#btn-quality').click();
+  const toggle = page.locator('#quality-intra');
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect.poll(async () => (await statusOf(page)).intraRefresh).toBe(30);
+  expect((await statusOf(page)).encoderRestarts).toBe(1);
+  await expect(page.locator('#stats')).toContainText('인트라 리프레시 켬');
+  await toggle.uncheck();
+  await expect.poll(async () => (await statusOf(page)).intraRefresh).toBe(0);
+  await expect(toggle).not.toBeChecked();
+});
+
+// 키프레임 크기 상한(I-QP 하한): 폰이 말한 값(기본 28)으로 그려지고, 고르면 `qp_i_min=N` 이 POST 로 가 인코더가
+// 다시 선다. 실차에서 "실제 화면의 IDR 은 몇에서 물리는가"를 노트북 없이 돌리는 손잡이다(car-tests/model-y §13).
+test('키프레임 상한 선택은 폰의 값을 따르고, 고르면 인코더가 그 값으로 다시 선다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+  await page.locator('#btn-quality').click();
+  const sel = page.locator('#quality-qp');
+  await expect(sel).toBeEnabled();
+  await expect(sel).toHaveValue('28');
+  await sel.selectOption('40');
+  await expect.poll(async () => (await statusOf(page)).qpIMin).toBe(40);
+  expect((await statusOf(page)).encoderRestarts).toBe(1);
+  await expect(page.locator('#stats')).toContainText('I-QP 하한 40');
+  await sel.selectOption('0');
+  await expect.poll(async () => (await statusOf(page)).qpIMin).toBe(0);
+  await expect(sel).toHaveValue('0');
+  await expect(page.locator('#stats')).toContainText('벤더 기본');
+});
+
 test('자동 내리기는 한 단계 아래 프리셋으로 가고, 맨 아래에서는 손대지 않는다', async ({ page }) => {
   await page.goto('/');
   await startPlayback(page);
@@ -123,6 +162,46 @@ test('경로의 천장 위 설정으로 도는 폰에 들어오면 한 단계 �
   await expect(page.locator('#stats')).toContainText('감당하지 못합니다');
   // 성능 판단이 아니라 능력 판단이므로 자동 내리기 횟수에는 넣지 않는다.
   expect((await stats(page) as any).autoStepDowns).toBe(0);
+});
+
+// 실차 #83: 인트라 리프레시를 켜고 1.3 초 뒤에 껐는데, 폰의 재빌드 잠금(2 초)이 두 번째를 거절했고
+// ("encoder was rebuilt 1293 ms ago; wait") 아무도 다시 안 보내서 그 세션 39 분이 통째로 켜진 채 돌았다.
+// 차에서는 손잡이를 연달아 만지는 것이 보통이라, 이 거절만은 기다렸다가 한 번 더 보낸다.
+test('재빌드 잠금에 걸린 손잡이는 잠금이 풀리면 스스로 다시 보낸다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  await page.evaluate(() => fetch('/api/reset'));
+  await page.evaluate(() => fetch('/api/rebuild-lock?ms=2000', { method: 'POST' }));
+  // 잠금이 방금 시작됐으므로 이 첫 요청부터 거절당한다 — 그래도 결과는 "켜졌다"여야 한다.
+  expect(await page.evaluate(() => (window as any).__carcast.applyIntraRefresh(true))).toBe(true);
+  expect((await statusOf(page)).intraRefresh).toBe(30);
+  const log = await page.evaluate(() => ((window as any).__carcast.events as string[]).join('\n'));
+  expect(log).toContain('재빌드 잠금');
+});
+
+// 실차 #79: 2.5 분에 자르기 12 번, 올리기 0 번. 인코더를 다시 세울 때마다(프리셋·I-QP 변경) 20 초 안에
+// 바닥(공칭의 40%)이었고, 링크는 멀쩡했다(rtt 12~15ms, 70 Mbps). 자른 이유는 전부 재동기 — 새 init 이 오면
+// 디코더를 다시 세우고 키프레임까지 오는 것을 버리는데, 그 버린 수가 그대로 혼잡으로 읽혔다. 차에서만 보이던
+// 되먹임이라 신호를 읽는 자리를 따로 떼어(abr.ts `CongestionReader`) 여기서 직접 민다.
+test('재동기 때문에 버린 프레임과 그 뒤의 버스트는 abr 이 혼잡으로 읽지 않는다', async ({ page }) => {
+  await page.goto('/');
+  await startPlayback(page);
+  const read = (s: Record<string, unknown>) => page.evaluate((x) => (window as any).__carcast.congestion(x), s);
+  // 기준을 세운다(첫 표본은 그 자체가 기준이다).
+  expect(await read({ droppedFrames: 0, late: 0, overloads: 0, backlog: 0 })).toEqual({ dropped: 0, backlog: 0 });
+  // 키프레임을 기다리며 120 장을 버렸다 — 이 표본은 링크 이야기가 아니므로 건너뛴다.
+  expect(await read({ droppedFrames: 120, late: 0, overloads: 0, waitingForKey: true, backlog: 0 })).toBeNull();
+  // 키프레임이 오는 순간 그동안 쌓인 것이 한꺼번에 들어와 90 장이 "늦음"으로 보인다. 그것도 우리가 만든 것이다.
+  expect(await read({ droppedFrames: 120, late: 90, overloads: 0, backlog: 3 })).toEqual({ dropped: 0, backlog: 3 });
+  // 한두 장 늦는 것은 60fps 의 평범한 떨림이라 25% 를 깎을 이유가 아니다.
+  expect(await read({ droppedFrames: 120, late: 93, overloads: 0, backlog: 0 })).toEqual({ dropped: 0, backlog: 0 });
+  // 적체가 한계를 넘은 것은 진짜 신호다: 기다리는 동안 봤어도 잃지 않고 다음 표본에 실어 보낸다.
+  expect(await read({ droppedFrames: 300, late: 93, overloads: 1, waitingForKey: true, backlog: 31 })).toBeNull();
+  expect(await read({ droppedFrames: 300, late: 93, overloads: 1, backlog: 0 })).toEqual({ dropped: 1, backlog: 0 });
+  // 문턱을 넘는 "늦음"은 그대로 간다.
+  expect(await read({ droppedFrames: 300, late: 103, overloads: 1, backlog: 0 })).toEqual({ dropped: 10, backlog: 0 });
+  // 스스로 버리는 소프트 경로(h264, overloads 없음)에서는 예전처럼 드롭을 본다.
+  expect(await read({ droppedFrames: 305, late: 103, backlog: 0 })).toEqual({ dropped: 5, backlog: 0 });
 });
 
 // 적응 비트레이트(abr.ts). 사다리보다 앞에 서는 층이다: 링크가 막히면(rtt 가 기준의 두 배 넘게 뛰거나 프레임을

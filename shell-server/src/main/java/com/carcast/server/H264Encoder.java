@@ -59,14 +59,22 @@ final class H264Encoder {
     /** Intra-refresh period in frames (0: off): spread the I-macroblocks over this many frames instead of one IDR. */
     private final int intraRefresh;
     /**
-     * Largest QP the encoder may spend on an I-frame (0: vendor's choice), i.e. a floor on how *coarse* an IDR
-     * is and therefore a cap on its size. Why: on the S26U an IDR at 1080p came out at 260 KB on the 10 s GOP and
-     * **550~575 KB when the car asked for one** — while the target bitrate was being cut to 6.7 Mbps (report #76).
-     * Rate control does not shrink a requested IDR with the target; each one was 0.4 s of link and a half-second
-     * of dropped P-frames on the car, and the car asked for the next one before that one had landed. Bounding
-     * the QP bounds the bytes: the first picture after a keyframe is a little coarser and the P-frames sharpen
-     * it within a few frames, which is invisible next to a stalled screen. See docs/car-tests/model-y §11.
+     * QP bounds for I-frames (H.264 QP 0..51, higher = coarser = fewer bytes; 0 = do not ask).
+     *
+     * <p>{@code qpIMin} is the one that caps the IDR's <em>size</em>: it forbids the encoder from spending a finer
+     * QP than this on an I-frame, so the bytes have a ceiling. Why: on the S26U an IDR at 1080p came out at 260 KB on
+     * the 10 s GOP and **550~575 KB when the car asked for one** — while the target bitrate was being cut to
+     * 6.7 Mbps (report #76). Rate control does not shrink a requested IDR with the target; each one was a
+     * half-second of dropped P-frames on the car, and the car asked for the next one before that one had landed.
+     * With a QP floor the first picture after a keyframe is a little coarser and the P-frames sharpen it within a
+     * few frames, which is invisible next to a stalled screen. See docs/car-tests/model-y §11.
+     *
+     * <p>{@code qpIMax} is the opposite bound (never coarser than this) — a <em>floor</em> on IDR bytes, which is
+     * a quality guarantee, not a size cap. It shipped first as the default "IDR cap" (build e0ee6d2) with the
+     * direction inverted: the phone bench measured a requested 1080p IDR at 104 KB with qp_i_max=28 and 49 KB
+     * without (car-tests/model-y §13). Kept as a knob, off by default.
      */
+    private final int qpIMin;
     private final int qpIMax;
     private final Output output;
     private MediaCodec codec;
@@ -79,7 +87,7 @@ final class H264Encoder {
     private volatile String profileNote = "";
 
     H264Encoder(int width, int height, int bitRate, int maxFps, boolean constrainedBaseline, String bitrateMode, int intraRefresh,
-                int qpIMax, Output output) {
+                int qpIMin, int qpIMax, Output output) {
         this.width = width;
         this.height = height;
         this.bitRate = bitRate;
@@ -87,6 +95,7 @@ final class H264Encoder {
         this.constrainedBaseline = constrainedBaseline;
         this.bitrateMode = bitrateMode == null ? "" : bitrateMode;
         this.intraRefresh = intraRefresh;
+        this.qpIMin = qpIMin;
         this.qpIMax = qpIMax;
         this.output = output;
     }
@@ -103,18 +112,18 @@ final class H264Encoder {
      */
     Surface open() throws IOException {
         // Three tries, each asking for less: everything (profile, mode, intra refresh, low-latency hints, I-frame QP
-        // cap), then the same without the QP cap (it is the newest key and the one a vendor is likeliest to reject),
-        // then the vendor's bare defaults. Everything asked for is a nicety; a picture is not.
-        String asked = describe(constrainedBaseline, bitrateMode, intraRefresh, qpIMax);
-        String askedNoQp = describe(constrainedBaseline, bitrateMode, intraRefresh, 0);
+        // bounds), then the same without the QP bounds (they are the newest keys and the ones a vendor is likeliest
+        // to reject), then the vendor's bare defaults. Everything asked for is a nicety; a picture is not.
+        String asked = describe(constrainedBaseline, bitrateMode, intraRefresh, qpIMin, qpIMax);
+        String askedNoQp = describe(constrainedBaseline, bitrateMode, intraRefresh, 0, 0);
         Object[][] attempts = {
-                {format(constrainedBaseline, bitrateMode, intraRefresh, true, qpIMax), asked.isEmpty() ? "저지연 요청" : asked + " 요청 (SPS 확인 필요)"},
-                {format(constrainedBaseline, bitrateMode, intraRefresh, true, 0), (askedNoQp.isEmpty() ? "저지연" : askedNoQp) + " 요청, I-QP 상한 거부됨"},
-                {format(false, "", 0, false, 0), (asked.isEmpty() ? "저지연" : asked) + " 거부됨 → 벤더 기본값"},
+                {format(constrainedBaseline, bitrateMode, intraRefresh, true, qpIMin, qpIMax), asked.isEmpty() ? "저지연 요청" : asked + " 요청 (SPS 확인 필요)"},
+                {format(constrainedBaseline, bitrateMode, intraRefresh, true, 0, 0), (askedNoQp.isEmpty() ? "저지연" : askedNoQp) + " 요청, I-QP 경계 거부됨"},
+                {format(false, "", 0, false, 0, 0), (asked.isEmpty() ? "저지연" : asked) + " 거부됨 → 벤더 기본값"},
         };
         Exception last = null;
         for (int i = 0; i < attempts.length; i++) {
-            if (qpIMax <= 0 && i == 1) {
+            if (qpIMin <= 0 && qpIMax <= 0 && i == 1) {
                 continue; // nothing to drop between the first and the last try
             }
             codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
@@ -149,7 +158,7 @@ final class H264Encoder {
         return H264Level.levelFor(width, height, maxFps > 0 ? maxFps : 60);
     }
 
-    private String describe(boolean baseline, String mode, int refresh, int qpMax) {
+    private String describe(boolean baseline, String mode, int refresh, int qpMin, int qpMax) {
         StringBuilder sb = new StringBuilder();
         if (baseline) {
             sb.append("constrained-baseline ").append(H264Level.describe(level()));
@@ -160,14 +169,20 @@ final class H264Encoder {
         if (refresh > 0) {
             sb.append(sb.length() > 0 ? "+" : "").append("intra-refresh ").append(refresh);
         }
+        if (qpMin > 0) {
+            sb.append(sb.length() > 0 ? "+" : "").append("I-QP≥").append(qpMin);
+        }
         if (qpMax > 0) {
             sb.append(sb.length() > 0 ? "+" : "").append("I-QP≤").append(qpMax);
         }
         return sb.toString();
     }
 
-    private MediaFormat format(boolean baseline, String mode, int refresh, boolean lowLatency, int qpMax) {
+    private MediaFormat format(boolean baseline, String mode, int refresh, boolean lowLatency, int qpMin, int qpMax) {
         MediaFormat format = format();
+        if (qpMin > 0) {
+            format.setInteger(MediaFormat.KEY_VIDEO_QP_I_MIN, qpMin);
+        }
         if (qpMax > 0) {
             format.setInteger(MediaFormat.KEY_VIDEO_QP_I_MAX, qpMax);
         }

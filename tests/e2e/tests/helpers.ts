@@ -21,6 +21,8 @@ export interface ClientStats {
   keyframeRequests: number;
   touch: { batches: number; samples: number };
   skipped?: number;
+  /** 밀린 채 왔지만 버리지 않고 푼 수(webcodecs 만). */
+  late?: number;
   offscreen?: boolean;
   autoStepDowns: number;
   latencyProbe: any;

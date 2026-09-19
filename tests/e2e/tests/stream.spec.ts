@@ -39,4 +39,11 @@ test('기본은 캔버스 — 아무것도 누르지 않아도 그려진다', as
   // 5 초면 30fps 에서 150 장. 소프트 디코딩이라 여유를 두고 본다.
   expect(b.framesDecoded - a.framesDecoded).toBeGreaterThan(100);
   expect(b.videoWs.open).toBe(true);
+  // 하드웨어 경로는 밀린 프레임을 버리지 않고 `late` 로 센다(webcodecs.ts). 순한 링크에서는 둘 다 0 이어야 하고,
+  // 그 칸이 있어야 실차 리포트에서 "버렸다" 와 "늦게 왔다" 가 갈린다.
+  if (b.renderer === 'webcodecs') {
+    expect(typeof b.late).toBe('number');
+    expect(b.late).toBe(0);
+    expect(b.droppedFrames).toBe(0);
+  }
 });

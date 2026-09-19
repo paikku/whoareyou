@@ -326,6 +326,13 @@ class StreamSession(
             if (!remote.startsWith("127.")) Json.obj(mapOf("ok" to false, "error" to "loopback only"))
             else installTls(String(body, Charsets.UTF_8))
         }
+        /**
+         * A blob of N bytes, so the car can time how long N bytes take on *this* link with nothing else in the way
+         * (diag "링크"). An IDR is one packet of 100~575 KB; whether that is 50 ms or 500 ms is a property of the
+         * hotspot link, not of the encoder, and until now it was only ever inferred from stalls. Random-looking
+         * ASCII so no layer can compress it away; capped at 4 MB.
+         */
+        path == "/api/blob" && method == "GET" -> blob((query["bytes"]?.toIntOrNull() ?: 65536).coerceIn(16, 4 shl 20))
         path == "/api/report" && method == "POST" -> {
             val r = reports.add(String(body, Charsets.UTF_8), remote)
             if (r == null) Json.obj(mapOf("ok" to false, "error" to "body is not a JSON object"))
@@ -427,6 +434,19 @@ class StreamSession(
         return Json.obj(fields)
     }
 
+    private fun blob(bytes: Int): String {
+        val head = "{\"bytes\":$bytes,\"data\":\""
+        val tail = "\"}"
+        val n = (bytes - head.length - tail.length).coerceAtLeast(0)
+        val sb = StringBuilder(head.length + n + tail.length).append(head)
+        var x = 0x9E3779B9.toInt() xor bytes
+        repeat(n) {
+            x = x * 1103515245 + 12345
+            sb.append(BLOB_ALPHABET[(x ushr 16) and 63])
+        }
+        return sb.append(tail).toString()
+    }
+
     /**
      * Non-loopback IPv4 addresses of this host, "iface=addr". The diag page uses them as the control
      * group: the car must NOT be able to open http://<hotspot address>:port, only the tun address.
@@ -440,6 +460,7 @@ class StreamSession(
 
     companion object {
         private const val TAG = "StreamSession"
+        private const val BLOB_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         /** 같은 곳에서 계속 들어오는 accept 는 이 간격으로만 한 줄 남긴다(로그가 밀려나지 않게). */
         private const val ACCEPT_LOG_EVERY = 100L
         const val TEST_CLIP = "test-720p30.cmp4"

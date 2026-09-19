@@ -30,8 +30,26 @@ export function webcodecsSupported(): boolean {
   return typeof (globalThis as any).VideoDecoder === 'function' && typeof VideoFrame === 'function';
 }
 
-/** 디코더가 이만큼 밀리면 버린다 — h264(WASM) 경로와 같은 규칙, 같은 이유(지연이 자라는 것보다 낫다). */
+/**
+ * 이만큼 밀리면 "늦었다"고 센다(`stats.late`) — 그러나 **버리지는 않는다.**
+ *
+ * 왜 바뀌었나: 예전에는 h264(WASM) 경로와 같은 규칙으로 8 장 넘게 밀리면 P 프레임을 키프레임까지 버리고
+ * 폰에 IDR 을 부탁했다. 소프트 디코더에서는 그것이 맞다 — 720p 한 장에 10 ms 라 밀린 것을 따라잡을 길이
+ * 버리는 것뿐이다. 하드웨어 디코더는 한 장에 1.1 ms 다(실차 #69): 8 장 밀린 것은 9 ms 어치 일감이지
+ * 참조 사슬을 끊을 이유가 아니다. 그런데 끊으면 대가가 크다 — IDR 은 1080p 에서 260~575 KB 이고
+ * (실차 #76) 10 Mbps 링크에서 반 초짜리 패킷 하나가 되어, 그동안 차는 P 프레임을 전부 버리고, 도착하면
+ * 다음 딸꾹질에 또 부탁한다. 12 초에 여섯 번이었다. 되먹임의 첫 고리가 바로 이 "8 장이면 버린다" 였다:
+ * 10 초 GOP 의 IDR(261 KB) 이 링크를 200 ms 막으면 그 뒤에 12 장이 한꺼번에 오고, 그 12 장이 이 문턱을
+ * 넘겼다. 그래서 하드웨어 경로는 밀린 것을 **그냥 푼다** — 30 장이 밀려도 하드웨어는 50 ms 안에 따라잡고,
+ * 그 사이의 지연은 `latencyMs` 로 보이며 `late` 가 링크가 막혔다는 신호로 abr 에 간다(main.ts).
+ */
 const MAX_BACKLOG = 8;
+/**
+ * 이 위는 따라잡는 문제가 아니라 무언가 잘못된 것이다(60fps 로 반 초). 그때만 예전처럼 키프레임까지
+ * 버리고 하나 부탁한다 — 소프트웨어 WebCodecs 로 물러난 차가 못 따라올 때 메모리가 자라지 않게 하는
+ * 안전망이지, 정상 동작의 일부가 아니다.
+ */
+const HARD_BACKLOG = 30;
 /** 디코더를 이만큼 세워 보고도 안 되면 멈춘다 — 무한히 다시 세우느니 이유를 남기는 편이 낫다. */
 const MAX_CONFIGURE_TRIES = 3;
 
@@ -53,7 +71,7 @@ export class WebCodecsRenderer implements Renderer {
   private needKey = false;
   /** 넣었는데 아직 그림으로 안 나온 것들의 도착 시각 — 지연과 적체를 여기서 읽는다. */
   private inFlight: number[] = [];
-  private st: RendererStats = { framesDecoded: 0, fps: 0, latencyMs: 0, droppedFrames: 0, lastError: '', hardware: undefined };
+  private st: RendererStats = { framesDecoded: 0, fps: 0, latencyMs: 0, droppedFrames: 0, lastError: '', hardware: undefined, late: 0, overloads: 0 };
   private times: number[] = [];
   /** 밝기를 읽을 때만 쓰는 1x1 캔버스 — 프레임마다 전체를 읽지 않는다. */
   private lumaCanvas: HTMLCanvasElement | null = null;
@@ -102,8 +120,7 @@ export class WebCodecsRenderer implements Renderer {
       this.configured = true;
       this.st.hardware = hardware;
       // 새 디코더는 키프레임부터 시작해야 한다. GOP 가 10초라 부탁하는 편이 빠르다.
-      this.needKey = true;
-      this.onNeedKeyframe?.();
+      this.beginResync(false);
     } catch (e) {
       this.configureFailures++;
       this.st.lastError = `configure 실패: ${String(e)}`;
@@ -200,11 +217,15 @@ export class WebCodecsRenderer implements Renderer {
     const key = packet.type === MediaType.Key;
     if (key) {
       this.needKey = false;
-    } else if (this.needKey || this.inFlight.length > MAX_BACKLOG) {
-      // 밀렸다: 키프레임까지 버리고 폰에 하나 달라고 한다. 깨진 참조를 디코더에 넣어 봐야 그림만 깨진다.
-      if (!this.needKey) { this.needKey = true; this.onNeedKeyframe?.(); }
+    } else if (this.needKey || this.inFlight.length > HARD_BACKLOG) {
+      // 참조가 끊겨 있거나(새 디코더·오류 뒤) 무언가 잘못됐다: 키프레임까지 버리고 폰에 하나 달라고 한다.
+      // 깨진 참조를 디코더에 넣어 봐야 그림만 깨진다. 단순히 밀린 것은 여기로 오지 않는다(MAX_BACKLOG 참고).
+      if (!this.needKey) this.beginResync(true);
       this.st.droppedFrames++;
       return;
+    } else if (this.inFlight.length > MAX_BACKLOG) {
+      // 늦게 왔다(한꺼번에 도착했다). 푼다 — 세기만 한다.
+      this.st.late = (this.st.late ?? 0) + 1;
     }
 
     const data = mdatBytes(packet.payload);
@@ -215,9 +236,25 @@ export class WebCodecsRenderer implements Renderer {
     } catch (e) {
       this.inFlight.pop();
       this.st.lastError = `decode 실패: ${String(e)}`;
-      this.needKey = true;
-      this.onNeedKeyframe?.();
+      this.beginResync(false);
     }
+  }
+
+  /**
+   * 참조 사슬을 버리고 다음 키프레임부터 다시 시작한다.
+   *
+   * `inFlight` 도 같이 비운다. 그 안의 시각들은 "넣었는데 아직 안 나온 것"인데, 재동기 뒤에는 그 중
+   * 무엇이 그림으로 나올지 알 수 없다 — 남겨 두면 두 가지가 거짓말을 한다. `latencyMs` 가 옛 시각과
+   * 비교되어 0.5 초짜리 지연으로 보이고(실차 #79 의 "lag 585ms"), `backlog` 가 한계 위에 머물러
+   * 재동기가 스스로를 다시 부른다. 나올 그림은 그대로 그려지고, 다만 그 한 장의 지연만 안 세게 된다.
+   *
+   * `overload` 는 "적체가 한계를 넘어서" 왔는가다 — 그것만 abr 에 혼잡으로 간다(main.ts).
+   */
+  private beginResync(overload: boolean): void {
+    this.needKey = true;
+    this.inFlight = [];
+    if (overload) this.st.overloads = (this.st.overloads ?? 0) + 1;
+    this.onNeedKeyframe?.();
   }
 
   /** 캔버스는 자동재생 제한을 받지 않는다 — 첫 터치 없이 이미 그려져 있다. */
@@ -233,7 +270,7 @@ export class WebCodecsRenderer implements Renderer {
     const now = performance.now();
     while (this.times.length && now - this.times[0]! > 1000) this.times.shift();
     this.st.fps = this.times.length;
-    return { ...this.st, backlog: this.inFlight.length };
+    return { ...this.st, backlog: this.inFlight.length, waitingForKey: this.needKey };
   }
 
   destroy(): void {

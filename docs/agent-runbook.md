@@ -150,10 +150,18 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
 
 - **두 층이 순서대로 움직인다.** 먼저 **적응 비트레이트**(`web/src/abr.ts`, 배선은 `main.ts` "적응 비트레이트"):
   차가 rtt(2 초 ping)와 버린 프레임을 보고 비트레이트만 재빌드 없이 내린다(`POST /api/encoder?bitrate=` →
-  `rebuilt:false`). 화질 시트의 "자동" 토글과 무관하게 늘 돈다(토글은 사다리만). 그 다음이 **사다리**
+  `rebuilt:false`). **무엇을 "버린 프레임"으로 세는지가 이 층의 급소다**(`CongestionReader`): 재동기 중
+  (키프레임 대기)의 표본은 건너뛰고, 크기는 버린 장수가 아니라 적체가 한계를 넘은 횟수(`overloads`)로 읽으며,
+  재동기 직후의 "늦음" 버스트도 안 센다 — 그러지 않았더니 실차 #79 에서 인코더가 다시 설 때마다 20 초 만에
+  바닥이었다(자르기 12·올리기 0, car-tests §14). 화질 시트의 "자동" 토글과 무관하게 늘 돈다(토글은 사다리만). 그 다음이 **사다리**
   (`maybeStepDown`, 토글이 켜져 있을 때만): abr 이 바닥(공칭의 40%)에 닿은 뒤에도 나쁜 표본이 이어질 때만
-  해상도·fps 를 한 칸 내린다. 비트가 먼저, 화소는 나중 — 실차 #70 에서 1080p60 을 무너뜨린 것은
+  해상도·fps 를 한 칸 내린다. 여기서도 "나쁜 표본"은 드롭이 아니라 perf 의 `overloads` 다(같은 이유). 비트가 먼저, 화소는 나중 — 실차 #70 에서 1080p60 을 무너뜨린 것은
   디코더가 아니라 링크였다(car-tests/model-y §9)
+- **리포트를 읽기 전에 `⚠페이지 build=` 부터 본다.** 그 표시가 있으면 폰과 차의 빌드가 다르다 — 차의 탭이
+  옛 자바스크립트로 돌고 있었다는 뜻이고, 그 세션의 차 쪽 수치는 **그 옛 빌드의 것**이다(실차 #83, car-tests §15).
+  이 빌드부터 페이지가 빌드당 한 번 스스로 다시 열지만(`main.ts` `checkBuild`), 표시가 보이면 그 세션은 버린다.
+- **인코더를 다시 세우는 요청은 2 초에 하나다**(`DisplayVideoSource.RECONFIGURE_MIN_GAP_MS`). 차의 손잡이는
+  그 거절을 만나면 남은 시간을 기다렸다가 한 번 더 보낸다(`postEncoder`) — 안 그러면 누른 것이 조용히 사라진다(#83).
 - **폰 쪽 계측은 `/api/status.timing`** (`FrameTiming`): `encodeMs` 는 합성 → 인코더 출력, `touchToFrameMs` 는
   터치 → 다음 프레임. 인코더 손잡이(`H264Encoder.format` 의 저지연 키·`KEY_OPERATING_RATE`)를 만졌으면 **차 없이**
   이 숫자로 판정한다. 대조군은 §9 의 표(720p30 14 ms, 720p60·900p60 11.5 ms)
@@ -161,11 +169,47 @@ TCP 모드 포트는 adbd 가 다시 뜰 때 `service.adb.tcp.port` 로 되살�
   `targetKbps`(abr 목표), 그리고 `rttMs`·`dropped`·`backlog`. rtt 가 뛰면서 `keyBytes` 가 크면 IDR 버스트,
   backlog 가 8 을 넘으면 디코더. 이벤트에는 `abr ↓/↑`, `keyframe request (…, 백오프 …)`, `init segment avc1.…` 가 남는다
 - **손잡이 (전부 `POST /api/encoder`, 크기·fps·프로파일·인트라 리프레시는 재빌드, 비트레이트만은 즉시):**
-  `?bitrate=` · `?qp_i_max=28`(I 프레임 QP 상한 = IDR 크기 상한, 기본 28, 0 이면 벤더 기본; 실차 #76 이 그 이유) ·
+  `?bitrate=` · `?qp_i_min=28`(I 프레임 QP **하한** = IDR **크기 상한**, 기본 28, 0 이면 벤더 기본; 실차 #76 이 그 이유;
+  화질 시트의 "키프레임 크기 상한" 이 같은 것을 POST 한다) ·
+  `?qp_i_max=N`(반대 경계 = 화질 하한, 기본 0 — 첫 빌드가 이것을 크기 상한으로 잘못 실어 IDR 이 두 배가 됐다, car-tests §13) ·
   `?intra_refresh=30`(IDR 대신 I-매크로블록을 30 프레임에 나눠 싣기, 저장됨, 기본 0) · `?profile=high|baseline`. 선택은 `encoder.conf` 에 남는다(라이브 비트레이트만 빼고 — 공칭값이 남는다)
 - 검사: A `quality.spec`("링크가 막히면…"), A+ `09-encoder`("비트레이트만 바꾸면…", "인트라 리프레시를 켰다 끌 수 있다")
 - **폰의 소켓 큐(`videoClientStats.queued`)가 0 이라고 링크가 멀쩡한 것은 아니다.** 커널 송신 버퍼가 그 앞에 있다.
   64 KB 로 줄여 두었지만(`StreamSession.VIDEO_SEND_BUFFER_BYTES`) 링크가 막혔는지는 차의 rtt 가 먼저 안다
+- **하드웨어 경로는 밀린 프레임을 버리지 않는다** (`web/src/renderer/webcodecs.ts`, 2026-09-18). 예전에는 8 장 넘게
+  밀리면 P 프레임을 키프레임까지 버리고 IDR 을 부탁했는데, 그것이 되먹임의 첫 고리였다(10 초 GOP 의 IDR 이
+  링크를 200 ms 막으면 그 뒤 12 장이 한꺼번에 와 문턱을 넘겼다 → IDR 요청 → 575 KB → 다시). 하드웨어 디코더는
+  한 장에 1.1 ms 라 30 장이 밀려도 50 ms 면 따라잡으므로 그냥 푼다. 그 수는 `RendererStats.late`(상태줄 `늦음N`,
+  perf 의 `late`)로 남고 abr 에는 (문턱 위일 때만) 드롭과 같은 신호로 들어간다. 키프레임 요청은 새 디코더·디코드
+  오류·30 장 넘는 적체(무언가 잘못된 것)·2 초 스톨에서만 나가고, 같은 이유의 재요청은 0.5 → 1 초로 벌린다
+  (예전엔 4 초까지 벌렸는데, IDR 이 29~110 KB 가 된 지금은 기다리는 값이 더 비싸다 — car-tests §14).
+  재동기하는 동안은 `stats.waitingForKey` 가 서고, 그 사이의 "프레임 0 장"은 스톨로 세지 않는다. 소프트 디코더(h264.ts)는 CPU 가 바닥이라 예전 규칙 그대로다
+- **인트라 리프레시는 화질 시트에서 켠다** ("키프레임 대신 인트라 리프레시", `POST /api/encoder?intra_refresh=30|0`).
+  폰이 `intraRefresh` 를 말해 줄 때만 살아 있고, 선택은 encoder.conf 에 남는다. 켠 뒤에도 차가 부탁한 키프레임에는
+  IDR 이 온다 — 그 횟수(`keyframeRequests`)가 곧 이 손잡이의 성적이다. 실차 기록은 아직 없다(열린 질문 15)
+- **다른 코덱·다른 전송으로 갈 수 있는지는 프로브가 답한다.** 차 쪽: https 의 `/diag` 가 HEVC Main·AV1 Main·VP9 를
+  `isConfigSupported`(prefer-hardware) 로 묻고(`secure.configs`), 같은 페이지 안에서 WebRTC 루프백(pc1 → pc2, 캔버스
+  트랙, H.264 우선)을 돌려 협상 코덱·`decoderImplementation`·데이터 채널을 적는다(`webrtc`). 폰 쪽: `/api/status.encoders`
+  가 avc·hevc·av1·vp9 인코더 이름을 하드웨어 먼저 나열한다. **둘 다 조사일 뿐 파이프라인은 H.264/WebSocket 그대로다** —
+  다음 단계로 가려면 `web/src/paths.ts` 주석의 할 일 목록(폰 쪽 절반)이 필요하다
+- **"되는가" 다음은 "얼마나 드는가"다 — 같은 방문에서 같이 잰다.**
+  - 폰 인코더 벤치 `POST /api/bench?codec=avc|hevc|av1|vp9&width=1920&height=1080&fps=30&bitrate=8000000&frames=90&qp_i_max=28`
+    (노트북에서 curl, 3 초, 라이브 인코더는 건드리지 않음): `encodeMs` p50/p90, `firstKeyBytes`, **`requestedKeyBytes`**(차가
+    부탁한 IDR 의 크기 — 실차 #76 의 575 KB 가 이것), `avgPBytes`, `kbps`, `accepted`(벤더가 저지연 키·I-QP 상한을 받았나),
+    `hardware`. 합성 프레임(기본 `content=noise`, 어려운 쪽; `content=gradient` 는 쉬운 쪽)을 넣으므로 절대값은 라이브
+    (`timing.encodeMs`)와 다르고 **코덱 사이·설정 사이의 비교**가 목적이다. `qp_i_min=0·28·32·36` 을 한 번씩 돌리면 IDR
+    바이트 상한이 이 인코더에서 어디에 걸리는지가 폰만으로 나온다(§13: 벤더가 지킨다 — gradient 에서 40 이 48.6 → 7 KB;
+    noise 에서는 36 까지 안 물렸다). 실제 화면에서 몇에 물리는지는 차의 화질 시트 **"키프레임 크기 상한"** 으로 스트림 중에
+    돌린다(perf `keyBytes` 가 성적). `request_bitrate=N`(&`request_restore_frames=3`, `request_lead_frames=0`)은 싱크
+    프레임 직전(또는 N 프레임 전)에 라이브 비트레이트를 내렸다 되돌리는 실험 — §13 세 번째 실행: 직전에 내리면 IDR 은
+    바이트까지 그대로다(파라미터가 IDR 뒤에 먹는다)
+  - 링크 프로브: `/diag` 가 `/api/blob?bytes=N` 으로 64K·256K·600K(두 번)·2M 를 받아 ms 와 Mbps 를 적는다(`link`,
+    요약 줄의 `link 600KB=…ms`). "IDR 한 장이 이 링크에서 몇 ms 인가" 를 인코더 없이 직접 잰 값이라, 인코더 벤치의
+    `requestedKeyBytes` 와 곱하면 그 차·그 자리의 멈춤 길이가 계산된다
+  - 차 디코더: `/diag`(https) 가 1080p 줄(High 4.2·HEVC 4.1·AV1 4.1)도 묻고, WebRTC 루프백을 H.264 다음 AV1·VP9·H.265 로
+    하나씩 돌린다(`webrtc.perCodec`). 비신뢰 데이터 채널(ordered:false, maxRetransmits:0)과 WebTransport 존재도 적는다.
+    ⚠️ `decoderImplementation` 은 크로미엄이 미디어 권한을 받은 페이지에만 채워 준다 — PC 에서 빈 문자열이었고 차에서도
+    빌 수 있다. 그러면 "루프백 O" 까지가 답이고 하드웨어 여부는 WebCodecs 표(`prefer-hardware`)로 본다
 
 ## 4. 새 상황을 추가하는 법
 
